@@ -9,7 +9,7 @@ namespace jit::codegen {
 
 namespace {
 void recordDebugEntry(Environ& env, const jit::lir::Instruction* instr) {
-  if (instr->origin() == nullptr) {
+  if (instr == nullptr || instr->origin() == nullptr) {
     return;
   }
   asmjit::Label addr = env.as->newLabel();
