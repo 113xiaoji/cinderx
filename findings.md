@@ -53,3 +53,32 @@ Verification via unified remote entrypoint:
   - log: `/tmp/jit_richards_autojit_20260216_141450.log`
   - `Finished compiling __main__:` occurrences: `18`
 
+### Iteration: Expand Literal-Pool Emission to Runtime Helper Calls
+
+- Date: 2026-02-16
+- Branch/commit: `arm-jit-perf` @ `a6fc9b54`
+- Change:
+  - route additional AArch64 runtime-helper call sites in
+    `gen_asm.cpp` and `frame_asm.cpp` through `emitCall(env, func, nullptr)`
+  - update debug-site recorder to tolerate `instr == nullptr`
+    (`gen_asm_utils.cpp`)
+
+Functional verification:
+
+- Remote gate (`scripts/push_to_arm.ps1`, `richards`, full pipeline): pass
+- ARM runtime unittest: `Ran 4 tests ... OK`
+- `test_aarch64_call_sites_are_compact` spot-check:
+  - compiled size remains `77160` bytes (still passing threshold)
+
+pyperformance artifacts (single-sample, debug-single-value):
+
+- jitlist: `/root/work/arm-sync/richards_jitlist_20260216_161952.json`
+  - value: `0.1785639740 s`
+- autojit=50: `/root/work/arm-sync/richards_autojit50_20260216_161952.json`
+  - value: `0.1715511510 s`
+
+JIT effectiveness during benchmark workers:
+
+- log: `/tmp/jit_richards_autojit_20260216_161952.log`
+- `Finished compiling __main__:` occurrences: `18`
+
