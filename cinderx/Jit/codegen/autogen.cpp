@@ -1946,12 +1946,13 @@ void translateCall(Environ* env, const Instruction* instr) {
 
   auto output = instr->output();
   auto input = instr->getInput(0);
+  bool debug_recorded = false;
 
   if (input->isReg()) {
     as->blr(AT::getGp(input));
   } else if (input->isImm()) {
-    as->mov(arch::reg_scratch_br, input->getConstant());
-    as->blr(arch::reg_scratch_br);
+    emitCall(*env, static_cast<uint64_t>(input->getConstant()), instr);
+    debug_recorded = true;
   } else if (input->isStack()) {
     auto loc = input->getStackSlot().loc;
     as->ldr(
@@ -1962,7 +1963,7 @@ void translateCall(Environ* env, const Instruction* instr) {
     JIT_ABORT("Unsupported operand type for Call: {}", input->type());
   }
 
-  if (instr->origin()) {
+  if (instr->origin() && !debug_recorded) {
     asmjit::Label label = as->newLabel();
     as->bind(label);
     env->pending_debug_locs.emplace_back(label, instr->origin());
