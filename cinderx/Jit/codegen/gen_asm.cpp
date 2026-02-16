@@ -3010,9 +3010,21 @@ void NativeGenerator::emitAarch64CallTargetLiteralPool() {
     return;
   }
 
+  // Emit one helper stub per deduplicated target:
+  //   helper_stub:
+  //     ldr xscratch, [literal]
+  //     br  xscratch
+  // then emit all 64-bit literal targets once.
+  for (const auto& entry : env_.call_target_literals) {
+    const auto& target = entry.second;
+    as_->bind(target.helper_stub);
+    as_->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
+    as_->br(arch::reg_scratch_br);
+  }
+
   ASM_CHECK(as_->align(AlignMode::kData, 8), GetFunction()->fullname);
-  for (const auto& [func, label] : env_.call_target_literals) {
-    as_->bind(label);
+  for (const auto& [func, target] : env_.call_target_literals) {
+    as_->bind(target.literal);
     ASM_CHECK(as_->embedUInt64(func), GetFunction()->fullname);
   }
 #endif
