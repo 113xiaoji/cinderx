@@ -2175,8 +2175,10 @@ void NativeGenerator::generateEpilogue(BaseNode* epilogue_cursor) {
       Label trampoline = as_->newLabel();
       as_->bind(trampoline);
       as_->mov(a64::x10, reinterpret_cast<uint64_t>(x.first));
-      as_->mov(arch::reg_scratch_br, failed_deferred_compile_trampoline_);
-      as_->blr(arch::reg_scratch_br);
+      emitCall(
+          env_,
+          reinterpret_cast<uint64_t>(failed_deferred_compile_trampoline_),
+          nullptr);
       x.second.trampoline = trampoline;
     }
     env_.addAnnotation("JitHelpers", jit_helpers);
@@ -2867,20 +2869,19 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
     as_->leave();
     as_->ret();
 #elif defined(CINDER_AARCH64)
+    uint64_t helper = 0;
     if (GetFunction()->returnsPrimitive()) {
       if (GetFunction()->returnsPrimitiveDouble()) {
-        as_->mov(
-            arch::reg_scratch_br,
+        helper = reinterpret_cast<uint64_t>(
             JITRT_ReportStaticArgTypecheckErrorsWithDoubleReturn);
       } else {
-        as_->mov(
-            arch::reg_scratch_br,
+        helper = reinterpret_cast<uint64_t>(
             JITRT_ReportStaticArgTypecheckErrorsWithPrimitiveReturn);
       }
     } else {
-      as_->mov(arch::reg_scratch_br, JITRT_ReportStaticArgTypecheckErrors);
+      helper = reinterpret_cast<uint64_t>(JITRT_ReportStaticArgTypecheckErrors);
     }
-    as_->blr(arch::reg_scratch_br);
+    emitCall(env_, helper, nullptr);
 
     // leave + ret equivalent on aarch64
     as_->mov(a64::sp, arch::fp);
@@ -3038,13 +3039,15 @@ void NativeGenerator::generatePrimitiveArgsPrologue() {
   BorrowedRef<_PyTypedArgsInfo> info = func_->prim_args_info;
   env_.code_rt->addReference(info);
   as_->mov(a64::x4, reinterpret_cast<uint64_t>(info.get()));
+  uint64_t helper = 0;
   if (func_->returnsPrimitiveDouble()) {
-    as_->mov(
-        arch::reg_scratch_br, JITRT_CallStaticallyWithPrimitiveSignatureFP);
+    helper =
+        reinterpret_cast<uint64_t>(JITRT_CallStaticallyWithPrimitiveSignatureFP);
   } else {
-    as_->mov(arch::reg_scratch_br, JITRT_CallStaticallyWithPrimitiveSignature);
+    helper =
+        reinterpret_cast<uint64_t>(JITRT_CallStaticallyWithPrimitiveSignature);
   }
-  as_->blr(arch::reg_scratch_br);
+  emitCall(env_, helper, nullptr);
 #else
   CINDER_UNSUPPORTED
 #endif
@@ -3174,8 +3177,7 @@ NativeGenerator::generateBoxedReturnWrapper() {
     JIT_ABORT("Unsupported primitive return type {}", ret_type.toString());
   }
 
-  as_->mov(arch::reg_scratch_br, box_func);
-  as_->blr(arch::reg_scratch_br);
+  emitCall(env_, box_func, nullptr);
 
   as_->bind(box_done);
   generateFunctionExit();
@@ -3270,8 +3272,7 @@ void NativeGenerator::generateArgcountCheckPrologue(Label correct_arg_count) {
   // never pass the empty tuple.  It is possible for odd callers to still pass
   // the empty tuple in which case we'll just go through the slow binding
   // path.
-  as_->mov(arch::reg_scratch_br, JITRT_CallWithKeywordArgs);
-  as_->blr(arch::reg_scratch_br);
+  emitCall(env_, reinterpret_cast<uint64_t>(JITRT_CallWithKeywordArgs), nullptr);
   generateFunctionExit();
 
   // Check that we have a valid number of args.
@@ -3284,12 +3285,14 @@ void NativeGenerator::generateArgcountCheckPrologue(Label correct_arg_count) {
     // fix them up with defaults or raise an approprate exception.
     as_->b_eq(correct_arg_count);
     as_->mov(a64::x3, GetFunction()->numArgs());
+    uint64_t helper = 0;
     if (func_->returnsPrimitiveDouble()) {
-      as_->mov(arch::reg_scratch_br, JITRT_CallWithIncorrectArgcountFPReturn);
+      helper =
+          reinterpret_cast<uint64_t>(JITRT_CallWithIncorrectArgcountFPReturn);
     } else {
-      as_->mov(arch::reg_scratch_br, JITRT_CallWithIncorrectArgcount);
+      helper = reinterpret_cast<uint64_t>(JITRT_CallWithIncorrectArgcount);
     }
-    as_->blr(arch::reg_scratch_br);
+    emitCall(env_, helper, nullptr);
     as_->mov(a64::sp, arch::fp);
     as_->ldp(arch::fp, arch::lr, a64::ptr_post(a64::sp, 16));
     as_->ret(arch::lr);
