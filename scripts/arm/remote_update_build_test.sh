@@ -48,6 +48,9 @@ PYTHONJIT=0 python -m pip install -q -U pip
 PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
 PYTHONJIT=0 python -m pip install -q -U pyperformance
 
+echo ">> unittest: ARM runtime checks"
+python cinderx/PythonLib/test_cinderx/test_arm_runtime.py
+
 echo ">> smoke: JIT is effective (compiled code executes, not just 'enabled')"
 # We verify effectiveness by:
 # 1) Run a function in interpreted mode and observe interpreted call count increases.
