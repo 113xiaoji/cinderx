@@ -116,3 +116,41 @@ Assessment:
   directional gain and validate with multi-run aggregates before claiming final
   speedup.
 
+### Follow-up: Multi-sample A/B Check (Same ARM Host)
+
+- Date: 2026-02-16
+- Compared commits:
+  - prev: `a6fc9b54` (runtime-helper literal-pool expansion)
+  - cur: `eaa7ba3b` (helper-stub call targets)
+
+Method:
+
+- Re-deploy each commit via unified remote flow.
+- Collect 5 successful `richards` jitlist single-value samples each.
+- For autojit (`PYTHONJITAUTO=50`), record success/failure across 15 attempts.
+
+jitlist samples:
+
+- prev values:
+  - `0.3524485870`, `0.2699251230`, `0.3607075310`, `0.3716714900`,
+    `0.2455384730`
+- cur values:
+  - `0.3618649420`, `0.1772761080`, `0.1805733180`, `0.1779869640`,
+    `0.1852192320`
+
+jitlist aggregate from -> to:
+
+- mean: `0.3200582408 s` -> `0.2165841128 s` (`-32.33%`)
+- median: `0.3524485870 s` -> `0.1805733180 s` (`-48.77%`)
+
+autojit stability (15 attempts each):
+
+- prev (`a6fc9b54`): `0/15` successful (all benchmark-worker crashes)
+- cur (`eaa7ba3b`): `0/15` successful (all benchmark-worker crashes)
+
+Interpretation:
+
+- There is a strong directional speedup signal on jitlist multi-samples.
+- Auto-jit benchmark-worker stability remains a separate blocker and must be
+  fixed before treating autojit performance numbers as reliable.
+
