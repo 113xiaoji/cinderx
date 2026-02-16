@@ -5,6 +5,7 @@ import unittest
 
 import cinderx
 import cinderx.jit
+import math
 
 
 def is_arm_linux() -> bool:
@@ -54,6 +55,29 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(f(10), 45)
         interp1 = cinderx.jit.count_interpreted_calls(f)
         self.assertEqual(interp1, interp0)
+
+    def test_aarch64_call_sites_are_compact(self) -> None:
+        # Performance regression guard:
+        # on aarch64, repeated helper-call sites can bloat native code size.
+        cinderx.jit.enable()
+        cinderx.jit.compile_after_n_calls(1000000)
+
+        n_calls = 200
+        lines = ["def f(x):", "    s = 0.0"]
+        lines.extend(["    s += math.sqrt(x)"] * n_calls)
+        lines.append("    return s")
+        src = "\n".join(lines)
+        ns = {"math": math}
+        exec(src, ns, ns)
+        f = ns["f"]
+
+        self.assertTrue(cinderx.jit.force_compile(f))
+        size = cinderx.jit.get_compiled_size(f)
+
+        # Baseline on arm-jit-unified is ~84,320 bytes for this shape.
+        # New call target materialization should bring this below 84,000.
+        self.assertLessEqual(size, 84000, size)
+        self.assertEqual(f(9.0), float(n_calls) * 3.0)
 
 
 if __name__ == "__main__":
