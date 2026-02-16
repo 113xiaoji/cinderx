@@ -82,3 +82,37 @@ JIT effectiveness during benchmark workers:
 - log: `/tmp/jit_richards_autojit_20260216_161952.log`
 - `Finished compiling __main__:` occurrences: `18`
 
+### Iteration: Helper-Stub Call Targets (BL to Shared Stub)
+
+- Date: 2026-02-16
+- Branch/commit: `arm-jit-perf` @ `eaa7ba3b`
+- Change:
+  - upgrade AArch64 call-target dedup from `ldr literal + blr` at each
+    callsite to `bl helper_stub` at each callsite, with shared helper stub +
+    shared literal per target
+  - files: `environ.h`, `gen_asm_utils.cpp`, `gen_asm.cpp`
+
+From -> To (against previous iteration `a6fc9b54`):
+
+- Call-heavy compiled size guard (`test_aarch64_call_sites_are_compact` shape):
+  - `77160` -> `71616` bytes (`-7.19%`)
+- pyperformance `richards` jitlist (single-sample):
+  - `0.1785639740 s` -> `0.1692628450 s` (`-5.21%`, lower is better)
+- pyperformance `richards` autojit=50 (single-sample):
+  - `0.1715511510 s` -> `0.1619962710 s` (`-5.57%`, lower is better)
+
+Current artifact paths:
+
+- jitlist: `/root/work/arm-sync/richards_jitlist_20260216_190942.json`
+- autojit=50: `/root/work/arm-sync/richards_autojit50_20260216_190942.json`
+- JIT log: `/tmp/jit_richards_autojit_20260216_190942.log`
+  - `Finished compiling __main__:` occurrences: `18`
+
+Assessment:
+
+- This iteration shows an actual positive delta in both code size and runtime
+  in the same remote pipeline.
+- Runtime values are still `debug-single-value` single-sample; treat as
+  directional gain and validate with multi-run aggregates before claiming final
+  speedup.
+
