@@ -16,6 +16,18 @@ void recordDebugEntry(Environ& env, const jit::lir::Instruction* instr) {
   env.as->bind(addr);
   env.pending_debug_locs.emplace_back(addr, instr->origin());
 }
+
+#if defined(CINDER_AARCH64)
+asmjit::Label getOrCreateCallTargetLiteral(Environ& env, uint64_t func) {
+  auto it = env.call_target_literals.find(func);
+  if (it != env.call_target_literals.end()) {
+    return it->second;
+  }
+  asmjit::Label label = env.as->newLabel();
+  env.call_target_literals.emplace(func, label);
+  return label;
+}
+#endif
 } // namespace
 
 void emitCall(
@@ -36,11 +48,10 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
 #if defined(CINDER_X86_64)
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
-  // Note that we could do better than this if asmjit knew how to handle arm64
-  // relocations for relative calls. That work is done in
-  // https://github.com/asmjit/asmjit/issues/499, but as of writing is not yet
-  // available.
-  env.as->mov(arch::reg_scratch_br, func);
+  // Deduplicate absolute call targets and load them through a literal pool.
+  // This avoids repeated movz/movk materialization at each callsite.
+  auto literal = getOrCreateCallTargetLiteral(env, func);
+  env.as->ldr(arch::reg_scratch_br, asmjit::a64::ptr(literal));
   env.as->blr(arch::reg_scratch_br);
 #else
   CINDER_UNSUPPORTED

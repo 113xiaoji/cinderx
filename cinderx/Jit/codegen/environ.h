@@ -70,6 +70,10 @@ struct Environ {
   // Location of incoming arguments
   std::vector<PhyLocation> arg_locations;
 
+  // AArch64 call target literal pool: absolute call targets are deduplicated
+  // and emitted once as 64-bit literals, then loaded via PC-relative LDR.
+  UnorderedMap<uint64_t, asmjit::Label> call_target_literals;
+
   struct IndirectInfo {
     explicit IndirectInfo(void** indirect_ptr) : indirect(indirect_ptr) {}
 
