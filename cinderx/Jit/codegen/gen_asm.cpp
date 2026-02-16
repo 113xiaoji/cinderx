@@ -2895,6 +2895,7 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
   }
 
   generateDeoptExits(codeholder);
+  emitAarch64CallTargetLiteralPool();
 
   code_start_ = finalizeCode(*as_, GetFunction()->fullname);
 
@@ -3000,6 +3001,20 @@ void NativeGenerator::generateAssemblyBody(const asmjit::CodeHolder& code) {
       }
     }
   }
+}
+
+void NativeGenerator::emitAarch64CallTargetLiteralPool() {
+#if defined(CINDER_AARCH64)
+  if (env_.call_target_literals.empty()) {
+    return;
+  }
+
+  ASM_CHECK(as_->align(AlignMode::kData, 8), GetFunction()->fullname);
+  for (const auto& [func, label] : env_.call_target_literals) {
+    as_->bind(label);
+    ASM_CHECK(as_->embedUInt64(func), GetFunction()->fullname);
+  }
+#endif
 }
 
 void NativeGenerator::generatePrimitiveArgsPrologue() {
