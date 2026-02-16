@@ -18,14 +18,17 @@ void recordDebugEntry(Environ& env, const jit::lir::Instruction* instr) {
 }
 
 #if defined(CINDER_AARCH64)
-asmjit::Label getOrCreateCallTargetLiteral(Environ& env, uint64_t func) {
+const Environ::Aarch64CallTarget& getOrCreateCallTarget(Environ& env, uint64_t func) {
   auto it = env.call_target_literals.find(func);
   if (it != env.call_target_literals.end()) {
     return it->second;
   }
-  asmjit::Label label = env.as->newLabel();
-  env.call_target_literals.emplace(func, label);
-  return label;
+  Environ::Aarch64CallTarget target{
+      env.as->newLabel(), // helper_stub
+      env.as->newLabel(), // literal
+  };
+  auto inserted = env.call_target_literals.emplace(func, target);
+  return inserted.first->second;
 }
 #endif
 } // namespace
@@ -48,11 +51,10 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
 #if defined(CINDER_X86_64)
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
-  // Deduplicate absolute call targets and load them through a literal pool.
-  // This avoids repeated movz/movk materialization at each callsite.
-  auto literal = getOrCreateCallTargetLiteral(env, func);
-  env.as->ldr(arch::reg_scratch_br, asmjit::a64::ptr(literal));
-  env.as->blr(arch::reg_scratch_br);
+  // Deduplicate absolute call targets. Emit one shared helper stub per target,
+  // and callsites branch directly to that helper.
+  const auto& target = getOrCreateCallTarget(env, func);
+  env.as->bl(target.helper_stub);
 #else
   CINDER_UNSUPPORTED
 #endif
