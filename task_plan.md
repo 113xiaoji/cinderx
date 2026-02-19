@@ -8,11 +8,11 @@ Deliver one additional ARM64 JIT optimization iteration with verified `from -> t
 
 - [x] Phase 1: Session recovery and constraints check
 - [x] Phase 2: Current state inspection (code + benchmarks + logs)
-- [ ] Phase 3: Design and implementation plan for next optimization
-- [ ] Phase 4: TDD (add/update failing regression/perf guard test)
-- [ ] Phase 5: Implement minimal code change
-- [ ] Phase 6: Verify locally + remote unified ARM pipeline
-- [ ] Phase 7: Record findings (`from -> to`) and summarize
+- [x] Phase 3: Design and implementation plan for next optimization
+- [x] Phase 4: TDD (add/update failing regression/perf guard test)
+- [x] Phase 5: Implement minimal code change
+- [x] Phase 6: Verify locally + remote unified ARM pipeline
+- [x] Phase 7: Record findings (`from -> to`) and summarize
 
 ## Key Questions
 
@@ -25,13 +25,19 @@ Deliver one additional ARM64 JIT optimization iteration with verified `from -> t
 - Continue from branch `arm-jit-perf` at `778d01d0`.
 - Use the existing remote entrypoint (`scripts/push_to_arm.ps1`) for all authoritative validation.
 - Keep benchmark focus on `pyperformance richards` first, then extend after stable gain is proven.
+- Rebase onto latest `origin/main` first (user chose conflict-resolution path) before next ARM perf iteration.
+- Optimize AArch64 call emission by lazily creating helper stubs and routing `instr == nullptr` calls directly via literals.
+- Use compactness guard TDD cycle (`RED` fail threshold below baseline, then `GREEN` after code change).
 
 ## Errors Encountered
 
 | Error | Attempt | Resolution |
 |-------|---------|------------|
 | `python.exe` cannot execute `session-catchup.py` on this Windows host | 1 | Switched to manual recovery using git status + existing `findings.md` + explicit plan/progress files. |
+| `sync_upstream.ps1` blocked due dirty tree | 1 | Committed planning/work-in-progress files before remote runs. |
+| Rebase conflict on `cinderx/Jit/pyjit.cpp` while syncing to latest main | 1 | Resolved conflict and continued rebase to completion. |
+| PowerShell interpolation broke remote loop timestamp command | 1 | Switched to explicit output names for manual benchmark samples. |
 
 ## Status
 
-Currently: Phase 3 - finalizing optimization target and writing plan artifacts.
+Currently: All planned phases complete for this iteration; runtime perf signal remains mixed and needs controlled multi-sample A/B before claiming speedup.

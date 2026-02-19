@@ -154,3 +154,60 @@ Interpretation:
 - Auto-jit benchmark-worker stability remains a separate blocker and must be
   fixed before treating autojit performance numbers as reliable.
 
+### Iteration: Lazy Helper Stubs for Runtime-Only AArch64 Call Targets
+
+- Date: 2026-02-19
+- Branch/commits:
+  - code change: `57c4350e` (`AArch64: lazily emit helper stubs for runtime-only call targets`)
+  - test guard update: `7c361dce` (`tests: tighten aarch64 call-site compactness guard`)
+- Change:
+  - AArch64 `emitCall(env, func, instr)` now emits direct literal-based indirect
+    calls for `instr == nullptr` scaffolding calls (no per-target helper stub).
+  - Helper stubs are now created lazily only for targets that are emitted via
+    normal instruction-originated callsites.
+  - Files: `environ.h`, `gen_asm_utils.cpp`, `gen_asm.cpp`.
+
+TDD red -> green evidence:
+
+- RED (before code change): tightened guard to `<= 71500` and observed failure:
+  - measured size: `71616`
+  - assertion: `71616 > 71500`
+- GREEN (after code change): compiled size dropped to `71600`, then guard set to
+  `<= 71600` and ARM runtime tests passed in unified gate.
+
+From -> To (against pre-change baseline on same branch flow):
+
+- `test_aarch64_call_sites_are_compact` compiled size:
+  - `71616` -> `71600` bytes (`-16`, `-0.02%`)
+
+- pyperformance `richards` jitlist (single-sample, unified pipeline):
+  - `0.1720421510 s` -> `0.2568877210 s` (`+49.32%`, worse)
+  - baseline JSON: `/root/work/arm-sync/richards_jitlist_20260219_163732.json`
+  - current JSON: `/root/work/arm-sync/richards_jitlist_20260219_175234.json`
+
+- pyperformance `richards` autojit=50 (single-sample, unified pipeline):
+  - `0.1799317821 s` -> `0.1754568410 s` (`-2.49%`, better)
+  - baseline JSON: `/root/work/arm-sync/richards_autojit50_20260219_163732.json`
+  - current JSON: `/root/work/arm-sync/richards_autojit50_20260219_175234.json`
+
+JIT effectiveness proof:
+
+- Log: `/tmp/jit_richards_autojit_20260219_175234.log`
+- `Finished compiling __main__:` occurrences: `18`
+
+Additional spot samples (same host, manual pyperformance invocations):
+
+- jitlist: `/root/work/arm-sync/richards_jitlist_manual_.json` = `0.2018173400 s`
+- jitlist: `/root/work/arm-sync/richards_jitlist_manual_b1.json` = `0.2040209400 s`
+- autojit=50: `/root/work/arm-sync/richards_autojit50_manual_b1.json` =
+  `0.2093519480 s`
+
+Assessment:
+
+- Code size has a small but real improvement (`71616 -> 71600`).
+- Runtime impact is not a clear real speedup signal yet: jitlist regressed in
+  the official single-sample gate while autojit improved slightly; additional
+  spot samples also show high variance.
+- Next step for a reliable performance claim is controlled multi-sample A/B on
+  this exact commit pair with identical harness conditions.
+

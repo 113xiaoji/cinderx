@@ -15,3 +15,27 @@
   - helper-stub dedup path active in `gen_asm_utils.cpp` and `gen_asm.cpp`
   - remaining direct `mov/blr` patterns mostly in global trampolines (`gen_asm.cpp`) and dynamic register calls.
 - Session catchup script failed on host policy (`python.exe` inaccessible); recovery handled manually.
+- Resolved rebase conflict during upstream sync (`cinderx/Jit/pyjit.cpp`) and completed rebase onto latest `origin/main`.
+- Re-established post-rebase ARM baseline via unified remote flow:
+  - jitlist: `/root/work/arm-sync/richards_jitlist_20260219_163732.json` = `0.17204215098172426`
+  - autojit=50: `/root/work/arm-sync/richards_autojit50_20260219_163732.json` = `0.17993178206961602`
+  - JIT log compile evidence: `18` `Finished compiling __main__:` entries
+- TDD RED:
+  - tightened compactness guard and confirmed failing assertion at size `71616` against threshold `71500`.
+- Implemented AArch64 call emission update:
+  - lazy helper-stub creation per target
+  - direct literal-indirect call path for `instr == nullptr` callsites
+  - updated helper literal-pool emitter to skip unused helper stubs
+- TDD GREEN + verification:
+  - compactness size improved to `71600`
+  - adjusted guard to `<= 71600` and remote ARM runtime test suite passed (`Ran 4 tests ... OK`)
+- Full remote benchmark pass after change:
+  - jitlist: `/root/work/arm-sync/richards_jitlist_20260219_175234.json` = `0.2568877210142091`
+  - autojit=50: `/root/work/arm-sync/richards_autojit50_20260219_175234.json` = `0.17545684101060033`
+  - JIT log compile evidence preserved (`18` occurrences)
+- Added supplemental manual samples to gauge noise:
+  - jitlist manual: `0.20181733998470008`, `0.20402094000019133`
+  - autojit manual: `0.20935194799676538`
+- Conclusion for this iteration:
+  - code-size guard improved (`71616 -> 71600`)
+  - runtime performance signal is mixed/noisy; not enough to claim a real speedup yet.
