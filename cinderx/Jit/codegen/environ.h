@@ -70,12 +70,16 @@ struct Environ {
   // Location of incoming arguments
   std::vector<PhyLocation> arg_locations;
 
-  // AArch64 call target pool: absolute call targets are deduplicated into
-  // one helper stub + one 64-bit literal per target. Callsites emit a direct
-  // BL to the helper stub.
+  // AArch64 call target pool:
+  // - one 64-bit literal per absolute target
+  // - optional helper stub per target (created lazily when needed)
+  //
+  // Calls emitted from generic codegen hot paths use helper stubs, while
+  // one-off runtime scaffolding calls may branch through the literal directly.
   struct Aarch64CallTarget {
-    asmjit::Label helper_stub;
-    asmjit::Label literal;
+    asmjit::Label helper_stub{0};
+    asmjit::Label literal{0};
+    bool uses_helper_stub{false};
   };
   UnorderedMap<uint64_t, Aarch64CallTarget> call_target_literals;
 

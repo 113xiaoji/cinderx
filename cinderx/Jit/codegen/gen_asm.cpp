@@ -3010,13 +3010,16 @@ void NativeGenerator::emitAarch64CallTargetLiteralPool() {
     return;
   }
 
-  // Emit one helper stub per deduplicated target:
+  // Emit helper stubs for targets that need them:
   //   helper_stub:
   //     ldr xscratch, [literal]
   //     br  xscratch
   // then emit all 64-bit literal targets once.
   for (const auto& entry : env_.call_target_literals) {
     const auto& target = entry.second;
+    if (!target.uses_helper_stub) {
+      continue;
+    }
     as_->bind(target.helper_stub);
     as_->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
     as_->br(arch::reg_scratch_br);
