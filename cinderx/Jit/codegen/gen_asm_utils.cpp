@@ -18,17 +18,22 @@ void recordDebugEntry(Environ& env, const jit::lir::Instruction* instr) {
 }
 
 #if defined(CINDER_AARCH64)
-const Environ::Aarch64CallTarget& getOrCreateCallTarget(Environ& env, uint64_t func) {
+Environ::Aarch64CallTarget& getOrCreateCallTarget(Environ& env, uint64_t func) {
   auto it = env.call_target_literals.find(func);
   if (it != env.call_target_literals.end()) {
     return it->second;
   }
-  Environ::Aarch64CallTarget target{
-      env.as->newLabel(), // helper_stub
-      env.as->newLabel(), // literal
-  };
+  Environ::Aarch64CallTarget target;
+  target.literal = env.as->newLabel();
   auto inserted = env.call_target_literals.emplace(func, target);
   return inserted.first->second;
+}
+
+void emitIndirectCallThroughLiteral(
+    Environ& env,
+    const Environ::Aarch64CallTarget& target) {
+  env.as->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
+  env.as->blr(arch::reg_scratch_br);
 }
 #endif
 } // namespace
@@ -51,10 +56,21 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
 #if defined(CINDER_X86_64)
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
-  // Deduplicate absolute call targets. Emit one shared helper stub per target,
-  // and callsites branch directly to that helper.
-  const auto& target = getOrCreateCallTarget(env, func);
-  env.as->bl(target.helper_stub);
+  auto& target = getOrCreateCallTarget(env, func);
+  if (instr == nullptr) {
+    // One-off runtime scaffolding calls are typically unique callsites. Emit
+    // them directly through the literal to avoid materializing an extra helper
+    // stub for each target.
+    emitIndirectCallThroughLiteral(env, target);
+  } else {
+    // Deduplicate hot absolute call targets through one shared helper stub per
+    // target. Callsites branch directly to that helper.
+    if (!target.uses_helper_stub) {
+      target.helper_stub = env.as->newLabel();
+      target.uses_helper_stub = true;
+    }
+    env.as->bl(target.helper_stub);
+  }
 #else
   CINDER_UNSUPPORTED
 #endif
