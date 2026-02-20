@@ -4,6 +4,8 @@ import random
 import statistics
 from pathlib import Path
 
+REQUIRED_MODES = ("nojit", "jitlist", "autojit50")
+
 
 def summarize_samples(samples):
     if not samples:
@@ -76,13 +78,40 @@ def compare_arm_vs_x86(arm_samples, x86_samples, iterations=5000, seed=42):
     }
 
 
-def _load_samples_file(path):
+def validate_runner_payload(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("payload must be a dict")
+    for key in ("host", "benchmark", "mode_samples"):
+        if key not in payload:
+            raise ValueError(f"missing payload field: {key}")
+    mode_samples = payload["mode_samples"]
+    if not isinstance(mode_samples, dict):
+        raise ValueError("mode_samples must be a dict")
+    for mode in REQUIRED_MODES:
+        if mode not in mode_samples:
+            raise ValueError(f"missing mode: {mode}")
+        vals = mode_samples[mode]
+        if not isinstance(vals, list) or not vals:
+            raise ValueError(f"mode {mode} must contain a non-empty list")
+        for v in vals:
+            float(v)
+    return True
+
+
+def _load_samples_file(path, mode=None):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     samples = data.get("samples")
-    if samples is None:
-        raise ValueError(f"{path} missing 'samples' field")
-    return [float(x) for x in samples]
+    if samples is not None:
+        return [float(x) for x in samples]
+    mode_samples = data.get("mode_samples")
+    if mode_samples is not None:
+        if mode is None:
+            raise ValueError(f"{path} has mode_samples; mode is required")
+        if mode not in mode_samples:
+            raise ValueError(f"{path} missing mode_samples[{mode}]")
+        return [float(x) for x in mode_samples[mode]]
+    raise ValueError(f"{path} missing 'samples' or 'mode_samples'")
 
 
 def main():
@@ -90,11 +119,12 @@ def main():
     parser.add_argument("--arm-samples-json", required=True)
     parser.add_argument("--x86-samples-json", required=True)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--mode", default=None)
     parser.add_argument("--iterations", type=int, default=5000)
     args = parser.parse_args()
 
-    arm = _load_samples_file(args.arm_samples_json)
-    x86 = _load_samples_file(args.x86_samples_json)
+    arm = _load_samples_file(args.arm_samples_json, mode=args.mode)
+    x86 = _load_samples_file(args.x86_samples_json, mode=args.mode)
     result = compare_arm_vs_x86(arm, x86, iterations=args.iterations)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

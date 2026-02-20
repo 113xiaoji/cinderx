@@ -21,6 +21,18 @@ class RichardsMetricsTests(unittest.TestCase):
         for key in ("count", "mean", "median", "min", "max"):
             self.assertIn(key, summary)
 
+    def test_validate_runner_payload_contract(self) -> None:
+        payload = {
+            "host": "example-host",
+            "benchmark": "richards",
+            "mode_samples": {
+                "nojit": [0.1, 0.11],
+                "jitlist": [0.09, 0.095],
+                "autojit50": [0.085, 0.083],
+            },
+        }
+        self.assertTrue(metrics.validate_runner_payload(payload))
+
 
 if __name__ == "__main__":
     unittest.main()
