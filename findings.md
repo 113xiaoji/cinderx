@@ -613,3 +613,143 @@ Interpretation:
 - Conservative decision: keep default policy (`AutoJit=50`) for now and shift
   optimization effort to Step 3 codegen-level hot paths.
 
+### Step 3 Precheck: `PYTHONJITMULTIPLECODESECTIONS` (`mcs=0/1`)
+
+- Date: 2026-02-21
+- Method:
+  - same runner (`scripts/bench/run_richards_remote.sh`)
+  - same host (`124.70.162.35`)
+  - same benchmark (`richards`)
+  - same threshold (`AutoJit=50`)
+  - only toggle:
+    - `PYTHONJITMULTIPLECODESECTIONS=0`
+    - `PYTHONJITMULTIPLECODESECTIONS=1`
+- Artifacts:
+  - prior quick run (`Samples=5`):
+    - `artifacts/richards/arm_mcs0_richards.json`
+    - `artifacts/richards/arm_mcs1_richards.json`
+  - confirmation run (`Samples=8`):
+    - `artifacts/richards/arm_mcs0_richards_s8.json`
+    - `artifacts/richards/arm_mcs1_richards_s8.json`
+  - aggregate summary:
+    - `artifacts/richards/mcs_compare_summary_20260221.json`
+
+From -> To (`mcs0 -> mcs1`, `Samples=8`, lower is better):
+
+- `nojit` mean: `0.0524051484 -> 0.0516509315 s` (`+1.4602%`)
+  - median: `0.0517700650 -> 0.0516637075 s` (`+0.2059%`)
+  - bootstrap CI (mean speedup): `[+0.0592%, +3.8710%]`
+- `jitlist` mean: `0.0519003826 -> 0.0517930794 s` (`+0.2072%`)
+  - median: `0.0518789075 -> 0.0517454035 s` (`+0.2580%`)
+  - bootstrap CI (mean speedup): `[-0.3142%, +0.7050%]`
+- `autojit50` mean: `0.0519645600 -> 0.0518082064 s` (`+0.3018%`)
+  - median: `0.0518419635 -> 0.0516243400 s` (`+0.4216%`)
+  - bootstrap CI (mean speedup): `[-0.3593%, +0.9709%]`
+
+Interpretation:
+
+- The earlier `Samples=5` quick run was clearly polluted by large outliers.
+- On the confirmation set (`Samples=8`), `mcs=1` gain is small
+  (about `0.2%~0.3%`) for JIT modes and not statistically robust
+  (CI crosses zero).
+- Decision: do not treat `multiple_code_sections` as a Step 3 primary
+  optimization lever for now; continue with call-lowering/register/branch hot
+  path optimization.
+
+### Step 3 Attempt: AArch64 call-result return-register hint (regalloc)
+
+- Date: 2026-02-21
+- Code path:
+  - `cinderx/Jit/lir/regalloc.cpp`
+- Idea:
+  - reduce hot-path call lowering move overhead by preferring ABI return
+    registers for selected call outputs (so postalloc inserts fewer
+    call-result shuffles).
+
+Attempt A (failed, discarded):
+
+- Strategy:
+  - pre-hint *all* call outputs to ABI return registers on AArch64.
+- Result:
+  - introduced major code-size regression and ARM runtime test failures:
+    - compact-shape size: `77160 -> 85160`
+    - singleton delta: `384 -> 424`
+  - failing tests:
+    - `test_aarch64_call_sites_are_compact`
+    - `test_aarch64_singleton_immediate_call_target_prefers_direct_literal`
+- Root-cause inference:
+  - broad hint over-constrained object-return call chains and increased
+    spill/shuffle pressure around dense call sites.
+
+Attempt B (safe but weak):
+
+- Strategy:
+  - restrict hint to FP call outputs only.
+- Result:
+  - ARM runtime tests passed.
+  - code-size probe remained stable (`760/1144/delta=384`, `size200=77160`).
+  - performance gain was small and mostly inconclusive (`~0.2%` class).
+
+Attempt C (current):
+
+- Strategy:
+  - only hint short immediate call chains:
+    - `call -> single immediate use -> call(arg0=previous result)`
+  - this keeps the optimization on the intended hot path while avoiding broad
+    register-pressure side effects.
+- Validation:
+  - ARM runtime tests: pass (`5/5`)
+  - code-size probe:
+    - `size1=760`, `size2=1144`, `delta=384`, `size200=77160`
+- Artifacts:
+  - `artifacts/richards/arm_after_regalloc_callchain_hint_mcs0_s8.json`
+  - `artifacts/richards/arm_after_regalloc_callchain_hint_mcs0_s8_b.json`
+  - `artifacts/richards/regalloc_callchain_hint_vs_baseline_mcs0_s8_summary.json`
+  - `artifacts/richards/regalloc_callchain_hint_repeat_summary_20260221.json`
+
+From -> To (`mcs=0`, baseline `artifacts/richards/arm_mcs0_richards_s8.json`):
+
+- Run A (`n=8`):
+  - `jitlist`: `0.0519003826 -> 0.0516489598 s` (`+0.4868%`, CI `[+0.0259%, +0.9590%]`)
+  - `autojit50`: `0.0519645600 -> 0.0517226194 s` (`+0.4678%`, CI `[-0.0511%, +1.0594%]`)
+- Run B (`n=8`):
+  - `jitlist`: `0.0519003826 -> 0.0519029235 s` (`-0.0049%`, CI `[-0.6906%, +0.6573%]`)
+  - `autojit50`: `0.0519645600 -> 0.0516798520 s` (`+0.5509%`, CI `[+0.0785%, +1.1032%]`)
+- Pooled after (`n=16`) vs baseline (`n=8`):
+  - `jitlist`: `+0.2403%` (CI `[-0.2808%, +0.7373%]`)
+  - `autojit50`: `+0.5093%` (CI `[+0.0369%, +1.0711%]`)
+
+Interpretation:
+
+- This heuristic no longer regresses code size and keeps ARM runtime tests
+  green.
+- Observed gain is small but measurable for `autojit50` in pooled data
+  (`~+0.5%`, CI slightly above 0).
+- `jitlist` gain is unstable across reruns; treat that part as inconclusive.
+
+### Unified ARM/X86 Check After Call-Chain Hint
+
+- Date: 2026-02-21
+- Method:
+  - `scripts/bench/collect_arm_x86_richards.ps1 -Samples 5 -AutoJit 50`
+- Artifacts:
+  - `artifacts/richards/summary_arm_vs_x86_20260221_011223.json`
+  - `artifacts/richards/arm_samples_20260221_011223.json`
+  - `artifacts/richards/x86_samples_20260221_011223.json`
+
+From -> To (vs previous `AutoJit=50` unified snapshot
+`summary_arm_vs_x86_20260220_234127.json`):
+
+- ARM `autojit50` mean:
+  - `0.0518055044 -> 0.0518427644 s` (`-0.0719%`, essentially flat)
+- X86 `autojit50` mean:
+  - `0.0755916389 -> 0.0983565764 s` (x86 slower in this run)
+- Reported ARM-vs-X86 speedup:
+  - `+31.4666% -> +47.2910%`
+
+Interpretation:
+
+- The ARM absolute runtime is basically unchanged on this check.
+- Relative ARM-vs-X86 gain increase here is dominated by x86-side run
+  variance, not by a clear ARM-side throughput jump.
+

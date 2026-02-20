@@ -30,6 +30,8 @@ with ARM-vs-X86 richards evidence and testing at each stage.
 - X86 host for baseline: `106.14.164.133` (`root` user).
 - Default benchmark venv path on both hosts: `/root/venv-cinderx314`.
 - Work sequence must remain 1 -> 2 -> 3.
+- `PYTHONJITMULTIPLECODESECTIONS` precheck (`mcs=0/1`) is not a robust Step 3
+  gain source for JIT modes on current host; keep focus on codegen hot paths.
 
 ## Errors Encountered
 
@@ -39,5 +41,8 @@ with ARM-vs-X86 richards evidence and testing at each stage.
 
 ## Status
 
-Currently: Step 3 codegen hot-path optimization analysis in progress on branch `bench-cur-7c361dce`.
-Next: implement one low-risk ARM codegen hot-path change and validate with ARM runtime + unified collector.
+Currently: Step 3 codegen hot-path optimization in progress on branch
+`bench-cur-7c361dce`; first low-risk regalloc heuristic for AArch64 short
+call-chains has been implemented and validated.
+Next: run a wider ARM/X86 unified comparison with this change, then decide
+whether to keep/iterate/revert based on confidence intervals.

@@ -97,3 +97,49 @@
   - kept default policy as-is and prepared to continue with Step 3 codegen work
 - Deep-dive LIR dumps captured for `__main__:f` (math.sqrt shape) to inspect
   call/decref hot-path interactions before next codegen attempt.
+
+## 2026-02-21
+
+- Pulled interrupted remote artifact:
+  - `artifacts/richards/arm_mcs1_richards.json`
+- Ran `multiple_code_sections` confirmation sweep on ARM host with higher
+  sample count:
+  - `PYTHONJITMULTIPLECODESECTIONS=0`, `SAMPLES=8`, output
+    `/tmp/arm_mcs0_richards_s8.json`
+  - `PYTHONJITMULTIPLECODESECTIONS=1`, `SAMPLES=8`, output
+    `/tmp/arm_mcs1_richards_s8.json`
+- Synced new artifacts to repo:
+  - `artifacts/richards/arm_mcs0_richards_s8.json`
+  - `artifacts/richards/arm_mcs1_richards_s8.json`
+- Added aggregate compare output:
+  - `artifacts/richards/mcs_compare_summary_20260221.json`
+- Updated `findings.md` with from->to and CI:
+  - `jitlist`: `0.0519003826 -> 0.0517930794 s` (`+0.2072%`, CI crosses 0)
+  - `autojit50`: `0.0519645600 -> 0.0518082064 s` (`+0.3018%`, CI crosses 0)
+- Decision:
+  - keep `multiple_code_sections` out of Step 3 primary path for now and
+    continue on call-lowering/register/branch hot-path work.
+- Implemented Step 3 code change in `cinderx/Jit/lir/regalloc.cpp`:
+  - AArch64 return-register preference for call outputs in short immediate
+    call-chain pattern (`call -> single immediate use -> call(arg0=...)`).
+- Systematic debugging loop during this change:
+  - Attempt A (broad call-output hint) caused code-size regression and ARM
+    runtime failures (`size200` jumped to `85160`).
+  - Attempt B (FP-only hint) removed regression but showed weak gains.
+  - Attempt C (current short-chain heuristic) preserved code size/tests and
+    gave small autojit uplift in repeated runs.
+- Verification on ARM host:
+  - wheel rebuild + reinstall passed
+  - `test_arm_runtime.py`: `5/5` pass
+  - code-size probe: `size1=760`, `size2=1144`, `delta=384`, `size200=77160`
+- Performance artifacts added:
+  - `artifacts/richards/arm_after_regalloc_callchain_hint_mcs0_s8.json`
+  - `artifacts/richards/arm_after_regalloc_callchain_hint_mcs0_s8_b.json`
+  - `artifacts/richards/regalloc_callchain_hint_vs_baseline_mcs0_s8_summary.json`
+  - `artifacts/richards/regalloc_callchain_hint_repeat_summary_20260221.json`
+- Ran unified ARM/X86 collector after call-chain hint:
+  - `scripts/bench/collect_arm_x86_richards.ps1 -Samples 5 -AutoJit 50`
+  - combined summary:
+    - `artifacts/richards/summary_arm_vs_x86_20260221_011223.json`
+  - noted that this run's ARM-vs-X86 delta increase is mainly from x86-side
+    variance; ARM absolute autojit mean remains near-flat.
