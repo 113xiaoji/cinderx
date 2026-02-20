@@ -1,40 +1,43 @@
-# Task Plan: ARM JIT Performance Iteration 2026-02-19
+# Task Plan: ARM vs X86 Richards Optimization Iteration 2026-02-20
 
 ## Goal
 
-Deliver one additional ARM64 JIT optimization iteration with verified `from -> to` performance results (richards), and confirm JIT is actually active during benchmark runs.
+Execute optimization in strict order:
+1) measurement stabilization,
+2) JIT policy tuning,
+3) ARM codegen hot-path tuning,
+with ARM-vs-X86 richards evidence and testing at each stage.
 
 ## Phases
 
-- [x] Phase 1: Session recovery and constraints check
-- [x] Phase 2: Current state inspection (code + benchmarks + logs)
-- [x] Phase 3: Design and implementation plan for next optimization
-- [x] Phase 4: TDD (add/update failing regression/perf guard test)
-- [x] Phase 5: Implement minimal code change
-- [x] Phase 6: Verify locally + remote unified ARM pipeline
-- [x] Phase 7: Record findings (`from -> to`) and summarize
+- [x] Phase 1: Brainstorming design confirmed by user
+- [x] Phase 2: Writing-plans docs created
+- [ ] Phase 3: Step 1 implementation (ARM/X86 unified measurement entrypoint)
+- [ ] Phase 4: Step 2 implementation (policy tuning, no codegen)
+- [ ] Phase 5: Step 3 implementation (ARM codegen micro-optimization)
+- [ ] Phase 6: Final verification-before-completion + findings update
 
 ## Key Questions
 
-1. Which remaining AArch64 codegen pattern is both low-risk and likely to improve richards?
-2. Can we demonstrate "real improvement" with repeated samples instead of single-sample noise?
-3. Are there unsupported ARM codegen paths still causing deopt/fallback in benchmark workers?
+1. Can the x86 host be normalized to the same benchmark toolchain (`venv-cinderx314`)?
+2. Which policy knobs show measurable gain before touching codegen?
+3. Can ARM codegen changes preserve correctness while improving ARM-vs-X86 gap?
 
 ## Decisions Made
 
-- Continue from branch `arm-jit-perf` at `778d01d0`.
-- Use the existing remote entrypoint (`scripts/push_to_arm.ps1`) for all authoritative validation.
-- Keep benchmark focus on `pyperformance richards` first, then extend after stable gain is proven.
+- Primary benchmark remains `pyperformance richards`.
+- Comparison target: ARM should be >= 3% faster than X86 under unified method.
+- X86 host for baseline: `106.14.164.133` (`root` user).
+- Default benchmark venv path on both hosts: `/root/venv-cinderx314`.
+- Work sequence must remain 1 -> 2 -> 3.
 
 ## Errors Encountered
 
 | Error | Attempt | Resolution |
 |-------|---------|------------|
-| `python.exe` cannot execute `session-catchup.py` on this Windows host | 1 | Switched to manual recovery using git status + existing `findings.md` + explicit plan/progress files. |
+| x86 host missing `/root/venv-cinderx314` | 1 | Add setup/bootstrap support as part of Step 1 runner pipeline. |
 
 ## Status
 
-Currently: Follow-up validation complete for `392245ed -> 7c361dce` with
-repeated A/B metrics and theory analysis documented in `findings.md`.
-Next: select and implement a hot-path AArch64 call lowering optimization
-because current richards interleaved A/B is near parity.
+Currently: starting Step 1 implementation with TDD on branch `bench-cur-7c361dce`.
+Next: create unified ARM/X86 collector scripts, then run baseline.

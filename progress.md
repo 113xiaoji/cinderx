@@ -50,3 +50,22 @@
   obvious switches for richards.
 - Added `pyperformance --fast` caution section to distinguish cold-start vs
   steady-state behavior on this host.
+
+## 2026-02-20
+
+- Loaded and followed required process skills for this iteration:
+  - `using-superpowers`
+  - `brainstorming`
+  - `writing-plans`
+  - `test-driven-development`
+  - `verification-before-completion`
+- Completed brainstorming confirmation for strict 1->2->3 optimization flow.
+- Captured design to:
+  - `docs/plans/2026-02-20-arm-vs-x86-richards-optimization-design.md`
+- Captured implementation plan to:
+  - `docs/plans/2026-02-20-arm-vs-x86-richards-optimization-plan.md`
+- Updated task plan for new iteration target:
+  - ARM vs X86 richards with ARM >= 3% faster target.
+- Environment discovery:
+  - ARM host `124.70.162.35`: `/root/venv-cinderx314` exists.
+  - X86 host `106.14.164.133`: `/root/venv-cinderx314` missing.
