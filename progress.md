@@ -69,3 +69,21 @@
 - Environment discovery:
   - ARM host `124.70.162.35`: `/root/venv-cinderx314` exists.
   - X86 host `106.14.164.133`: `/root/venv-cinderx314` missing.
+- Added TDD baseline utilities/scripts:
+  - `scripts/bench/richards_metrics.py`
+  - `scripts/bench/test_richards_metrics.py`
+  - `scripts/bench/run_richards_remote.sh`
+  - `scripts/bench/collect_arm_x86_richards.ps1`
+- RED/GREEN evidence:
+  - initial tests failed due missing `richards_metrics` module and missing
+    `validate_runner_payload`.
+  - tests now pass (`Ran 4 tests ... OK`).
+- X86 host bootstrap and compatibility work:
+  - installed CPython `3.14.3` to `/opt/python-3.14.3`,
+  - recreated `/root/venv-cinderx314` on 3.14.3,
+  - added `FT_ATOMIC_LOAD_PTR_CONSUME` fallback in `borrowed-3.14*` sources to
+    support x86 host build.
+- Ran unified collector:
+  - `scripts/bench/collect_arm_x86_richards.ps1 -Samples 3`
+  - produced combined summary:
+    - `artifacts/richards/summary_arm_vs_x86_20260220_225757.json`

@@ -528,3 +528,50 @@ Interpretation:
 - This keeps option-1 performance-first strategy while reducing stale
   complexity in AArch64 call lowering code paths.
 
+### Step 1 Baseline: Unified ARM vs X86 Richards Entry Point
+
+- Date: 2026-02-20
+- Artifacts:
+  - `artifacts/richards/arm_samples_20260220_225757.json`
+  - `artifacts/richards/x86_samples_20260220_225757.json`
+  - `artifacts/richards/summary_arm_vs_x86_20260220_225757.json`
+  - mode summaries:
+    - `artifacts/richards/summary_nojit_20260220_225757.json`
+    - `artifacts/richards/summary_jitlist_20260220_225757.json`
+    - `artifacts/richards/summary_autojit50_20260220_225757.json`
+
+Environment notes:
+
+- ARM host (`124.70.162.35`): existing CPython `3.14.3` + `/root/venv-cinderx314`.
+- X86 host (`106.14.164.133`):
+  - installed CPython `3.14.3` under `/opt/python-3.14.3`,
+  - rebuilt `/root/venv-cinderx314` on 3.14.3,
+  - added compatibility fallback for `FT_ATOMIC_LOAD_PTR_CONSUME` in
+    `borrowed-3.14*` sources to support this host toolchain/runtime headers.
+
+Results (Samples=3):
+
+- nojit:
+  - ARM mean: `0.0516528070 s`
+  - X86 mean: `0.1363041357 s`
+  - speedup (ARM faster positive): `+62.10%`
+  - 95% CI: `[+38.93%, +77.66%]`
+- jitlist:
+  - ARM mean: `0.0520912550 s`
+  - X86 mean: `0.1849282674 s`
+  - speedup: `+71.83%`
+  - 95% CI: `[+70.74%, +72.64%]`
+- autojit50:
+  - ARM mean: `0.0516304567 s`
+  - X86 mean: `0.0897548507 s`
+  - speedup: `+42.48%`
+  - 95% CI: `[+39.71%, +44.03%]`
+
+Interpretation:
+
+- Unified remote measurement flow is now operational on both hosts.
+- Current baseline already exceeds the target "ARM >= X86 +3%" for richards on
+  this host pair.
+- Next steps (Step 2/3) should focus on preserving this margin with tighter
+  repeated/interleaved runs and then improving absolute ARM performance.
+
