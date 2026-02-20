@@ -13,8 +13,8 @@ with ARM-vs-X86 richards evidence and testing at each stage.
 - [x] Phase 1: Brainstorming design confirmed by user
 - [x] Phase 2: Writing-plans docs created
 - [x] Phase 3: Step 1 implementation (ARM/X86 unified measurement entrypoint)
-- [ ] Phase 4: Step 2 implementation (policy tuning, no codegen) (in progress)
-- [ ] Phase 5: Step 3 implementation (ARM codegen micro-optimization)
+- [x] Phase 4: Step 2 implementation (policy tuning, no codegen)
+- [ ] Phase 5: Step 3 implementation (ARM codegen micro-optimization) (in progress)
 - [ ] Phase 6: Final verification-before-completion + findings update
 
 ## Key Questions
@@ -39,5 +39,5 @@ with ARM-vs-X86 richards evidence and testing at each stage.
 
 ## Status
 
-Currently: Step 2 policy-tuning experiments in progress on branch `bench-cur-7c361dce`.
-Next: run threshold/policy sweeps via unified collector and record from->to results.
+Currently: Step 3 codegen hot-path optimization analysis in progress on branch `bench-cur-7c361dce`.
+Next: implement one low-risk ARM codegen hot-path change and validate with ARM runtime + unified collector.

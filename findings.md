@@ -575,3 +575,41 @@ Interpretation:
 - Next steps (Step 2/3) should focus on preserving this margin with tighter
   repeated/interleaved runs and then improving absolute ARM performance.
 
+### Step 2 Policy Tuning: `compile_after_n_calls` Sweep (no codegen changes)
+
+- Date: 2026-02-20
+- Method:
+  - Unified collector entrypoint:
+    - `scripts/bench/collect_arm_x86_richards.ps1`
+  - Threshold candidates (`AutoJit`): `10`, `25`, `50`, `100`
+  - Main sweep: `Samples=5`
+  - Confirmation sweep: `AutoJit=10` vs `50`, `Samples=8`
+- Artifacts:
+  - `artifacts/richards/policy_autojit10_summary.json`
+  - `artifacts/richards/policy_autojit25_summary.json`
+  - `artifacts/richards/policy_autojit50_summary.json`
+  - `artifacts/richards/policy_autojit100_summary.json`
+  - `artifacts/richards/policy_autojit10_s8_summary.json`
+  - `artifacts/richards/policy_autojit50_s8_summary.json`
+
+Results (`Samples=5`, autojit mode):
+
+- `AutoJit=10`: ARM `0.0518217086 s`, X86 `0.0829378906 s`, speedup `+37.52%`
+- `AutoJit=25`: ARM `0.0519936924 s`, X86 `0.0783645534 s`, speedup `+33.65%`
+- `AutoJit=50`: ARM `0.0518368482 s`, X86 `0.0750743374 s`, speedup `+30.95%`
+- `AutoJit=100`: ARM `0.0518710516 s`, X86 `0.0741648130 s`, speedup `+30.06%`
+
+Confirmation (`Samples=8`, autojit mode):
+
+- `AutoJit=50`: ARM `0.0518055044 s`
+- `AutoJit=10`: ARM `0.0515950649 s`
+- ARM from->to (`50 -> 10`): `0.0518055044 -> 0.0515950649` (`+0.4062%`)
+- Bootstrap CI (ARM `10` vs `50`): `[-0.1075%, +1.0074%]` (crosses 0)
+
+Interpretation:
+
+- Step 2 did not produce a statistically robust ARM-side policy gain on this
+  benchmark/host pair.
+- Conservative decision: keep default policy (`AutoJit=50`) for now and shift
+  optimization effort to Step 3 codegen-level hot paths.
+

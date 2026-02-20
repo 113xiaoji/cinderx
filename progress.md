@@ -87,3 +87,13 @@
   - `scripts/bench/collect_arm_x86_richards.ps1 -Samples 3`
   - produced combined summary:
     - `artifacts/richards/summary_arm_vs_x86_20260220_225757.json`
+- Step 2 policy sweep completed via unified collector:
+  - thresholds: `AutoJit=10/25/50/100`, `Samples=5`
+  - confirmation: `AutoJit=10` vs `50`, `Samples=8`
+  - generated `policy_autojit*.json` summaries in `artifacts/richards/`
+- Step 2 conclusion:
+  - observed ARM-side gain from `50 -> 10` is small and statistically
+    inconclusive (`+0.4062%`, CI crosses 0)
+  - kept default policy as-is and prepared to continue with Step 3 codegen work
+- Deep-dive LIR dumps captured for `__main__:f` (math.sqrt shape) to inspect
+  call/decref hot-path interactions before next codegen attempt.
