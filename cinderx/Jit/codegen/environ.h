@@ -74,21 +74,11 @@ struct Environ {
 
   // AArch64 call target pool:
   // - one 64-bit literal per absolute target
-  // - optional helper stub per target (created lazily when needed)
-  //
-  // Calls emitted from generic codegen hot paths use helper stubs, while
-  // one-off runtime scaffolding calls may branch through the literal directly.
+  // Calls branch through these literals directly.
   struct Aarch64CallTarget {
-    asmjit::Label helper_stub{0};
     asmjit::Label literal{0};
-    bool uses_helper_stub{false};
-    uint32_t hot_call_uses{0};
   };
   UnorderedMap<uint64_t, Aarch64CallTarget> call_target_literals;
-
-  // AArch64 hot immediate-call target use counts, collected from LIR Call
-  // instructions before machine-code emission.
-  UnorderedMap<uint64_t, uint32_t> hot_call_target_uses;
 
   struct IndirectInfo {
     explicit IndirectInfo(void** indirect_ptr) : indirect(indirect_ptr) {}

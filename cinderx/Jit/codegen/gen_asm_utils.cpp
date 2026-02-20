@@ -57,10 +57,7 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
 #if defined(CINDER_X86_64)
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
-  auto& target = getOrCreateCallTarget(env, func);
-  if (instr != nullptr) {
-    target.hot_call_uses++;
-  }
+  const auto& target = getOrCreateCallTarget(env, func);
   // Performance-first hot path on AArch64:
   // keep callsites branch-minimal by issuing the indirect call through the
   // literal directly, avoiding helper-stub round trips.

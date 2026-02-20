@@ -2793,32 +2793,10 @@ bool NativeGenerator::hasStaticEntry() const {
   return (code->co_flags & CI_CO_STATICALLY_COMPILED);
 }
 
-void NativeGenerator::collectAarch64HotImmediateCallTargetUses() {
-#if defined(CINDER_AARCH64)
-  env_.hot_call_target_uses.clear();
-
-  for (lir::BasicBlock* basicblock : lir_func_->basicblocks()) {
-    for (auto& instr_ptr : basicblock->instructions()) {
-      auto* instr = instr_ptr.get();
-      if (!instr->isCall() || instr->getNumInputs() == 0) {
-        continue;
-      }
-      const auto* callee = instr->getInput(0);
-      if (!callee->isImm()) {
-        continue;
-      }
-      auto target = static_cast<uint64_t>(callee->getConstant());
-      env_.hot_call_target_uses[target]++;
-    }
-  }
-#endif
-}
-
 void NativeGenerator::generateCode(CodeHolder& codeholder) {
   // The body must be generated before the prologue to determine how much spill
   // space to allocate.
   auto prologue_cursor = as_->cursor();
-  collectAarch64HotImmediateCallTargetUses();
   generateAssemblyBody(codeholder);
 
   auto epilogue_cursor = as_->cursor();
@@ -3030,21 +3008,6 @@ void NativeGenerator::emitAarch64CallTargetLiteralPool() {
 #if defined(CINDER_AARCH64)
   if (env_.call_target_literals.empty()) {
     return;
-  }
-
-  // Emit helper stubs for targets that need them:
-  //   helper_stub:
-  //     ldr xscratch, [literal]
-  //     br  xscratch
-  // then emit all 64-bit literal targets once.
-  for (const auto& entry : env_.call_target_literals) {
-    const auto& target = entry.second;
-    if (!target.uses_helper_stub) {
-      continue;
-    }
-    as_->bind(target.helper_stub);
-    as_->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
-    as_->br(arch::reg_scratch_br);
   }
 
   ASM_CHECK(as_->align(AlignMode::kData, 8), GetFunction()->fullname);
