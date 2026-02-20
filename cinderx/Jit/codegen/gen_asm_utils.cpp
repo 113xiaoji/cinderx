@@ -36,26 +36,6 @@ void emitIndirectCallThroughLiteral(
   env.as->blr(arch::reg_scratch_br);
 }
 
-bool shouldUseHelperStubForHotCall(
-    const Environ& env,
-    uint64_t func,
-    const jit::lir::Instruction* instr,
-    const Environ::Aarch64CallTarget& target) {
-  if (instr == nullptr) {
-    return false;
-  }
-  if (target.uses_helper_stub) {
-    return true;
-  }
-  if (!instr->isCall()) {
-    return target.hot_call_uses > 1;
-  }
-  auto it = env.hot_call_target_uses.find(func);
-  if (it == env.hot_call_target_uses.end()) {
-    return target.hot_call_uses > 1;
-  }
-  return it->second > 1;
-}
 #endif
 } // namespace
 
@@ -81,19 +61,10 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
   if (instr != nullptr) {
     target.hot_call_uses++;
   }
-  if (!shouldUseHelperStubForHotCall(env, func, instr, target)) {
-    // Emit singleton/one-off absolute calls directly through the literal to
-    // avoid extra helper-stub branches and materialization.
-    emitIndirectCallThroughLiteral(env, target);
-  } else {
-    // Deduplicate hot absolute call targets through one shared helper stub per
-    // target. Callsites branch directly to that helper.
-    if (!target.uses_helper_stub) {
-      target.helper_stub = env.as->newLabel();
-      target.uses_helper_stub = true;
-    }
-    env.as->bl(target.helper_stub);
-  }
+  // Performance-first hot path on AArch64:
+  // keep callsites branch-minimal by issuing the indirect call through the
+  // literal directly, avoiding helper-stub round trips.
+  emitIndirectCallThroughLiteral(env, target);
 #else
   CINDER_UNSUPPORTED
 #endif

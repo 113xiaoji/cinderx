@@ -382,3 +382,82 @@ Interpretation:
 - Do not treat this mode as steady-state throughput evidence for optimization
   decisions.
 
+### AArch64 Hot Immediate Call Lowering (singleton direct literal)
+
+- Date: 2026-02-20
+- Branch/commit context: `bench-cur-7c361dce` (with singleton hot-call lowering change)
+- Validation:
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py` passed on ARM (`5/5`)
+  - New guard `test_aarch64_singleton_immediate_call_target_prefers_direct_literal` is green.
+
+From -> To (same shape, ARM runtime probe):
+
+- `n_calls=1` compiled size: `768 -> 752`
+- `n_calls=2` compiled size: `1128 -> 1128`
+- delta (`size2 - size1`): `360 -> 376` (`+16` bytes)
+
+Interpretation:
+
+- Singleton immediate call targets now use a shorter hot-path lowering on AArch64.
+- This is a real codegen behavior change (not only "JIT enabled"), confirmed by
+  compiled native size delta moving in the expected direction and crossing the
+  regression threshold (`>= 364`).
+
+`pyperformance richards` (debug-single-value, cold/noise-prone) snapshot:
+
+- nojit: `0.0831845130 s`
+- jitlist: `0.0911972030 s` (`+9.63%`, slower)
+- autojit50: `0.1407567160 s` (`+69.21%`, slower)
+
+Interpretation:
+
+- This cold single-value run is not evidence of steady-state throughput gain.
+- Keep using warm/interleaved methodology for optimization decisions; this
+  iteration's confirmed gain is in hot-path call-site lowering/code shape.
+
+Additional warm-loop snapshot (same host, 60 samples each, tail-30 shown):
+
+- nojit tail-30 mean: `0.2130860543 s`
+- jitlist tail-30 mean: `0.1841729017 s` (`-13.57%` vs nojit)
+- autojit50 tail-30 mean: `0.0810525232 s` (`-61.96%` vs nojit)
+
+Interpretation:
+
+- Long-run measurements still show high variance on this host, but the
+  autojit warm tail can be substantially faster than nojit when compilation
+  amortizes.
+- For commit-to-commit decisions, keep using repeated interleaved A/B runs and
+  report confidence intervals, not only single snapshots.
+
+### Interleaved A/B Refresh (2026-02-20)
+
+- Artifacts:
+  - `/root/work/arm-sync/richards_interleaved_triplet_20260220.json`
+  - `/root/work/arm-sync/richards_interleaved_triplet_20260220_long.json`
+
+Short-run interleaved (12 pairs, per-sample duration shorter):
+
+- nojit vs jitlist:
+  - mean delta: `+4.08%` (jitlist slower)
+  - 95% CI: `[-11.87%, +19.41%]` (wide, inconclusive)
+- nojit vs autojit50:
+  - mean delta: `+18.51%` (autojit50 slower)
+  - 95% CI: `[-0.14%, +35.71%]` (still crosses 0)
+
+Longer-sample interleaved (10 pairs, each sample runs longer):
+
+- nojit vs jitlist:
+  - mean delta: `+14.09%` (jitlist slower)
+  - 95% CI: `[+3.88%, +21.10%]`
+- nojit vs autojit50:
+  - mean delta: `+22.75%` (autojit50 slower)
+  - 95% CI: `[-3.45%, +57.74%]` (high variance with outliers)
+
+Important constraint for next optimization:
+
+- `test_aarch64_call_sites_are_compact` probe is exactly at guard limit:
+  - compiled size for canonical shape: `71600` bytes
+  - test limit: `<= 71600`
+- Therefore next hot-path optimization must prioritize zero (or negative) code
+  size change while reducing runtime branch/register overhead.
+
