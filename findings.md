@@ -495,3 +495,36 @@ Interpretation:
   directions across jit modes); larger interleaved runs are still needed for
   stable throughput claims.
 
+### Option-1 Cleanup: remove obsolete helper-stub plumbing
+
+- Date: 2026-02-20
+- Commit: `fa2032a0`
+- Scope:
+  - Removed dead helper-stub metadata and pre-scan plumbing that was no longer
+    used after switching to direct literal call emission.
+  - No behavioral strategy change (still direct literal on hot call path).
+
+Validation:
+
+- ARM build/install flow (`push_to_arm.ps1 -SkipPyperformance`) passed.
+- `test_arm_runtime.py`: `5/5` pass.
+
+From -> To (vs previous option-1 commit):
+
+- `size1`: `760 -> 760`
+- `size2`: `1144 -> 1144`
+- `delta`: `384 -> 384`
+- `size200`: `77160 -> 77160`
+
+`pyperformance richards` (debug-single-value snapshot):
+
+- nojit: `0.0518922340 s`
+- jitlist: `0.0520247840 s` (`+0.26%`)
+- autojit50: `0.0520410850 s` (`+0.29%`)
+
+Interpretation:
+
+- Cleanup is behavior-neutral for current benchmark/code-size probes.
+- This keeps option-1 performance-first strategy while reducing stale
+  complexity in AArch64 call lowering code paths.
+
