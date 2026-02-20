@@ -25,6 +25,10 @@
 #include "internal/pycore_list.h"
 #include "object.h"
 
+#ifndef FT_ATOMIC_LOAD_PTR_CONSUME
+#define FT_ATOMIC_LOAD_PTR_CONSUME(value) FT_ATOMIC_LOAD_PTR_ACQUIRE(value)
+#endif
+
 #ifdef META_PYTHON
 #include "pycore_import.h"        // _PyImport_LoadLazyImport()
 #include "pycore_lazyimport.h"    // _PyLazyImport_New(), _PyLazyImport_GetName()

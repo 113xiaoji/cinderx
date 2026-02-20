@@ -20,6 +20,10 @@
 #include "internal/pycore_optimizer.h"     // _PyExecutorObject
 #include "internal/pycore_pyatomic_ft_wrappers.h"
 
+#ifndef FT_ATOMIC_LOAD_PTR_CONSUME
+#define FT_ATOMIC_LOAD_PTR_CONSUME(value) FT_ATOMIC_LOAD_PTR_ACQUIRE(value)
+#endif
+
 #ifdef META_PYTHON
 #include "pycore_import.h"        // _PyImport_LoadLazyImport()
 #include "pycore_lazyimport.h"    // _PyLazyImport_New(), _PyLazyImport_GetName()
