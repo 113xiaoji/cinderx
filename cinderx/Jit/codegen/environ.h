@@ -82,6 +82,7 @@ struct Environ {
     asmjit::Label helper_stub{0};
     asmjit::Label literal{0};
     bool uses_helper_stub{false};
+    uint32_t hot_call_uses{0};
   };
   UnorderedMap<uint64_t, Aarch64CallTarget> call_target_literals;
 

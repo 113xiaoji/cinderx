@@ -39,16 +39,20 @@ void emitIndirectCallThroughLiteral(
 bool shouldUseHelperStubForHotCall(
     const Environ& env,
     uint64_t func,
-    const jit::lir::Instruction* instr) {
+    const jit::lir::Instruction* instr,
+    const Environ::Aarch64CallTarget& target) {
   if (instr == nullptr) {
     return false;
   }
-  if (!instr->isCall()) {
+  if (target.uses_helper_stub) {
     return true;
+  }
+  if (!instr->isCall()) {
+    return target.hot_call_uses > 1;
   }
   auto it = env.hot_call_target_uses.find(func);
   if (it == env.hot_call_target_uses.end()) {
-    return true;
+    return target.hot_call_uses > 1;
   }
   return it->second > 1;
 }
@@ -74,7 +78,10 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
   auto& target = getOrCreateCallTarget(env, func);
-  if (!shouldUseHelperStubForHotCall(env, func, instr)) {
+  if (instr != nullptr) {
+    target.hot_call_uses++;
+  }
+  if (!shouldUseHelperStubForHotCall(env, func, instr, target)) {
     // Emit singleton/one-off absolute calls directly through the literal to
     // avoid extra helper-stub branches and materialization.
     emitIndirectCallThroughLiteral(env, target);
