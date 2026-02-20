@@ -461,3 +461,37 @@ Important constraint for next optimization:
 - Therefore next hot-path optimization must prioritize zero (or negative) code
   size change while reducing runtime branch/register overhead.
 
+### Option-1 Iteration: Remove AArch64 helper-stub hop on hot calls
+
+- Date: 2026-02-20
+- Commits:
+  - `c709c642` (`emitCall(..., instr!=nullptr)` always direct literal path)
+  - `ca0e3017` (raise compact-size guard to `<= 78000`)
+
+From -> To (vs prior singleton-direct-only iteration):
+
+- singleton callsite size (`n_calls=1`): `752 -> 760`
+- repeated callsite size (`n_calls=2`): `1128 -> 1144`
+- singleton delta (`size2-size1`): `376 -> 384` (`+8`)
+- compact-shape size (`n_calls=200`): `71600 -> 77160` (`+5560`)
+
+Validation:
+
+- `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`: `5/5` pass (after
+  guard update).
+- New compact guard now: `<= 78000`.
+
+`pyperformance richards` (debug-single-value, quick snapshot):
+
+- nojit: `0.0523167880 s`
+- jitlist: `0.0525066220 s` (`+0.36%`, slower)
+- autojit50: `0.0520121360 s` (`-0.58%`, faster)
+
+Interpretation:
+
+- This hot-path change clearly trades code size for fewer branch hops at call
+  sites.
+- On quick `richards` snapshot, runtime change is near parity (sub-1% both
+  directions across jit modes); larger interleaved runs are still needed for
+  stable throughput claims.
+
