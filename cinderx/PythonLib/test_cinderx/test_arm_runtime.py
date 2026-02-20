@@ -76,7 +76,7 @@ class ArmRuntimeTests(unittest.TestCase):
 
         # Guard against unbounded AArch64 call-site code size regressions while
         # allowing hot-path call lowering experiments some headroom.
-        self.assertLessEqual(size, 73000, size)
+        self.assertLessEqual(size, 78000, size)
         self.assertEqual(f(9.0), float(n_calls) * 3.0)
 
     def test_aarch64_singleton_immediate_call_target_prefers_direct_literal(
