@@ -8,11 +8,11 @@ Deliver one additional ARM64 JIT optimization iteration with verified `from -> t
 
 - [x] Phase 1: Session recovery and constraints check
 - [x] Phase 2: Current state inspection (code + benchmarks + logs)
-- [ ] Phase 3: Design and implementation plan for next optimization
-- [ ] Phase 4: TDD (add/update failing regression/perf guard test)
-- [ ] Phase 5: Implement minimal code change
-- [ ] Phase 6: Verify locally + remote unified ARM pipeline
-- [ ] Phase 7: Record findings (`from -> to`) and summarize
+- [x] Phase 3: Design and implementation plan for next optimization
+- [x] Phase 4: TDD (add/update failing regression/perf guard test)
+- [x] Phase 5: Implement minimal code change
+- [x] Phase 6: Verify locally + remote unified ARM pipeline
+- [x] Phase 7: Record findings (`from -> to`) and summarize
 
 ## Key Questions
 
@@ -34,4 +34,7 @@ Deliver one additional ARM64 JIT optimization iteration with verified `from -> t
 
 ## Status
 
-Currently: Phase 3 - finalizing optimization target and writing plan artifacts.
+Currently: Follow-up validation complete for `392245ed -> 7c361dce` with
+repeated A/B metrics and theory analysis documented in `findings.md`.
+Next: select and implement a hot-path AArch64 call lowering optimization
+because current richards interleaved A/B is near parity.

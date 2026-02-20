@@ -79,6 +79,34 @@ class ArmRuntimeTests(unittest.TestCase):
         self.assertLessEqual(size, 71600, size)
         self.assertEqual(f(9.0), float(n_calls) * 3.0)
 
+    def test_aarch64_singleton_immediate_call_target_prefers_direct_literal(
+        self,
+    ) -> None:
+        # Regression guard for hot-path immediate call lowering:
+        # singleton immediate targets should use direct literal calls, while
+        # repeated targets can keep helper-stub dedup.
+        cinderx.jit.enable()
+        cinderx.jit.compile_after_n_calls(1000000)
+
+        def build_sqrt_accumulator(n_calls: int):
+            lines = ["def f(x):", "    s = 0.0"]
+            lines.extend(["    s += math.sqrt(x)"] * n_calls)
+            lines.append("    return s")
+            ns = {"math": math}
+            exec("\n".join(lines), ns, ns)
+            f = ns["f"]
+            self.assertTrue(cinderx.jit.force_compile(f))
+            return f, cinderx.jit.get_compiled_size(f)
+
+        f1, size1 = build_sqrt_accumulator(1)
+        f2, size2 = build_sqrt_accumulator(2)
+
+        self.assertEqual(f1(9.0), 3.0)
+        self.assertEqual(f2(9.0), 6.0)
+
+        delta = size2 - size1
+        self.assertGreaterEqual(delta, 364, (size1, size2, delta))
+
 
 if __name__ == "__main__":
     unittest.main()

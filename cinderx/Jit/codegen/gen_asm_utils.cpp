@@ -35,6 +35,23 @@ void emitIndirectCallThroughLiteral(
   env.as->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
   env.as->blr(arch::reg_scratch_br);
 }
+
+bool shouldUseHelperStubForHotCall(
+    const Environ& env,
+    uint64_t func,
+    const jit::lir::Instruction* instr) {
+  if (instr == nullptr) {
+    return false;
+  }
+  if (!instr->isCall()) {
+    return true;
+  }
+  auto it = env.hot_call_target_uses.find(func);
+  if (it == env.hot_call_target_uses.end()) {
+    return true;
+  }
+  return it->second > 1;
+}
 #endif
 } // namespace
 
@@ -57,10 +74,9 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
   auto& target = getOrCreateCallTarget(env, func);
-  if (instr == nullptr) {
-    // One-off runtime scaffolding calls are typically unique callsites. Emit
-    // them directly through the literal to avoid materializing an extra helper
-    // stub for each target.
+  if (!shouldUseHelperStubForHotCall(env, func, instr)) {
+    // Emit singleton/one-off absolute calls directly through the literal to
+    // avoid extra helper-stub branches and materialization.
     emitIndirectCallThroughLiteral(env, target);
   } else {
     // Deduplicate hot absolute call targets through one shared helper stub per

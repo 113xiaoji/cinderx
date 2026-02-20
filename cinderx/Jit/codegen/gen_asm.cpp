@@ -2793,10 +2793,32 @@ bool NativeGenerator::hasStaticEntry() const {
   return (code->co_flags & CI_CO_STATICALLY_COMPILED);
 }
 
+void NativeGenerator::collectAarch64HotImmediateCallTargetUses() {
+#if defined(CINDER_AARCH64)
+  env_.hot_call_target_uses.clear();
+
+  for (lir::BasicBlock* basicblock : lir_func_->basicblocks()) {
+    for (auto& instr_ptr : basicblock->instructions()) {
+      auto* instr = instr_ptr.get();
+      if (!instr->isCall() || instr->getNumInputs() == 0) {
+        continue;
+      }
+      const auto* callee = instr->getInput(0);
+      if (!callee->isImm()) {
+        continue;
+      }
+      auto target = static_cast<uint64_t>(callee->getConstant());
+      env_.hot_call_target_uses[target]++;
+    }
+  }
+#endif
+}
+
 void NativeGenerator::generateCode(CodeHolder& codeholder) {
   // The body must be generated before the prologue to determine how much spill
   // space to allocate.
   auto prologue_cursor = as_->cursor();
+  collectAarch64HotImmediateCallTargetUses();
   generateAssemblyBody(codeholder);
 
   auto epilogue_cursor = as_->cursor();

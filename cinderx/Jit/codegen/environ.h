@@ -10,6 +10,8 @@
 
 #include <asmjit/asmjit.h>
 
+#include <cstdint>
+
 namespace jit::codegen {
 
 struct Environ {
@@ -82,6 +84,10 @@ struct Environ {
     bool uses_helper_stub{false};
   };
   UnorderedMap<uint64_t, Aarch64CallTarget> call_target_literals;
+
+  // AArch64 hot immediate-call target use counts, collected from LIR Call
+  // instructions before machine-code emission.
+  UnorderedMap<uint64_t, uint32_t> hot_call_target_uses;
 
   struct IndirectInfo {
     explicit IndirectInfo(void** indirect_ptr) : indirect(indirect_ptr) {}

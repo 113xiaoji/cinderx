@@ -96,6 +96,7 @@ class NativeGenerator {
 
   bool hasStaticEntry() const;
   int calcInlineStackSize(const hir::Function* func);
+  void collectAarch64HotImmediateCallTargetUses();
   void generateCode(asmjit::CodeHolder& code);
   void generateFunctionEntry();
   void generateFunctionExit();
