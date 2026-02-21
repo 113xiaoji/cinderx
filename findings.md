@@ -878,3 +878,58 @@ Interpretation:
 - The cleaner signal for the postalloc optimization remains the ARM-only A/B:
   `autojit50` `0.0519341 -> 0.0516975 s` (`+0.4555%`, CI positive).
 
+### Step 3 Iteration: call-result fold across guard gaps
+
+- Date: 2026-02-21
+- Commits:
+  - `18d9c4d5` (initial self-move-gap fold + RED test)
+  - `c7330521` (root-cause fix: fold across non-clobber guard gaps)
+- Code path:
+  - `cinderx/Jit/lir/postalloc.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+
+TDD and root-cause evidence:
+
+- RED:
+  - new regression test
+    `test_aarch64_duplicate_call_result_arg_chain_is_compact` failed on ARM:
+    - compiled size `44656`, guard `<= 44500`.
+- Investigation:
+  - enabled `PYTHONJITDUMPLIR=1` + `PYTHONJITLOGFILE`.
+  - observed real hot pattern was not adjacent move pairs; call-result copies are
+    frequently separated by `Guard` / metadata updates before arg-lowering move.
+  - conclusion:
+    - adjacent-only folding misses the dominant chain shape for this workload.
+- GREEN:
+  - rewrote matching to scan backward across non-clobber instructions and stop
+    on `tmp`/`retreg` overwrite or any call boundary.
+  - remote entrypoint validation (`remote_update_build_test.sh`, `SKIP_PYPERF=1`)
+    passed with runtime tests `6/6`.
+
+From -> To (synthetic hot-shape size; lower is better):
+
+- Artifact:
+  - `artifacts/richards/guardgap_fold_shape_compare_20260221.json`
+- Representative point (`n_calls=64`):
+  - `44656 -> 44144` bytes (`-512`, `-1.1465%`)
+- Linear trend:
+  - each doubling keeps the same direction; savings scale with call-chain count.
+
+Richards snapshot after this iteration:
+
+- Artifact:
+  - `artifacts/richards/arm_after_guardgap_fold_s8.json`
+  - `artifacts/richards/arm_after_guardgap_fold_s8_summary.json`
+- Means (`n=8`):
+  - `nojit`: `0.07656 s`
+  - `jitlist`: `0.11976 s`
+  - `autojit50`: `0.12580 s`
+
+Interpretation:
+
+- This run is heavily noise/host-load contaminated (very wide tails vs prior
+  stable `~0.05s`-class snapshots), so it is not a reliable micro-throughput
+  signal.
+- The robust signal for this iteration is the confirmed code-shape reduction
+  on the targeted call-result chain pattern, now guarded by a regression test.
+

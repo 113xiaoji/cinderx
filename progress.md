@@ -188,3 +188,28 @@
   - ARM faster by `+51.7881%`
 - Noted run-to-run tail noise on both hosts; kept ARM-only postalloc A/B as
   the primary micro-optimization evidence.
+- Added TDD RED test for duplicated call-result arg chain:
+  - `test_aarch64_duplicate_call_result_arg_chain_is_compact`
+  - initial failure on ARM:
+    - `44656 > 44500`
+- Implemented first postalloc extension (`18d9c4d5`) and ran remote entrypoint;
+  build succeeded but RED test still failed (`44656` unchanged).
+- Ran systematic debugging on the miss:
+  - enabled `PYTHONJITDUMPLIR=1` with log file
+  - confirmed the dominant chain shape has `Guard` / metadata instructions
+    between `Move tmp, retreg` and `Move argreg, tmp` (not adjacent-move shape).
+- Implemented root-cause fix (`c7330521`):
+  - postalloc backward scan now folds across non-clobber instructions and stops
+    at call boundaries or `tmp`/`retreg` clobbers.
+- Re-ran remote entrypoint (`remote_update_build_test.sh`, `SKIP_PYPERF=1`):
+  - wheel rebuild/install passed
+  - ARM runtime tests passed (`Ran 6 tests ... OK`).
+- Collected targeted shape measurements after fix:
+  - before (`18d9c4d5`) vs after (`c7330521`) sizes:
+    - `n=64`: `44656 -> 44144` (`-512`, `-1.1465%`)
+  - artifact:
+    - `artifacts/richards/guardgap_fold_shape_compare_20260221.json`
+- Collected post-fix richards sample set (`n=8`) for bookkeeping:
+  - `artifacts/richards/arm_after_guardgap_fold_s8.json`
+  - `artifacts/richards/arm_after_guardgap_fold_s8_summary.json`
+  - observed high run-to-run noise; kept as non-decisionary evidence.
