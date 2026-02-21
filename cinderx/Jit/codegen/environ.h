@@ -72,9 +72,7 @@ struct Environ {
   // Location of incoming arguments
   std::vector<PhyLocation> arg_locations;
 
-  // AArch64 call target pool:
-  // - one 64-bit literal per absolute target
-  // Calls branch through these literals directly.
+  // AArch64 call target pool: one 64-bit literal per absolute target.
   struct Aarch64CallTarget {
     asmjit::Label literal{0};
   };

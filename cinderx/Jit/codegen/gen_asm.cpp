@@ -3011,7 +3011,9 @@ void NativeGenerator::emitAarch64CallTargetLiteralPool() {
   }
 
   ASM_CHECK(as_->align(AlignMode::kData, 8), GetFunction()->fullname);
-  for (const auto& [func, target] : env_.call_target_literals) {
+  for (const auto& entry : env_.call_target_literals) {
+    const auto& target = entry.second;
+    auto func = entry.first;
     as_->bind(target.literal);
     ASM_CHECK(as_->embedUInt64(func), GetFunction()->fullname);
   }
