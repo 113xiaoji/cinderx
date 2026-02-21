@@ -842,3 +842,39 @@ Interpretation:
 - Result is consistent with the previous pattern: micro-gain on autojit hot
   path, not a large mode-wide shift.
 
+### Unified ARM/X86 Check After Postalloc Fold
+
+- Date: 2026-02-21
+- Method:
+  - `scripts/bench/collect_arm_x86_richards.ps1 -Samples 8 -AutoJit 50`
+- Artifacts:
+  - `artifacts/richards/summary_arm_vs_x86_20260221_091757.json`
+  - `artifacts/richards/arm_samples_20260221_091757.json`
+  - `artifacts/richards/x86_samples_20260221_091757.json`
+  - `artifacts/richards/summary_nojit_20260221_091757.json`
+  - `artifacts/richards/summary_jitlist_20260221_091757.json`
+  - `artifacts/richards/summary_autojit50_20260221_091757.json`
+
+From -> To (vs previous cross-host snapshot
+`summary_arm_vs_x86_20260221_011223.json`):
+
+- `autojit50`:
+  - ARM mean: `0.0518427644 -> 0.0520960826 s` (`-0.4886%`)
+  - X86 mean: `0.0983565764 -> 0.1080564280 s`
+  - ARM-vs-X86 speedup: `+47.2910% -> +51.7881%`
+- `jitlist`:
+  - ARM mean: `0.0517584942 -> 0.0547409418 s`
+  - X86 mean: `0.0958292193 -> 0.0920441395 s`
+  - ARM-vs-X86 speedup: `+45.9888% -> +40.5275%`
+
+Interpretation:
+
+- Cross-host result still comfortably satisfies the target "ARM >= X86 +3%"
+  on all modes, including `autojit50`.
+- This run has noticeable tail-noise on both hosts (e.g. ARM `jitlist`
+  has `0.064s` samples; x86 `nojit` reaches `0.20s`, `autojit50` reaches
+  `0.162s`), so cross-host deltas should be treated as directional rather than
+  precise micro-regression/progression evidence.
+- The cleaner signal for the postalloc optimization remains the ARM-only A/B:
+  `autojit50` `0.0519341 -> 0.0516975 s` (`+0.4555%`, CI positive).
+

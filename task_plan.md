@@ -46,6 +46,7 @@ Currently: Step 3 codegen hot-path optimization in progress on branch
 call-chains has been implemented and validated.
 Added second low-risk postalloc micro-optimization candidate (retreg->argreg
 move-chain fold) with positive `autojit50` signal in A/B (`~+0.46%`).
-Next: integrate this postalloc change into the working branch, then run wider
-ARM/X86 unified comparison and decide whether to keep/iterate/revert based on
-confidence intervals.
+Postalloc change is integrated and a wider ARM/X86 unified comparison has been
+run (`summary_arm_vs_x86_20260221_091757.json`).
+Next: continue Step 3 with the next hot-path candidate while preserving current
+verified gains and keeping remote validation evidence.

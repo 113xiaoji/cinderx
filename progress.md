@@ -171,3 +171,20 @@
 - Measured delta:
   - `jitlist`: `+0.0350%` (CI crosses 0)
   - `autojit50`: `+0.4555%` (CI positive)
+- Ran unified ARM/X86 cross-host check after postalloc fold:
+  - command:
+    - `scripts/bench/collect_arm_x86_richards.ps1 -Samples 8 -AutoJit 50`
+  - outputs:
+    - `artifacts/richards/summary_arm_vs_x86_20260221_091757.json`
+    - `artifacts/richards/arm_samples_20260221_091757.json`
+    - `artifacts/richards/x86_samples_20260221_091757.json`
+    - per-mode summaries:
+      - `summary_nojit_20260221_091757.json`
+      - `summary_jitlist_20260221_091757.json`
+      - `summary_autojit50_20260221_091757.json`
+- Cross-host `autojit50` snapshot:
+  - ARM mean `0.0520960826 s`
+  - X86 mean `0.1080564280 s`
+  - ARM faster by `+51.7881%`
+- Noted run-to-run tail noise on both hosts; kept ARM-only postalloc A/B as
+  the primary micro-optimization evidence.
