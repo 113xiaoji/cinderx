@@ -727,6 +727,21 @@ Interpretation:
   (`~+0.5%`, CI slightly above 0).
 - `jitlist` gain is unstable across reruns; treat that part as inconclusive.
 
+Follow-up attempt (not kept):
+
+- Tried expanding the short-chain hint from only `arg0` to any `argN`
+  call-argument register mapping.
+- Correctness remained green (`test_arm_runtime.py` passed), but performance
+  evidence was not reliable:
+  - host had competing `cargo/rustc` load bursts (load average > 4 with
+    multiple 100% `rustc` workers),
+  - richards samples showed cross-mode outliers (`~0.08s`, `~0.12s`, `~0.17s`)
+    in runs that should stay around `~0.052s`.
+- Clean-ish rerun still showed unstable outliers and no robust improvement for
+  JIT modes.
+- Decision: revert this wider `argN` variant and keep the narrower, previously
+  validated short-chain heuristic.
+
 ### Unified ARM/X86 Check After Call-Chain Hint
 
 - Date: 2026-02-21
@@ -752,4 +767,30 @@ Interpretation:
 - The ARM absolute runtime is basically unchanged on this check.
 - Relative ARM-vs-X86 gain increase here is dominated by x86-side run
   variance, not by a clear ARM-side throughput jump.
+
+### Step 3 Recheck Under Idle ARM Host
+
+- Date: 2026-02-21
+- Motivation:
+  - some intermediate runs were contaminated by external host load
+    (`cargo/rustc` workers), so reran after load returned to idle.
+- Artifacts:
+  - `artifacts/richards/arm_after_regalloc_callchain_hint_mcs0_s8_clean2.json`
+  - `artifacts/richards/regalloc_callchain_hint_vs_baseline_mcs0_s8_clean2_summary.json`
+
+From -> To (stable arg0 short-chain hint vs baseline `mcs0_s8`):
+
+- `jitlist` mean:
+  - `0.0519003826 -> 0.0516978134 s` (`+0.3918%`)
+  - CI: `[-0.2618%, +0.9960%]` (still slightly inconclusive)
+- `autojit50` mean:
+  - `0.0519645600 -> 0.0516449700 s` (`+0.6188%`)
+  - CI: `[+0.1306%, +1.1866%]` (positive on this clean rerun)
+
+Interpretation:
+
+- Under low-load conditions, the current short-chain hint remains small but
+  positive on `autojit50` (around `+0.6%`).
+- This is still a micro-gain; continue with next hot-path optimization stage to
+  target additional uplift.
 

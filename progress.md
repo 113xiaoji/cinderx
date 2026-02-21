@@ -143,3 +143,16 @@
     - `artifacts/richards/summary_arm_vs_x86_20260221_011223.json`
   - noted that this run's ARM-vs-X86 delta increase is mainly from x86-side
     variance; ARM absolute autojit mean remains near-flat.
+- Tried a broader variant of the regalloc hint (map short-chain call output to
+  actual `argN` ABI register, not only `arg0`) and validated correctness:
+  - ARM rebuild + `test_arm_runtime.py` passed.
+- Performance measurement for that wider variant was contaminated by external
+  host load (`cargo/rustc` on ARM host), producing large cross-mode outliers.
+- Reverted that wider variant to avoid keeping a non-validated optimization.
+- Waited for ARM host load to return to idle, then reran stable short-chain
+  (`arg0`) hint measurement:
+  - `artifacts/richards/arm_after_regalloc_callchain_hint_mcs0_s8_clean2.json`
+  - summary:
+    - `artifacts/richards/regalloc_callchain_hint_vs_baseline_mcs0_s8_clean2_summary.json`
+  - key result on clean rerun:
+    - `autojit50`: `0.0519645600 -> 0.0516449700 s` (`+0.6188%`, CI positive)
