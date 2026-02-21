@@ -156,3 +156,18 @@
     - `artifacts/richards/regalloc_callchain_hint_vs_baseline_mcs0_s8_clean2_summary.json`
   - key result on clean rerun:
     - `autojit50`: `0.0519645600 -> 0.0516449700 s` (`+0.6188%`, CI positive)
+- Added a new Step 3 micro-optimization candidate in postalloc
+  (`retreg->tmp->argreg` fold) and evaluated via strict A/B deploy:
+  - created isolated worktree `d:/code/cinderx-arm-eval`
+  - baseline deploy (no postalloc fold) + remote smoke/tests passed
+  - postalloc deploy + remote smoke/tests passed
+- A/B benchmark artifacts (same runner/options on ARM):
+  - baseline:
+    - `artifacts/richards/arm_baseline_postalloc_ab_s8_clean_20260221_084809.json`
+  - after:
+    - `artifacts/richards/arm_postalloc_ab_s8_clean_20260221_085811.json`
+  - summary:
+    - `artifacts/richards/postalloc_hotpath_vs_baseline_s8_summary_20260221.json`
+- Measured delta:
+  - `jitlist`: `+0.0350%` (CI crosses 0)
+  - `autojit50`: `+0.4555%` (CI positive)

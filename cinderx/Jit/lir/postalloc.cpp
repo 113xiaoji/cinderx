@@ -983,12 +983,81 @@ RewriteResult optimizeMoveSequence(BasicBlock* basicblock) {
   auto changed = kUnchanged;
   RegisterToMemoryMoves registerMemoryMoves;
 
+  auto isArgumentRegister = [](PhyLocation reg, bool is_fp) {
+    if (is_fp) {
+      for (auto arg_reg : FP_ARGUMENT_REGS) {
+        if (arg_reg == reg) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    for (auto arg_reg : ARGUMENT_REGS) {
+      if (arg_reg == reg) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   for (auto instr_iter = basicblock->instructions().begin();
        instr_iter != basicblock->instructions().end();
        ++instr_iter) {
     auto& instr = *instr_iter;
     // TODO: do not optimize for yield for now. They need to be special cased.
     if (!instr->isAnyYield()) {
+      // Fold a very specific call-result copy chain:
+      //   Move tmp, <retreg>
+      //   Move <argreg>, tmp
+      // into:
+      //   Move <argreg>, <retreg>
+      //
+      // This targets hot call-lowering paths and avoids broader register-copy
+      // propagation side effects.
+      if (
+          instr->isMove() &&
+          instr_iter != basicblock->instructions().begin()) {
+        auto out = instr->output();
+        auto in = instr->getInput(0);
+
+        if (out->isReg() && in->isReg()) {
+          const bool is_fp = out->isFp();
+          PhyLocation out_reg = out->getPhyRegister();
+          if (isArgumentRegister(out_reg, is_fp)) {
+            auto prev_iter = std::prev(instr_iter);
+            auto prev = prev_iter->get();
+            if (prev->isMove()) {
+              auto prev_out = prev->output();
+              auto prev_in = prev->getInput(0);
+              if (prev_out->isReg() && prev_in->isReg() &&
+                  prev_out->getPhyRegister() == in->getPhyRegister()) {
+                auto ret_reg = is_fp ? arch::reg_double_return_loc
+                                     : arch::reg_general_return_loc;
+                if (prev_in->getPhyRegister() == ret_reg) {
+                  auto opnd = static_cast<Operand*>(in);
+                  auto data_type = opnd->dataType();
+                  auto old_opnd = fmt::to_string(*opnd);
+                  opnd->setPhyRegister(ret_reg);
+                  JIT_CHECK(
+                      bitSize(data_type) == bitSize(opnd->dataType()),
+                      "Incorrectly changed data type from {} to {} in "
+                      "{}",
+                      old_opnd,
+                      *opnd,
+                      *instr);
+                  changed = kChanged;
+
+                  if (opnd->isLastUse()) {
+                    basicblock->instructions().erase(prev_iter);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
       auto out_reg = instr->output()->isReg()
           ? instr->output()->getPhyRegister()
           : PhyLocation::REG_INVALID;

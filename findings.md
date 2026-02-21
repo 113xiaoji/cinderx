@@ -794,3 +794,51 @@ Interpretation:
 - This is still a micro-gain; continue with next hot-path optimization stage to
   target additional uplift.
 
+### Step 3 Attempt: postalloc call-result move-chain fold
+
+- Date: 2026-02-21
+- Code path:
+  - `cinderx/Jit/lir/postalloc.cpp`
+- Idea:
+  - fold a narrow hot path in postalloc:
+    - `Move tmp, <retreg>` + `Move <argreg>, tmp`
+    - into direct `<argreg> <- <retreg>` and drop the previous move on last-use
+  - keep the transform restricted to argument-register destinations to avoid
+    broad copy-propagation side effects.
+
+Validation:
+
+- Remote entrypoint deploy/build/smoke:
+  - `scripts/arm/remote_update_build_test.sh` (`SKIP_PYPERF=1`)
+  - passed on ARM host (`test_arm_runtime.py`: `5/5`).
+- Benchmark runner:
+  - `scripts/bench/run_richards_remote.sh`
+  - `SAMPLES=8`, `AUTOJIT=50`, `PYTHONJITMULTIPLECODESECTIONS=0`
+  - baseline and after both run under the same remote path.
+
+Artifacts:
+
+- Baseline samples:
+  - `artifacts/richards/arm_baseline_postalloc_ab_s8_clean_20260221_084809.json`
+- After samples:
+  - `artifacts/richards/arm_postalloc_ab_s8_clean_20260221_085811.json`
+- Comparison summary:
+  - `artifacts/richards/postalloc_hotpath_vs_baseline_s8_summary_20260221.json`
+
+From -> To (`baseline -> postalloc`, lower is better):
+
+- `jitlist` mean:
+  - `0.0518290104 -> 0.0518108696 s` (`+0.0350%`)
+  - CI: `[-0.4915%, +0.6462%]` (inconclusive)
+- `autojit50` mean:
+  - `0.0519340710 -> 0.0516975166 s` (`+0.4555%`)
+  - CI: `[+0.0476%, +0.9103%]` (positive)
+
+Interpretation:
+
+- This postalloc fold gives another small positive gain on `autojit50`
+  (about `+0.46%`) with CI above zero in this run.
+- `jitlist` remains effectively flat and statistically inconclusive.
+- Result is consistent with the previous pattern: micro-gain on autojit hot
+  path, not a large mode-wide shift.
+

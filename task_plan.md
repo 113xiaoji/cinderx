@@ -44,5 +44,8 @@ with ARM-vs-X86 richards evidence and testing at each stage.
 Currently: Step 3 codegen hot-path optimization in progress on branch
 `bench-cur-7c361dce`; first low-risk regalloc heuristic for AArch64 short
 call-chains has been implemented and validated.
-Next: run a wider ARM/X86 unified comparison with this change, then decide
-whether to keep/iterate/revert based on confidence intervals.
+Added second low-risk postalloc micro-optimization candidate (retreg->argreg
+move-chain fold) with positive `autojit50` signal in A/B (`~+0.46%`).
+Next: integrate this postalloc change into the working branch, then run wider
+ARM/X86 unified comparison and decide whether to keep/iterate/revert based on
+confidence intervals.
