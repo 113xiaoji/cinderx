@@ -107,7 +107,31 @@ class ArmRuntimeTests(unittest.TestCase):
         delta = size2 - size1
         self.assertGreaterEqual(delta, 364, (size1, size2, delta))
 
+    def test_aarch64_duplicate_call_result_arg_chain_is_compact(self) -> None:
+        # Regression guard for call-result move chains:
+        # repeated "y = call(...); call(y, y)" should not keep unnecessary
+        # return-register copy chains in AArch64 call lowering.
+        cinderx.jit.enable()
+        cinderx.jit.compile_after_n_calls(1000000)
+
+        n_calls = 64
+        lines = ["def f(x):", "    s = 0.0"]
+        for _ in range(n_calls):
+            lines.append("    y = math.sqrt(x)")
+            lines.append("    s += math.pow(y, y)")
+        lines.append("    return s")
+        ns = {"math": math}
+        exec("\n".join(lines), ns, ns)
+        f = ns["f"]
+
+        self.assertTrue(cinderx.jit.force_compile(f))
+        size = cinderx.jit.get_compiled_size(f)
+
+        # Keep a margin for codegen noise, but fail when move-chain bloat
+        # regresses on this stable shape.
+        self.assertLessEqual(size, 44500, size)
+        self.assertEqual(f(9.0), float(n_calls) * 27.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-

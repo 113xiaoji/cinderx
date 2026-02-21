@@ -1025,33 +1025,63 @@ RewriteResult optimizeMoveSequence(BasicBlock* basicblock) {
           const bool is_fp = out->isFp();
           PhyLocation out_reg = out->getPhyRegister();
           if (isArgumentRegister(out_reg, is_fp)) {
-            auto prev_iter = std::prev(instr_iter);
-            auto prev = prev_iter->get();
-            if (prev->isMove()) {
-              auto prev_out = prev->output();
-              auto prev_in = prev->getInput(0);
-              if (prev_out->isReg() && prev_in->isReg() &&
-                  prev_out->getPhyRegister() == in->getPhyRegister()) {
-                auto ret_reg = is_fp ? arch::reg_double_return_loc
-                                     : arch::reg_general_return_loc;
-                if (prev_in->getPhyRegister() == ret_reg) {
-                  auto opnd = static_cast<Operand*>(in);
-                  auto data_type = opnd->dataType();
-                  auto old_opnd = fmt::to_string(*opnd);
-                  opnd->setPhyRegister(ret_reg);
-                  JIT_CHECK(
-                      bitSize(data_type) == bitSize(opnd->dataType()),
-                      "Incorrectly changed data type from {} to {} in "
-                      "{}",
-                      old_opnd,
-                      *opnd,
-                      *instr);
-                  changed = kChanged;
+            auto ret_reg = is_fp ? arch::reg_double_return_loc
+                                 : arch::reg_general_return_loc;
 
-                  if (opnd->isLastUse()) {
-                    basicblock->instructions().erase(prev_iter);
-                  }
-                }
+            // Find the defining Move tmp <- retreg for the current input.
+            // Allow a short run of self-moves in between, because those are
+            // no-ops that will be removed later and should not block folding:
+            //   Move tmp, retreg
+            //   Move rX, rX
+            //   Move argreg, tmp
+            bool found_chain = false;
+            auto chain_iter = instr_iter;
+            auto scan_iter = instr_iter;
+            const auto block_begin = basicblock->instructions().begin();
+            while (scan_iter != block_begin) {
+              --scan_iter;
+              auto scan = scan_iter->get();
+              if (!scan->isMove()) {
+                break;
+              }
+
+              auto scan_out = scan->output();
+              auto scan_in = scan->getInput(0);
+              if (!scan_out->isReg() || !scan_in->isReg()) {
+                break;
+              }
+
+              bool is_self_move =
+                  scan_out->getPhyRegister() == scan_in->getPhyRegister();
+              if (
+                  scan_out->getPhyRegister() == in->getPhyRegister() &&
+                  scan_in->getPhyRegister() == ret_reg) {
+                found_chain = true;
+                chain_iter = scan_iter;
+                break;
+              }
+
+              if (!is_self_move) {
+                break;
+              }
+            }
+
+            if (found_chain) {
+              auto opnd = static_cast<Operand*>(in);
+              auto data_type = opnd->dataType();
+              auto old_opnd = fmt::to_string(*opnd);
+              opnd->setPhyRegister(ret_reg);
+              JIT_CHECK(
+                  bitSize(data_type) == bitSize(opnd->dataType()),
+                  "Incorrectly changed data type from {} to {} in "
+                  "{}",
+                  old_opnd,
+                  *opnd,
+                  *instr);
+              changed = kChanged;
+
+              if (opnd->isLastUse()) {
+                basicblock->instructions().erase(chain_iter);
               }
             }
           }
