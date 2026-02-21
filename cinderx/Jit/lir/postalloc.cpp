@@ -1029,11 +1029,9 @@ RewriteResult optimizeMoveSequence(BasicBlock* basicblock) {
                                  : arch::reg_general_return_loc;
 
             // Find the defining Move tmp <- retreg for the current input.
-            // Allow a short run of self-moves in between, because those are
-            // no-ops that will be removed later and should not block folding:
-            //   Move tmp, retreg
-            //   Move rX, rX
-            //   Move argreg, tmp
+            // We can fold across nearby non-clobber instructions (for example
+            // Guard/metadata updates), but must stop once either tmp or retreg
+            // is overwritten, or once we cross a call.
             bool found_chain = false;
             auto chain_iter = instr_iter;
             auto scan_iter = instr_iter;
@@ -1041,28 +1039,28 @@ RewriteResult optimizeMoveSequence(BasicBlock* basicblock) {
             while (scan_iter != block_begin) {
               --scan_iter;
               auto scan = scan_iter->get();
-              if (!scan->isMove()) {
+
+              if (scan->isCall() || scan->isVectorCall() || scan->isVarArgCall()) {
                 break;
               }
 
               auto scan_out = scan->output();
-              auto scan_in = scan->getInput(0);
-              if (!scan_out->isReg() || !scan_in->isReg()) {
-                break;
-              }
-
-              bool is_self_move =
-                  scan_out->getPhyRegister() == scan_in->getPhyRegister();
-              if (
-                  scan_out->getPhyRegister() == in->getPhyRegister() &&
-                  scan_in->getPhyRegister() == ret_reg) {
-                found_chain = true;
-                chain_iter = scan_iter;
-                break;
-              }
-
-              if (!is_self_move) {
-                break;
+              if (scan_out->isReg()) {
+                PhyLocation out_phy_reg = scan_out->getPhyRegister();
+                if (out_phy_reg == in->getPhyRegister()) {
+                  if (scan->isMove()) {
+                    auto scan_in = scan->getInput(0);
+                    if (scan_in->isReg() &&
+                        scan_in->getPhyRegister() == ret_reg) {
+                      found_chain = true;
+                      chain_iter = scan_iter;
+                    }
+                  }
+                  break;
+                }
+                if (out_phy_reg == ret_reg) {
+                  break;
+                }
               }
             }
 
