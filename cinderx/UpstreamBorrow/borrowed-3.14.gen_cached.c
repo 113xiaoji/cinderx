@@ -23,6 +23,10 @@
 #include "internal/pycore_optimizer.h"     // _PyExecutorObject
 #include "internal/pycore_pyatomic_ft_wrappers.h"
 
+#ifndef FT_ATOMIC_LOAD_PTR_CONSUME
+#define FT_ATOMIC_LOAD_PTR_CONSUME(value) FT_ATOMIC_LOAD_PTR_ACQUIRE(value)
+#endif
+
 #ifdef META_PYTHON
 #include "pycore_import.h"        // _PyImport_LoadLazyImport()
 #include "pycore_lazyimport.h"    // _PyLazyImport_New(), _PyLazyImport_GetName()
@@ -2306,11 +2310,6 @@ void Cix_dict_insert_split_value(
     PyObject *key,
     PyObject *value,
     Py_ssize_t ix) {
-#if defined(__clang__)
-  [[clang::always_inline]]
-#elif defined(__GNUC__)
-  [[gnu::always_inline]]
-#endif
   insert_split_value(interp, mp, key, value, ix);
 }
 

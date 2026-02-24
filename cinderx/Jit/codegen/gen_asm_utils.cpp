@@ -9,13 +9,34 @@ namespace jit::codegen {
 
 namespace {
 void recordDebugEntry(Environ& env, const jit::lir::Instruction* instr) {
-  if (instr->origin() == nullptr) {
+  if (instr == nullptr || instr->origin() == nullptr) {
     return;
   }
   asmjit::Label addr = env.as->newLabel();
   env.as->bind(addr);
   env.pending_debug_locs.emplace_back(addr, instr->origin());
 }
+
+#if defined(CINDER_AARCH64)
+Environ::Aarch64CallTarget& getOrCreateCallTarget(Environ& env, uint64_t func) {
+  auto it = env.call_target_literals.find(func);
+  if (it != env.call_target_literals.end()) {
+    return it->second;
+  }
+  Environ::Aarch64CallTarget target;
+  target.literal = env.as->newLabel();
+  auto inserted = env.call_target_literals.emplace(func, target);
+  return inserted.first->second;
+}
+
+void emitIndirectCallThroughLiteral(
+    Environ& env,
+    const Environ::Aarch64CallTarget& target) {
+  env.as->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
+  env.as->blr(arch::reg_scratch_br);
+}
+
+#endif
 } // namespace
 
 void emitCall(
@@ -36,12 +57,8 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
 #if defined(CINDER_X86_64)
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
-  // Note that we could do better than this if asmjit knew how to handle arm64
-  // relocations for relative calls. That work is done in
-  // https://github.com/asmjit/asmjit/issues/499, but as of writing is not yet
-  // available.
-  env.as->mov(arch::reg_scratch_br, func);
-  env.as->blr(arch::reg_scratch_br);
+  auto& target = getOrCreateCallTarget(env, func);
+  emitIndirectCallThroughLiteral(env, target);
 #else
   CINDER_UNSUPPORTED
 #endif
