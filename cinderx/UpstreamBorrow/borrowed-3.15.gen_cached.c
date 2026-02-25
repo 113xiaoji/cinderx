@@ -201,6 +201,8 @@ _PyInterpreterState_GetConfig(PyInterpreterState *interp)
 #define LOAD_INDEX(keys, size, idx) ((const int##size##_t*)(keys->dk_indices))[idx]
 #define STORE_INDEX(keys, size, idx, value) ((int##size##_t*)(keys->dk_indices))[idx] = (int##size##_t)value
 #endif
+#ifndef NDEBUG
+#endif
 #define _PyAnyDict_CAST(op) \
     (assert(PyAnyDict_Check(op)), _Py_CAST(PyDictObject*, op))
 #define GET_USED(ep) FT_ATOMIC_LOAD_SSIZE_RELAXED((ep)->ma_used)
@@ -374,6 +376,21 @@ PyDictKeysObject* ci_dict_empty_keys;
 // We also had to explicitly remove PyDict_New() because we need the original
 // version to initialize ci_dict_empty_keys.
 //
+static inline int
+can_modify_dict(PyDictObject *mp)
+{
+    if (PyFrozenDict_Check(mp)) {
+        // No locking required to modify a newly created frozendict
+        // since it's only accessible from the current thread.
+        return PyUnstable_Object_IsUniquelyReferenced(_PyObject_CAST(mp));
+    }
+    else {
+        // Locking is only required if the dictionary is not
+        // uniquely referenced.
+        ASSERT_DICT_LOCKED(mp);
+        return 1;
+    }
+}
 static size_t
 values_size_from_count(size_t count)
 {
@@ -745,7 +762,7 @@ done:
     return dict;
 }
 static void
-dict_unhashable_type(PyObject *key)
+dict_unhashable_type(PyObject *op, PyObject *key)
 {
     PyObject *exc = PyErr_GetRaisedException();
     assert(exc != NULL);
@@ -754,9 +771,14 @@ dict_unhashable_type(PyObject *key)
         return;
     }
 
-    PyErr_Format(PyExc_TypeError,
-                 "cannot use '%T' as a dict key (%S)",
-                 key, exc);
+    const char *errmsg;
+    if (PyObject_IsInstance(op, (PyObject*)&PyFrozenDict_Type)) {
+        errmsg = "cannot use '%T' as a frozendict key (%S)";
+    }
+    else {
+        errmsg = "cannot use '%T' as a dict key (%S)";
+    }
+    PyErr_Format(PyExc_TypeError, errmsg, key, exc);
     Py_DECREF(exc);
 }
 static inline Py_ALWAYS_INLINE Py_ssize_t
@@ -884,9 +906,9 @@ static void
 delitem_common(PyDictObject *mp, Py_hash_t hash, Py_ssize_t ix,
                PyObject *old_value)
 {
-    PyObject *old_key;
+    assert(can_modify_dict(mp));
 
-    ASSERT_DICT_LOCKED(mp);
+    PyObject *old_key;
 
     Py_ssize_t hashpos = lookdict_index(mp->ma_keys, hash, ix);
     assert(hashpos >= 0);
@@ -981,8 +1003,8 @@ static int
 insert_to_emptydict(PyDictObject *mp,
                     PyObject *key, Py_hash_t hash, PyObject *value)
 {
+    assert(can_modify_dict(mp));
     assert(mp->ma_keys == Py_EMPTY_KEYS);
-    ASSERT_DICT_LOCKED(mp);
 
     int unicode = PyUnicode_CheckExact(key);
     PyDictKeysObject *newkeys = new_keys_object(PyDict_LOG_MINSIZE, unicode);
@@ -1091,10 +1113,10 @@ static int
 dictresize(PyDictObject *mp,
            uint8_t log2_newsize, int unicode)
 {
+    assert(can_modify_dict(mp));
+
     PyDictKeysObject *oldkeys, *newkeys;
     PyDictValues *oldvalues;
-
-    ASSERT_DICT_LOCKED(mp);
 
     if (log2_newsize >= SIZEOF_SIZE_T*8) {
         PyErr_NoMemory();
@@ -1326,8 +1348,9 @@ insert_split_key(PyDictKeysObject *keys, PyObject *key, Py_hash_t hash)
 static void
 insert_split_value(PyDictObject *mp, PyObject *key, PyObject *value, Py_ssize_t ix)
 {
+    assert(can_modify_dict(mp));
     assert(PyUnicode_CheckExact(key));
-    ASSERT_DICT_LOCKED(mp);
+
     PyObject *old_value = mp->ma_values->values[ix];
     if (old_value == NULL) {
         _PyDict_NotifyEvent(PyDict_EVENT_ADDED, mp, key, value);
@@ -1391,10 +1414,10 @@ static int
 insertdict(PyDictObject *mp,
            PyObject *key, Py_hash_t hash, PyObject *value)
 {
+    assert(can_modify_dict(mp));
+
     PyObject *old_value = NULL;
     Py_ssize_t ix;
-
-    ASSERT_DICT_LOCKED(mp);
 
     if (_PyDict_HasSplitTable(mp) && PyUnicode_CheckExact(key)) {
         ix = insert_split_key(mp->ma_keys, key, hash);
@@ -1456,14 +1479,16 @@ Fail:
     return -1;
 }
 static int
-anydict_setitem_take2(PyDictObject *mp, PyObject *key, PyObject *value)
+setitem_take2_lock_held(PyDictObject *mp, PyObject *key, PyObject *value)
 {
+    assert(PyAnyDict_Check(mp));
+    assert(can_modify_dict(mp));
     assert(key);
     assert(value);
-    assert(PyAnyDict_Check(mp));
+
     Py_hash_t hash = _PyObject_HashFast(key);
     if (hash == -1) {
-        dict_unhashable_type(key);
+        dict_unhashable_type((PyObject*)mp, key);
         Py_DECREF(key);
         Py_DECREF(value);
         return -1;
@@ -1474,12 +1499,6 @@ anydict_setitem_take2(PyDictObject *mp, PyObject *key, PyObject *value)
     }
     /* insertdict() handles any resizing that might be necessary */
     return insertdict(mp, key, hash, value);
-}
-static int
-setitem_take2_lock_held(PyDictObject *mp, PyObject *key, PyObject *value)
-{
-    ASSERT_DICT_LOCKED(mp);
-    return anydict_setitem_take2(mp, key, value);
 }
 static int
 setitem_lock_held(PyDictObject *mp, PyObject *key, PyObject *value)
@@ -1493,19 +1512,17 @@ int
 _PyDict_DelItem_KnownHash_LockHeld(PyObject *op, PyObject *key, Py_hash_t hash)
 {
     Py_ssize_t ix;
-    PyDictObject *mp;
     PyObject *old_value;
 
     if (!PyDict_Check(op)) {
         PyErr_BadInternalCall();
         return -1;
     }
-
-    ASSERT_DICT_LOCKED(op);
+    PyDictObject *mp = (PyDictObject *)op;
+    assert(can_modify_dict(mp));
 
     assert(key);
     assert(hash != -1);
-    mp = (PyDictObject *)op;
     ix = _Py_dict_lookup(mp, key, hash, &old_value);
     if (ix == DKIX_ERROR)
         return -1;
@@ -1529,7 +1546,7 @@ _PyDict_SetItem_LockHeld(PyDictObject *dict, PyObject *name, PyObject *value)
     if (value == NULL) {
         Py_hash_t hash = _PyObject_HashFast(name);
         if (hash == -1) {
-            dict_unhashable_type(name);
+            dict_unhashable_type((PyObject*)dict, name);
             return -1;
         }
         return _PyDict_DelItem_KnownHash_LockHeld((PyObject *)dict, name, hash);
@@ -1612,7 +1629,7 @@ _PyDict_LookupIndexAndValue(PyDictObject *mp, PyObject *key, PyObject **value)
 
     Py_hash_t hash = _PyObject_HashFast(key);
     if (hash == -1) {
-        dict_unhashable_type(key);
+        dict_unhashable_type((PyObject*)mp, key);
         return -1;
     }
 
@@ -3498,7 +3515,7 @@ do { \
     static PyObject * \
     (NAME)(PyObject *lhs, PyObject *rhs) \
     { \
-        double lhs_val = PyFloat_AsDouble(lhs); \
+        double lhs_val = PyFloat_AS_DOUBLE(lhs); \
         Py_ssize_t rhs_val = _PyLong_CompactValue((PyLongObject *)rhs); \
         return PyFloat_FromDouble(lhs_val OP rhs_val); \
     }
@@ -3507,7 +3524,7 @@ do { \
     static PyObject * \
     (NAME)(PyObject *lhs, PyObject *rhs) \
     { \
-        double rhs_val = PyFloat_AsDouble(rhs); \
+        double rhs_val = PyFloat_AS_DOUBLE(rhs); \
         Py_ssize_t lhs_val = _PyLong_CompactValue((PyLongObject *)lhs); \
         return PyFloat_FromDouble(lhs_val OP rhs_val); \
     }
@@ -4949,7 +4966,7 @@ float_compactlong_guard(PyObject *lhs, PyObject *rhs)
 {
     return (
         PyFloat_CheckExact(lhs) &&
-        !isnan(PyFloat_AsDouble(lhs)) &&
+        !isnan(PyFloat_AS_DOUBLE(lhs)) &&
         PyLong_CheckExact(rhs) &&
         _PyLong_IsCompact((PyLongObject *)rhs)
     );
@@ -4958,7 +4975,7 @@ static inline int
 nonzero_float_compactlong_guard(PyObject *lhs, PyObject *rhs)
 {
     return (
-        float_compactlong_guard(lhs, rhs) && !PyLong_IsZero(rhs)
+        float_compactlong_guard(lhs, rhs) && !_PyLong_IsZero((PyLongObject*)rhs)
     );
 }
 
@@ -4983,14 +5000,14 @@ compactlong_float_guard(PyObject *lhs, PyObject *rhs)
         PyLong_CheckExact(lhs) &&
         _PyLong_IsCompact((PyLongObject *)lhs) &&
         PyFloat_CheckExact(rhs) &&
-        !isnan(PyFloat_AsDouble(rhs))
+        !isnan(PyFloat_AS_DOUBLE(rhs))
     );
 }
 static inline int
 nonzero_compactlong_float_guard(PyObject *lhs, PyObject *rhs)
 {
     return (
-        compactlong_float_guard(lhs, rhs) && PyFloat_AsDouble(rhs) != 0.0
+        compactlong_float_guard(lhs, rhs) && PyFloat_AS_DOUBLE(rhs) != 0.0
     );
 }
 
@@ -5130,7 +5147,7 @@ _Py_Specialize_BinaryOp(_PyStackRef lhs_st, _PyStackRef rhs_st, _Py_CODEUNIT *in
                     }
                 }
             }
-            if (PyDict_CheckExact(lhs)) {
+            if (PyAnyDict_CheckExact(lhs)) {
                 specialize(instr, BINARY_OP_SUBSCR_DICT);
                 return;
             }
@@ -5410,7 +5427,7 @@ _Py_Specialize_ContainsOp(_PyStackRef value_st, _Py_CODEUNIT *instr)
 
     assert(ENABLE_SPECIALIZATION);
     assert(_PyOpcode_Caches[CONTAINS_OP] == INLINE_CACHE_ENTRIES_COMPARE_OP);
-    if (PyDict_CheckExact(value)) {
+    if (PyAnyDict_CheckExact(value)) {
         specialize(instr, CONTAINS_OP_DICT);
         return;
     }

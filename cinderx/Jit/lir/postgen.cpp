@@ -28,23 +28,29 @@ RewriteResult rewriteBinaryOpConstantPosition(instr_iter_t instr_iter) {
   auto block = instr->basicblock();
 
   if (instr->isDiv() || instr->isDivUn()) {
-    auto divisor = instr->getInput(2);
-    if (!divisor->isImm()) {
-      return kUnchanged;
+    bool changed = false;
+    // div/sdiv/udiv don't support immediate operands on AArch64.
+    // Input layout is [Imm{0}, dividend, divisor] where input 0 is the x86
+    // high-half placeholder. Convert both dividend (input 1) and divisor
+    // (input 2) to registers if they are immediates.
+    for (int idx = 1; idx <= 2; idx++) {
+      auto operand = instr->getInput(idx);
+      if (!operand->isImm()) {
+        continue;
+      }
+      auto constant = operand->getConstant();
+      auto constant_size = operand->dataType();
+
+      auto move = block->allocateInstrBefore(
+          instr_iter,
+          Instruction::kMove,
+          OutVReg{constant_size},
+          Imm{constant, constant_size});
+
+      instr->setInput(idx, std::make_unique<LinkedOperand>(move));
+      changed = true;
     }
-
-    // div doesn't support an immediate as the divisor.
-    auto constant = divisor->getConstant();
-    auto constant_size = divisor->dataType();
-
-    auto move = block->allocateInstrBefore(
-        instr_iter,
-        Instruction::kMove,
-        OutVReg{constant_size},
-        Imm{constant, constant_size});
-
-    instr->setInput(2, std::make_unique<LinkedOperand>(move));
-    return kChanged;
+    return changed ? kChanged : kUnchanged;
   }
 
   if (!instr->isAdd() && !instr->isSub() && !instr->isXor() &&
@@ -150,7 +156,7 @@ RewriteResult rewriteBinaryOpLargeConstant(instr_iter_t instr_iter) {
   auto move = block->allocateInstrBefore(
       instr_iter,
       Instruction::kMove,
-      OutVReg{},
+      OutVReg{in1->dataType()},
       Imm{constant, in1->dataType()});
 
   // If the first operand is smaller in size than the second operand, replace
@@ -379,6 +385,46 @@ RewriteResult rewriteLoadSecondCallResult(instr_iter_t instr_iter) {
 }
 
 #if defined(CINDER_AARCH64)
+// On AArch64, signed operations on sub-32-bit values need sign-extension.
+// LIR DataType doesn't track signedness (both cint8 and cuint8 become k8bit),
+// so values in registers are zero-extended by default (via ldrb/ldrh/cset).
+// For signed comparisons, e.g. cint8 -1 is 0xFF in a register; without
+// sign-extension "cmp w0(=255), w1(=1)" with kLT gives false (wrong), but
+// with sign-extension "cmp w0(=-1), w1(=1)" with kLT gives true (correct).
+// Similarly, signed division (sdiv) needs sign-extended inputs for correctness.
+RewriteResult rewriteSignedSubWordOps(instr_iter_t instr_iter) {
+  auto instr = instr_iter->get();
+  switch (instr->opcode()) {
+    case Instruction::kGreaterThanSigned:
+    case Instruction::kGreaterThanEqualSigned:
+    case Instruction::kLessThanSigned:
+    case Instruction::kLessThanEqualSigned:
+    case Instruction::kDiv:
+      break;
+    default:
+      return kUnchanged;
+  }
+
+  auto block = instr->basicblock();
+  bool changed = false;
+  for (size_t i = 0; i < instr->getNumInputs(); i++) {
+    auto input = instr->getInput(i);
+    if (!input->isReg()) {
+      continue;
+    }
+    auto dt = input->dataType();
+    if (dt != OperandBase::k8bit && dt != OperandBase::k16bit) {
+      continue;
+    }
+    auto sext = block->allocateInstrBefore(
+        instr_iter, Instruction::kSext, OutVReg{DataType::k32bit});
+    sext->appendInput(instr->releaseInput(i));
+    instr->setInput(i, std::make_unique<LinkedOperand>(sext));
+    changed = true;
+  }
+  return changed ? kChanged : kUnchanged;
+}
+
 // On AArch64, we never are going to produce an output that is less than 32-bits
 // for our comparisons so promote all of these to 32-bits so we don't need to
 // mask them.
@@ -395,6 +441,9 @@ RewriteResult rewritePromoteOutputSize(instr_iter_t instr_iter) {
     case Instruction::kGreaterThanEqualUnsigned:
     case Instruction::kLessThanUnsigned:
     case Instruction::kLessThanEqualUnsigned:
+    case Instruction::kAnd:
+    case Instruction::kXor:
+    case Instruction::kOr:
       if (instr->output()->sizeInBits() < 32) {
         instr->output()->setDataType(DataType::k32bit);
         return kChanged;
@@ -420,6 +469,7 @@ void PostGenerationRewrite::registerRewrites() {
 #if defined(CINDER_X86_64)
   registerOneRewriteFunction(rewriteMoveToMemoryLargeConstant, 1);
 #elif defined(CINDER_AARCH64)
+  registerOneRewriteFunction(rewriteSignedSubWordOps, 1);
   registerOneRewriteFunction(rewritePromoteOutputSize, 1);
 #endif
 

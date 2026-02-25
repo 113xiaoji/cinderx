@@ -1426,7 +1426,11 @@ int NativeGenerator::allocateHeaderAndSpillSpace(const FrameInfo& frame_info) {
 #elif defined(CINDER_AARCH64)
   int modulo = frame_info.header_and_spill_size % kStackAlign;
   int padding = modulo == 0 ? 0 : kStackAlign - modulo;
-  as_->sub(a64::sp, a64::sp, frame_info.header_and_spill_size + padding);
+  arch::sub_immediate(
+      as_,
+      a64::sp,
+      a64::sp,
+      static_cast<uint64_t>(frame_info.header_and_spill_size + padding));
 
   // There is a difference here from x86-64, because the aarch64 stack cannot be
   // misaligned. Here we are returning the amount of space that we have added to
@@ -1465,7 +1469,11 @@ void NativeGenerator::saveCallerRegisters(
 
   if (frame_info.arg_buffer_size > 0) {
     JIT_CHECK(frame_info.arg_buffer_size % kStackAlign == 0, "unaligned");
-    as_->sub(a64::sp, a64::sp, frame_info.arg_buffer_size);
+    arch::sub_immediate(
+        as_,
+        a64::sp,
+        a64::sp,
+        static_cast<uint64_t>(frame_info.arg_buffer_size));
   }
 #else
   CINDER_UNSUPPORTED
@@ -1479,7 +1487,11 @@ void NativeGenerator::setupFrameAndSaveCallerRegisters(
   as_->sub(x86::rsp, frame_info.header_and_spill_size);
 #elif defined(CINDER_AARCH64)
   JIT_CHECK(frame_info.header_and_spill_size % kStackAlign == 0, "unaligned");
-  as_->sub(a64::sp, a64::sp, frame_info.header_and_spill_size);
+  arch::sub_immediate(
+      as_,
+      a64::sp,
+      a64::sp,
+      static_cast<uint64_t>(frame_info.header_and_spill_size));
 #else
   CINDER_UNSUPPORTED
 #endif
@@ -1694,7 +1706,7 @@ void NativeGenerator::generatePrologue(
               as_, kArgsReg, i * sizeof(void*), arch::reg_scratch_0));
     } else {
       as_->ldr(
-          a64::d(arg.loc),
+          a64::d(arg.loc - VECD_REG_BASE),
           arch::ptr_resolve(
               as_, kArgsReg, i * sizeof(void*), arch::reg_scratch_0));
     }
@@ -1734,13 +1746,7 @@ emitCompare(arch::Builder* as, arch::Gp lhs, void* rhs, arch::Gp scratch) {
   }
 #elif defined(CINDER_AARCH64)
   uint64_t rhsi = reinterpret_cast<uint64_t>(rhs);
-
-  if (!a64::Utils::isAddSubImm(rhsi)) {
-    as->mov(scratch, rhsi);
-    as->cmp(lhs, scratch);
-  } else {
-    as->cmp(lhs, rhsi);
-  }
+  arch::cmp_immediate(as, lhs, rhsi);
 #else
   CINDER_UNSUPPORTED
 #endif
@@ -2154,11 +2160,8 @@ void NativeGenerator::generateEpilogue(BaseNode* epilogue_cursor) {
 
     JIT_CHECK(env_.last_callee_saved_reg_off % kStackAlign == 0, "unaligned");
 
-    if (env_.last_callee_saved_reg_off >= 0) {
-      as_->sub(a64::sp, arch::fp, env_.last_callee_saved_reg_off);
-    } else {
-      as_->add(a64::sp, arch::fp, -env_.last_callee_saved_reg_off);
-    }
+    arch::add_signed_immediate(
+        as_, a64::sp, arch::fp, -env_.last_callee_saved_reg_off);
 
     restoreCalleeSavedRegsAarch64(as_, saved_regs);
   }
@@ -2175,10 +2178,8 @@ void NativeGenerator::generateEpilogue(BaseNode* epilogue_cursor) {
       Label trampoline = as_->newLabel();
       as_->bind(trampoline);
       as_->mov(a64::x10, reinterpret_cast<uint64_t>(x.first));
-      emitCall(
-          env_,
-          reinterpret_cast<uint64_t>(failed_deferred_compile_trampoline_),
-          nullptr);
+      as_->mov(arch::reg_scratch_br, failed_deferred_compile_trampoline_);
+      as_->br(arch::reg_scratch_br);
       x.second.trampoline = trampoline;
     }
     env_.addAnnotation("JitHelpers", jit_helpers);
@@ -3281,7 +3282,7 @@ void NativeGenerator::generateArgcountCheckPrologue(Label correct_arg_count) {
   if (will_check_argcount) {
     as_->bind(arg_check);
     asmjit::BaseNode* arg_check_cursor = as_->cursor();
-    as_->cmp(a64::w2, GetFunction()->numArgs());
+    arch::cmp_immediate(as_, a64::w2, GetFunction()->numArgs());
 
     // We don't have the correct number of arguments. Call a helper to either
     // fix them up with defaults or raise an approprate exception.
