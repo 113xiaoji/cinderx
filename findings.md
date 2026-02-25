@@ -1115,3 +1115,44 @@ Interpretation:
   - `python cinderx/PythonLib/test_cinderx/test_oss_quick.py`
 - Result:
   - `Ran 2 tests ... OK`
+
+## 2026-02-25 bench-cur-7c361dce integration verification
+
+- Target branch: `bench-cur-7c361dce`
+- Upstream sync: merged `upstream/main` (facebookincubator/cinderx) into branch.
+- Feature merge: cherry-picked commit `170439be` (ENABLE_ADAPTIVE_STATIC_PYTHON + LTO robustness).
+- Resulting branch head: `91363f8f`.
+
+### Local validation
+
+- `PYTHONPATH=cinderx/PythonLib python -m unittest tests/test_setup_adaptive_static_python.py tests/test_cinderx_adaptive_static_api.py`
+- Result: `Ran 10 tests ... OK`.
+
+### ARM validation host
+
+- Host: `124.70.162.35`
+- Source under test: snapshot of local `bench-cur-7c361dce` synced to `/root/work/cinderx-main`.
+
+1. No LTO
+- Build command: `CINDERX_ENABLE_PGO=0 CINDERX_ENABLE_LTO=0 python setup.py install`
+- Log: `/tmp/bench_no_lto.log`
+- Result:
+  - install reached `running install_scripts`
+  - `ADAPTIVE_STATIC True`
+  - no `LTO:` marker in log.
+
+2. With LTO
+- Build command: `CINDERX_ENABLE_PGO=0 CINDERX_ENABLE_LTO=1 python setup.py install`
+- Log: `/tmp/bench_with_lto.log`
+- Result:
+  - background build exit code `0` (`/tmp/bench_with_lto.exit`)
+  - `ADAPTIVE_STATIC True`
+  - LTO enabled evidence:
+    - `/tmp/bench_with_lto.log`: `LTO: Enabled (full LTO)`
+    - `scratch/temp.linux-aarch64-cpython-314/CMakeCache.txt`: `ENABLE_LTO:BOOL=ON`
+    - `scratch/temp.linux-aarch64-cpython-314/CMakeFiles/*/flags.make`: contains `-flto`
+    - `scratch/temp.linux-aarch64-cpython-314/CMakeFiles/_cinderx.dir/link.txt`: contains `-flto -fuse-ld=lld`
+
+3. Smoke test
+- `python cinderx/PythonLib/test_cinderx/test_oss_quick.py`
+- Result: `Ran 2 tests ... OK`
