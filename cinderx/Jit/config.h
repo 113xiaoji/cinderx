@@ -42,8 +42,7 @@ struct HIROptimizations {
   bool dead_code_elim{true};
   bool dynamic_comparison_elim{true};
   bool guard_type_removal{true};
-  // TASK(T156009029): Inliner should be on by default.
-  bool inliner{false};
+  bool inliner{true};
   bool insert_update_prev_instr{true};
   bool phi_elim{true};
   bool simplify{true};
@@ -159,7 +158,7 @@ struct Config {
   bool emit_type_annotation_guards{false};
   // Whether or not to JIT specialized opcodes or to fall back to their generic
   // counterparts.
-  bool specialized_opcodes{false};
+  bool specialized_opcodes{true};
   // Support instrumentation (monitoring/tracing/profiling) by falling back to
   // the interpreter
   bool support_instrumentation{false};
