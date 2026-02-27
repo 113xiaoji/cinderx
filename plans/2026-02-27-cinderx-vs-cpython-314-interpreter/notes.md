@@ -1,0 +1,96 @@
+﻿# Notes: CinderX 3.14 vs CPython 3.14 Interpreter
+
+## File Inventory
+- CinderX:
+  - `cinderx/Interpreter/3.14/interpreter.c`
+  - `cinderx/Interpreter/3.14/borrowed-ceval.c.template`
+  - `cinderx/Interpreter/3.14/Includes/ceval_macros.h`
+  - `cinderx/Interpreter/3.14/Includes/generated_cases.c.h`
+  - `cinderx/Interpreter/3.14/cinder-bytecodes.c`
+  - `cinderx/Interpreter/3.14/cinder_opcode_ids.h`
+  - `cinderx/PythonLib/opcodes/3.14/opcode.py`
+- Upstream CPython baseline:
+  - repo: `https://github.com/python/cpython.git`
+  - branch: `3.14`
+  - commit: `a58ea8c21239a23b03446aecd030995bbe40b7a7` (2026-02-27)
+  - files:
+    - `artifacts/cpython-3.14-upstream/Python/ceval.c`
+    - `artifacts/cpython-3.14-upstream/Python/ceval_macros.h`
+    - `artifacts/cpython-3.14-upstream/Python/bytecodes.c`
+    - `artifacts/cpython-3.14-upstream/Python/generated_cases.c.h`
+
+## Key Diffs
+- PEP523 check semantics changed:
+  - CinderX uses `IS_PEP523_HOOKED(tstate)`:
+    - `cinderx/Interpreter/3.14/Includes/ceval_macros.h:170`
+    - definition checks `eval_frame != NULL && eval_frame != Ci_EvalFrame`.
+  - Upstream mostly checks `tstate->interp->eval_frame == NULL`:
+    - `artifacts/cpython-3.14-upstream/Python/ceval_macros.h:178`
+    - `artifacts/cpython-3.14-upstream/Python/bytecodes.c:3777`, `4654`.
+- Adaptive interpreter gating inserted into hot paths:
+  - `adaptive_enabled` state and threshold:
+    - `cinderx/Interpreter/3.14/interpreter.c:37-42`
+  - Tail-call signatures carry `adaptive_enabled`:
+    - `cinderx/Interpreter/3.14/Includes/ceval_macros.h:76-80`
+    - upstream has no such parameter: `artifacts/cpython-3.14-upstream/Python/ceval_macros.h:74-78`.
+  - `ADVANCE_ADAPTIVE_COUNTER` is conditional in CinderX:
+    - `cinderx/Interpreter/3.14/Includes/ceval_macros.h:283-286`
+    - upstream always advances: `artifacts/cpython-3.14-upstream/Python/ceval_macros.h:288-291`.
+  - CinderX adds `CI_UPDATE_CALL_COUNT` and `CI_SET_ADAPTIVE_INTERPRETER_ENABLED_STATE`:
+    - definitions: `cinderx/Interpreter/3.14/Includes/ceval_macros.h:434-461`
+    - call sites in generated cases:
+      - `CI_UPDATE_CALL_COUNT`: 12 sites (e.g. `675`, `1816`, `14108`)
+      - `CI_SET_ADAPTIVE_INTERPRETER_ENABLED_STATE`: 5 sites (`9124`, `9184`, `12203`, `12234`, `13941`)
+    - upstream has no equivalent macro calls.
+- Extended opcode dispatch added:
+  - Extra target `EXTENDED_OPCODE`:
+    - `cinderx/Interpreter/3.14/Includes/generated_cases.c.h:5691`
+  - Acts as multi-opcode switch for static/primitive ops in one dispatch entry:
+    - chain starts at `cinderx/Interpreter/3.14/cinder-bytecodes.c:507`
+    - ext-op branches include `STORE_LOCAL`, `LOAD_FIELD`, `INVOKE_FUNCTION`, `TP_ALLOC`, `RETURN_PRIMITIVE`, etc (`519..1246`).
+  - Target set comparison:
+    - CinderX generated targets: 229
+    - CPython generated targets: 227
+    - only-in-CinderX targets: `EXTENDED_OPCODE`, `EAGER_IMPORT_NAME`.
+- Core opcode overrides for Cinder-specific behavior:
+  - call/inline frame ops:
+    - `_DO_CALL`: `cinder-bytecodes.c:177`
+    - `_CHECK_PEP_523`: `245`
+    - `_PUSH_FRAME`: `249`
+    - `_DO_CALL_KW`: `269`
+    - `_DO_CALL_FUNCTION_EX`: `340`
+    - `_SEND`: `419`
+  - collection building:
+    - `MAP_ADD`: `468` (uses `Ci_DictOrChecked_SetItem` on non-FT path)
+    - `LIST_APPEND`: `493` (uses `Ci_ListOrCheckedList_Append` on non-FT path)
+  - return/yield frame exit points:
+    - `RETURN_VALUE`: `1296`
+    - `RETURN_GENERATOR`: `1317`
+    - `YIELD_VALUE`: `1344`
+- Awaitable/coroutine path diverges in borrowed ceval:
+  - CinderX switches `_PyCoro_GetAwaitableIter` -> `JitCoro_GetAwaitableIter`:
+    - `borrowed-ceval.c.template:107-108`, `123-124`
+  - CinderX adds `JitCoro_CheckExact`/`JitGen_yf` logic:
+    - `borrowed-ceval.c.template:130-131`
+  - Upstream uses `_PyCoro_GetAwaitableIter` and `_PyGen_yf`:
+    - `artifacts/cpython-3.14-upstream/Python/ceval.c:3537`, `3592`, `3599`.
+
+## Perf Hypotheses
+- H1: `CI_UPDATE_CALL_COUNT` in `start_frame` and `_PUSH_FRAME` paths adds measurable overhead for call-heavy workloads.
+- H2: conditional `if (adaptive_enabled)` around adaptive-counter updates introduces extra branch pressure in specialization-heavy loops.
+- H3: `EXTENDED_OPCODE` mega-switch inflates I-cache footprint and branch-mispredict cost vs narrower direct targets.
+- H4: extra PEP523 compare (`eval_frame != Ci_EvalFrame`) in hot call/send checks adds small but frequent overhead.
+- H5: checked-collection wrappers in `MAP_ADD`/`LIST_APPEND` may slow pure-Python container-construction loops when checked types are not used.
+
+## Validation Ideas
+- Build-time toggles for A/B:
+  - disable/short-circuit `CI_UPDATE_CALL_COUNT` + `CI_SET_ADAPTIVE...` and compare.
+  - force `adaptive_enabled=true` to remove gating branch from macro expansion.
+- Microbench suites:
+  - call-heavy recursion/dispatch (`richards`, nested Python call loops).
+  - container-heavy loops (`list.append`, dict comp/map-add patterns).
+  - static-python-heavy bytecode paths that stress `EXTENDED_OPCODE`.
+- Perf counters (Linux perf):
+  - `branch-misses`, `branches`, `icache.misses`, `cycles`, `instructions`.
+- Validate no behavior drift:
+  - run `test_cinderx` static/strict suites and `test_oss_quick.py`.
