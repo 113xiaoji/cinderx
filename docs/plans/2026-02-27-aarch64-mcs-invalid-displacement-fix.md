@@ -1,104 +1,102 @@
-# AArch64 MCS InvalidDisplacement Formal Fix Plan
+# AArch64 MCS `InvalidDisplacement` 正式修复计划
 
-Date: 2026-02-27
-Branch: `bench-cur-7c361dce`
-Owner: Codex + User
+日期：2026-02-27  
+分支：`bench-cur-7c361dce`  
+负责人：Codex + User
 
-## Goal
+## 目标
 
-Fix AArch64 `InvalidDisplacement` failures under:
+修复以下场景下的 AArch64 `InvalidDisplacement` 失败：
 
 - `PYTHONJITMULTIPLECODESECTIONS=1`
-- large section distances (e.g. hot/cold = 2 MiB)
+- hot/cold 段距离较大（例如 2 MiB）
 
-and keep verification fully on the remote ARM entrypoint.
+并确保验证全程通过远端 ARM 入口完成。
 
-## 1) Brainstorming
+## 1）头脑风暴
 
-Observed symptom:
+已观测现象：
 
-- `code->resolveUnresolvedLinks()` fails with AsmJit `InvalidDisplacement`.
+- `code->resolveUnresolvedLinks()` 在 AsmJit 报 `InvalidDisplacement`。
 
-Likely root causes:
+可能根因：
 
-- Short-range AArch64 branch forms (`b.cond`, `cbz/cbnz`) crossing far hot/cold.
-- `adr` users in stage-2 deopt trampoline pointing at hot labels from cold.
+- AArch64 短距分支（`b.cond`、`cbz/cbnz`）跨越远距离 hot/cold。
+- deopt 二阶段 trampoline 中 `adr` 从 cold 指向 hot 标签。
 
-Fix candidates:
+候选修复：
 
-1. Replace short conditional branches with local-veneer pattern:
-   - short inverse-branch to local `skip`
-   - long-range unconditional `b target`
-2. Keep stage-1 deopt trampolines cold, move stage-2 deopt trampoline to hot.
-3. Add a large-distance ARM runtime smoke test to prevent regression.
+1. 将短条件分支替换为本地 veneer 模式：
+   - 先短逆条件跳到本地 `skip`
+   - 再长距无条件 `b target`
+2. 保持 deopt 一阶段在 cold，二阶段移动到 hot。
+3. 增加大距离 ARM 运行时烟测，防止回归。
 
-## 2) Writing Plans
+## 2）实施计划
 
-Implementation steps:
+1. 对 guard 与通用分支规则应用 branch-veneer 转换。
+2. deopt 退出按阶段拆分（一阶段 cold，二阶段 hot）。
+3. 增加 MCS 大距离 force-compile 烟测。
+4. 用 `SKIP_PYPERF=1` 先跑远端入口快速 RED/GREEN。
+5. GREEN 后再跑一次完整远端入口（含 pyperformance gate）。
+6. 将关键结果写入 `findings.md`。
 
-1. Apply branch-veneer translators for guard and generic branch op rules.
-2. Split deopt exit generation by stage (cold stage-1, hot stage-2).
-3. Add runtime smoke for MCS large-distance force-compile.
-4. Run remote entrypoint with `SKIP_PYPERF=1` for quick RED/GREEN.
-5. If GREEN, run one full remote entrypoint pass (with pyperformance gate).
-6. Record key outcomes in `findings.md`.
+## 3）TDD
 
-## 3) Test-Driven Development
-
-RED target:
+RED 目标：
 
 - `test_multiple_code_sections_large_distance_force_compile_smoke`
-  fails before fix under 2 MiB/2 MiB section sizing.
+  在 2 MiB/2 MiB 段配置下修复前失败。
 
-GREEN target:
+GREEN 目标：
 
-- same test passes on ARM after fix.
+- 修复后同测试在 ARM 通过。
 
-Guardrails:
+护栏：
 
-- existing `test_multiple_code_sections_force_compile_smoke` keeps passing.
-- existing `test_aarch64_call_sites_are_compact` keeps passing.
+- `test_multiple_code_sections_force_compile_smoke` 继续通过。
+- `test_aarch64_call_sites_are_compact` 继续通过。
 
-## 4) Verification Before Completion
+## 4）完成前验证
 
-Unified remote entry only:
+统一远端入口：
 
 - `scripts/arm/remote_update_build_test.sh`
 
-Required pass criteria:
+必须通过：
 
-1. Wheel build/install succeeds.
-2. `cinderx/PythonLib/test_cinderx/test_arm_runtime.py` passes.
-3. JIT effectiveness smoke passes.
-4. (final pass) pyperformance gate jobs complete.
+1. wheel 构建/安装成功。
+2. `cinderx/PythonLib/test_cinderx/test_arm_runtime.py` 通过。
+3. JIT 生效烟测通过。
+4. （最终）pyperformance gate 任务完成。
 
-Deliverables:
+交付物：
 
-- code changes in JIT/codegen + tests
-- findings updates in `findings.md`
+- JIT/codegen 与测试改动
+- `findings.md` 结果记录
 
-## Execution Result
+## 执行结果
 
-Status summary:
+状态汇总：
 
-1. Brainstorming: completed.
-2. Writing plans: completed.
-3. TDD: completed (`RED -> GREEN` on new 2MiB/2MiB smoke).
-4. Verification-before-completion: partially completed due pre-existing smoke crash outside this fix scope.
+1. brainstorming：完成。
+2. writing-plans：完成。
+3. TDD：完成（新 2MiB/2MiB 烟测 `RED -> GREEN`）。
+4. verification-before-completion：部分完成（存在本修复范围外的既有 smoke 崩溃）。
 
-What changed during execution:
+执行中结论变化：
 
-- Root cause was refined from generic branch distance to cold->hot `ldr literal` reachability (`imm19`) for helper-call targets.
-- Implemented cold-section call lowering fallback (`mov + blr`) while retaining hot-section deduplicated literal-pool calls.
-- Kept deopt stage split (stage-1 cold, stage-2 hot).
-- Reverted broad branch-veneer rewrite because it caused size-regression guard failures.
+- 根因从“泛化的分支距离问题”收敛为 cold->hot 的 `ldr literal`（`imm19`）可达性问题（helper call target）。
+- 在保留 hot 段去重字面量池调用的同时，为 cold 段调用引入 `mov + blr` 回退路径。
+- 保留 deopt 分阶段布局（一阶段 cold，二阶段 hot）。
+- 回滚了大范围 branch-veneer 改写（会触发代码尺寸回归护栏）。
 
-Remote-entry verification outcome:
+远端验证结果：
 
-- `scripts/arm/remote_update_build_test.sh`:
-  - wheel build/install: pass
-  - `test_arm_runtime.py`: pass (`Ran 9 tests ... OK`)
-  - includes new large-distance test and size guard tests passing
-- Remaining failure:
-  - line-210 smoke segfault in pyperf venv (`PYTHONJITAUTO=0` + `re.compile`)
-  - reproduced on baseline commit `436bee31`, so treated as pre-existing blocker, not introduced by this fix.
+- `scripts/arm/remote_update_build_test.sh`：
+  - wheel 构建/安装：通过
+  - `test_arm_runtime.py`：通过（`Ran 9 tests ... OK`）
+  - 新增大距离测试与尺寸护栏测试均通过
+- 剩余失败：
+  - pyperf venv 中 line-210 smoke 在 `PYTHONJITAUTO=0 + re.compile` 下 segfault
+  - 在基线提交 `436bee31` 同样可复现，因此判定为既有问题，非本修复引入。

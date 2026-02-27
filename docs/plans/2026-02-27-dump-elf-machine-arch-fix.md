@@ -1,40 +1,40 @@
-# 2026-02-27 CinderX `dump_elf` Machine Field Fix (ARM)
+# 2026-02-27 CinderX `dump_elf` 机器架构字段修复（ARM）
 
-## Context
-- Symptom: on ARM host, `cinderjit.dump_elf()` output is disassembled as `elf64-x86-64` when using `objdump -d`.
-- Root cause hypothesis: ELF header `e_machine` is hardcoded to x86-64 in CinderX ELF writer header defaults.
-- Constraint: all test/verification must run through remote entrypoint `<杩滅娴嬭瘯鍏ュ彛>` (`ssh root@124.70.162.35`).
+## 背景
+- 现象：在 ARM 主机上，`cinderjit.dump_elf()` 的输出用 `objdump -d` 反汇编时被识别为 `elf64-x86-64`。
+- 根因假设：CinderX ELF 写入器头部默认 `e_machine` 被硬编码为 x86-64。
+- 约束：所有测试/验证必须通过远端入口 `<远端测试入口>`（`ssh root@124.70.162.35`）。
 
-## Brainstorming
-1. Minimal fix:
-   - Set ELF header `machine` by compile target (`__aarch64__`, `__x86_64__`) instead of hardcoded value.
-   - Keep existing layout/sections unchanged.
-2. Safety:
-   - Preserve x86 behavior on x86 builds.
-   - Explicitly fail compile on unknown arch so it does not silently emit wrong metadata.
-3. Regression prevention:
-   - Add a Python test that reads ELF header `e_machine` from `dump_elf` output and compares to runtime architecture mapping.
+## 头脑风暴
+1. 最小修复：
+   - 根据编译目标（`__aarch64__`、`__x86_64__`）设置 ELF 头 `machine`，而不是硬编码。
+   - 其他布局/section 保持不变。
+2. 安全性：
+   - 在 x86 构建中保持原有行为。
+   - 对未知架构直接编译失败，避免静默写出错误元数据。
+3. 防回归：
+   - 在 `dump_elf` 回归测试中读取 ELF 头 `e_machine`，并与运行时架构映射比对。
 
-## TDD Plan
-1. RED:
-   - Add regression test under `test_cinderjit.py` for `dump_elf` header machine.
-   - Run targeted test on remote ARM; expect failure before code fix.
-2. GREEN:
-   - Implement architecture-aware `e_machine` selection in ELF header code.
-   - Re-run targeted test on remote ARM; expect pass.
-3. Extra verification:
-   - Confirm `readelf -h` shows `Machine: AArch64` for dumped ELF.
-   - Confirm `objdump -d` on ELF no longer mislabels as x86.
+## TDD 计划
+1. RED：
+   - 在 `test_cinderjit.py` 新增 `dump_elf` 机器字段回归测试。
+   - 在远端 ARM 上跑定向测试，修复前预期失败。
+2. GREEN：
+   - 在 ELF 头代码中实现架构感知的 `e_machine` 选择。
+   - 远端 ARM 重跑定向测试，预期通过。
+3. 额外验证：
+   - `readelf -h` 显示 `Machine: AArch64`。
+   - `objdump -d` 不再误识别为 x86。
 
-## Remote Verification Commands
-1. Targeted RED/GREEN test:
+## 远端验证命令
+1. 定向 RED/GREEN 测试：
    - `ssh root@124.70.162.35 'cd /root/work/cinderx-main && /root/venv-cinderx314/bin/python -m unittest test_cinderx.test_cinderjit.CinderJitModuleTests.test_dump_elf_machine_matches_runtime_arch'`
-2. Manual ELF header check:
+2. 手工检查 ELF 头：
    - `ssh root@124.70.162.35 'readelf -h /tmp/<dumped>.elf | grep Machine'`
-3. Manual disassembly check:
+3. 手工检查反汇编：
    - `ssh root@124.70.162.35 'objdump -d /tmp/<dumped>.elf | head'`
 
-## Files Expected to Change
+## 预计改动文件
 - `cinderx/Jit/elf/header.h`
 - `cinderx/PythonLib/test_cinderx/test_cinderjit.py`
 - `findings.md`
