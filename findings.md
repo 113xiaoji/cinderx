@@ -1573,3 +1573,174 @@ Interpretation:
 - Impact:
   - `readelf` and plain `objdump -d` now identify/disassemble dumped JIT ELF correctly as AArch64.
 
+## 2026-02-27 Next Optimization Directions (CinderX JIT vs CPython Native JIT)
+
+### API-based comparison (same ARM host, same function shape)
+- Function:
+  - `def f(n): s=0; for i in range(n): s += (i*3) ^ (i>>2); return s`
+- CinderX (`/root/venv-cinderx314/bin/python`):
+  - `is_jit_compiled=True`
+  - `get_compiled_size(f)=1232`
+  - `get_compiled_stack_size(f)=240`
+  - `get_compiled_spill_stack_size(f)=160`
+  - `get_compiled_functions_count=1`
+- CPython native JIT (`PYTHON_JIT=1 /tmp/venv-cpython314jit/bin/python`):
+  - `sys._jit.is_available=True`, `is_enabled=True`
+  - executor at bytecode `offset=92 (JUMP_BACKWARD)`
+  - `get_jit_code()` size `8192` bytes
+
+### Mapping to Python bytecode
+- Shared key bytecode offsets:
+  - loop body starts around `34` (`LOAD_FAST...`)
+  - arithmetic ops at `38 (*)`, `54 (>>)`, `66 (^)`, `78 (+=)`
+  - loop backedge at `92 (JUMP_BACKWARD)`
+  - return at `102 (RETURN_VALUE)`
+- Observation:
+  - CPython native JIT executor is attached to the loop backedge (`offset 92`), i.e. hotspot/superblock style.
+  - CinderX emits function-level code object and includes explicit cold/deopt ladder blocks in the same blob.
+
+### Measured shape sensitivity on CinderX (forced-compile micro)
+- `for_range`:
+  - size `1232`, spill stack `160`, time `~0.079s`
+- `while_xor`:
+  - size `1104`, spill stack `152`, time `~0.067s`
+- `while_add`:
+  - size `824`, spill stack `136`, time `~0.026s`
+- Interpretation:
+  - `for range` path costs extra vs equivalent `while` loop on this workload, pointing to iterator/global-call overhead opportunities.
+  - spill stack is high relative to function complexity, indicating register pressure/call-lowering overhead.
+
+### Immediate optimization targets
+1. Improve range-loop specialization on ARM hot loops
+- Why:
+  - `for_range` slower and larger than `while_xor` for same arithmetic payload.
+- Direction:
+  - stronger `range` + `FOR_ITER` lowering to reduce helper round-trips in steady-state loop.
+
+2. Reduce helper-call overhead (`ldr literal + blr`) in hot path
+- Why:
+  - CinderX disassembly shows frequent indirect helper call sites.
+- Direction:
+  - prefer direct near-call stubs/veneer strategy where possible; minimize repeated literal-pool loads in loop body.
+
+3. Reduce register pressure / spills in arithmetic loops
+- Why:
+  - `spill_stack_size=160` for a small loop body.
+- Direction:
+  - tighten postalloc/regalloc heuristics around call-result chains and loop-carried vars on AArch64.
+
+4. Move cold/deopt paths farther from hot text (I-cache friendliness)
+- Why:
+  - same blob includes significant cold ladder; code locality pressure in hot path.
+- Direction:
+  - make multiple hot/cold sections robust on ARM for general workloads.
+  - current trial of `PYTHONJITMULTIPLECODESECTIONS=1` with explicit sizes fails compile with `InvalidDisplacement`; this is both a correctness and optimization blocker.
+
+5. Keep static typing path for true numeric hot spots
+- Why:
+  - dynamic `PyLong` arithmetic still dominates helper/refcount traffic.
+- Direction:
+  - move the hottest numeric kernels to Static Python/native-callable paths where feasible.
+
+## 2026-02-27 ARM Full Validation: MCS `InvalidDisplacement` Fix + End-to-End Retest
+
+### Scope and entrypoint
+- Remote-only execution entrypoint:
+  - `ssh root@124.70.162.35`
+- Runtime under test:
+  - CinderX: `/root/venv-cinderx314/bin/python` (Python `3.14.3`)
+  - CPython native JIT: `/tmp/venv-cpython314jit/bin/python` (Python `3.14.3`)
+
+### Code changes under test
+- `cinderx/Jit/code_allocator.cpp`
+  - In `MultipleSectionCodeAllocator::createSlabs()`:
+    - changed section alignment from fixed `2MiB` (`kAllocSize`) to system allocation/page granularity.
+    - applied same alignment logic to both hot and cold section sizes.
+    - guarded `setHugePages()` to only run when hot section size is at least `2MiB`.
+- `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+  - added `test_multiple_code_sections_force_compile_smoke`.
+
+### TDD evidence (RED -> GREEN)
+1. RED (before allocator fix)
+- Test command:
+  - `cd /root/work/cinderx-main && /root/venv-cinderx314/bin/python -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_arm_runtime.py -k test_multiple_code_sections_force_compile_smoke`
+- Result:
+  - `FAIL` at `jit.force_compile(f)` with:
+    - `RuntimeError: PYJIT_RESULT_UNKNOWN_ERROR`
+  - prior low-level log for same case showed:
+    - `Failed to add generated code ... InvalidDisplacement`
+
+2. GREEN (after allocator fix + rebuild)
+- Rebuild/install command:
+  - `cd /root/work/cinderx-main && ENABLE_ADAPTIVE_STATIC_PYTHON=1 ENABLE_LIGHTWEIGHT_FRAMES=1 /root/venv-cinderx314/bin/pip install -e . -v`
+- Build config confirmation in output:
+  - `-DENABLE_ADAPTIVE_STATIC_PYTHON=1`
+  - `-DENABLE_LIGHTWEIGHT_FRAMES=1`
+- Same targeted test result:
+  - `OK (skipped=1)`
+
+### Full runtime test verification
+- Full ARM runtime test file:
+  - `cd /root/work/cinderx-main && /root/venv-cinderx314/bin/python -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_arm_runtime.py`
+- Result:
+  - `Ran 53 tests in 3.258s`
+  - `OK (skipped=2)`
+
+### Post-fix API and performance comparison (same workload)
+- Workload shape:
+  - `for i in range(n): s += (i * 3) ^ (i >> 2)` with fixed benchmark harness.
+- Artifacts:
+  - `artifacts/asm/api_compare_20260227/cinderx_interp_post_fix.json`
+  - `artifacts/asm/api_compare_20260227/cinderx_jit_mcs0_post_fix.json`
+  - `artifacts/asm/api_compare_20260227/cinderx_jit_mcs1_post_fix.json`
+  - `artifacts/asm/api_compare_20260227/cpython_interp_post_fix.json`
+  - `artifacts/asm/api_compare_20260227/cpython_jit_post_fix.json`
+  - `artifacts/asm/api_compare_20260227/cinderjit_api_detail_post_fix.json`
+
+1. CinderX
+- Interpreter median:
+  - `0.289058s`
+- JIT (`PYTHONJITMULTIPLECODESECTIONS=0`) median:
+  - `0.254043s` (`~1.138x` vs CinderX interpreter)
+  - compiled size:
+    - `1248` bytes
+- JIT (`PYTHONJITMULTIPLECODESECTIONS=1`, hot/cold `1MiB`) median:
+  - `0.271293s` (`~1.065x` vs CinderX interpreter)
+  - no compile failure after fix (this was the previous blocker)
+  - compiled size:
+    - `1304` bytes
+  - relative to `mcs=0`:
+    - `~6.8%` slower on this micro shape
+
+2. CPython native
+- Interpreter median (`PYTHON_JIT=0`):
+  - `0.205928s`
+- JIT median (`PYTHON_JIT=1`):
+  - `0.266945s` (slower on this workload in this build)
+- Executor status in JIT mode:
+  - backedge offset:
+    - `92`
+  - `exists=True`, `is_valid=True`
+  - `get_jit_code()` length:
+    - `8192` bytes
+
+### `cinderjit` API availability on ARM (post-fix)
+- Presence:
+  - `get_compiled_size`: `True`
+  - `disassemble`: `True`
+  - `get_compiled_function`: `False`
+  - `get_compiled_functions`: `True`
+  - `dump_elf`: `True`
+- Runtime checks:
+  - `force_compile(payload)=True`
+  - `is_jit_compiled(payload)=True`
+  - `compiled_size=1232`
+  - `stack_size=240`
+  - `spill_stack_size=160`
+  - `compiled_functions_count=1`, payload found in list
+  - `disassemble(payload)` callable, return type `NoneType`
+- `dump_elf` validation:
+  - ELF machine from header: `183` (`EM_AARCH64`)
+  - `readelf -h` machine line:
+    - `Machine:                           AArch64`
+

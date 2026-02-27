@@ -1,7 +1,11 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import platform
+import os
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 
 import cinderx
@@ -92,6 +96,52 @@ class ArmRuntimeTests(unittest.TestCase):
         # ELF e_machine is at bytes [18:20] in the file header.
         e_machine = int.from_bytes(header[18:20], byteorder)
         self.assertEqual(e_machine, 0xB7, f"Expected EM_AARCH64, got 0x{e_machine:04x}")
+
+    def test_multiple_code_sections_force_compile_smoke(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            def f(n):
+                s = 0
+                for i in range(n):
+                    s += (i * 3) ^ (i >> 2)
+                return s
+
+            for _ in range(20000):
+                f(200)
+
+            jit.force_compile(f)
+            print(cinderjit.get_compiled_size(f))
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/mcs_smoke.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env.update(
+                {
+                    "PYTHONJITMULTIPLECODESECTIONS": "1",
+                    "PYTHONJITHOTCODESECTIONSIZE": "1048576",
+                    "PYTHONJITCOLDCODESECTIONSIZE": "1048576",
+                }
+            )
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(proc.stdout.strip().isdigit(), proc.stdout)
 
     def test_aarch64_call_sites_are_compact(self) -> None:
         # Performance regression guard:
