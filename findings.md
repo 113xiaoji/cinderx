@@ -1921,3 +1921,51 @@ Interpretation:
 - Remote:
   - `/root/work/arm-sync/cmp_nativejit_20260227_232009/*`
 
+## 2026-02-27 ARM Follow-up: isolate CinderX interpreter overhead (`PYTHONJITDISABLE`)
+
+### Why
+- Previous direct-compare `cinderx interp` path still enabled JIT runtime plumbing
+  (`jit.enable() + compile_after_n_calls(1000000)`), which can inflate pure
+  interpreter baseline.
+- Added script support to run CinderX interp with `PYTHONJITDISABLE=1` without
+  requiring `cinderjit` import.
+
+### Script change
+- File:
+  - `scripts/arm/bench_compare_modes.py`
+- Behavior updates:
+  - `cinderjit` import is optional.
+  - `mode=interp` now works with `PYTHONJITDISABLE=1`.
+  - `mode=jit` fails fast if `PYTHONJITDISABLE` is set.
+  - Output includes:
+    - `jit_disabled`
+    - `api_flags.cinderjit_available`
+
+### Remote compare run (same host/workload, true CPython JIT binary)
+- CPython binary:
+  - `/root/opt/python-3.14-jit/bin/python3.14`
+- Medians:
+  - `cpython interp`: `0.2042452650 s`
+  - `cpython jit`: `0.2708785540 s`
+  - `cinderx interp (pure, PYTHONJITDISABLE=1)`: `0.2609469950 s`
+  - `cinderx interp (jit-enabled plumbing)`: `0.2848622500 s`
+  - `cinderx jit`: `0.2650873990 s`
+- Key ratios:
+  - `cinderx_jitenabled_interp_overhead`: `1.0916x`
+    - ~`9.16%` overhead from keeping JIT plumbing enabled in interp path.
+  - `cinderx_jit_vs_interp_pure`: `0.9844x`
+    - CinderX JIT is roughly on par / slightly slower than pure CinderX interp on this micro shape.
+  - `cpython_interp_vs_cinderx_interp_pure`: `1.2776x`
+    - even after removing JIT-plumbing overhead, CinderX interp is still slower than CPython interp here.
+
+### Artifacts
+- Local:
+  - `artifacts/richards/direct_compare_pureinterp_20260227_233807/cpython_interp.json`
+  - `artifacts/richards/direct_compare_pureinterp_20260227_233807/cpython_jit.json`
+  - `artifacts/richards/direct_compare_pureinterp_20260227_233807/cinderx_interp_pure.json`
+  - `artifacts/richards/direct_compare_pureinterp_20260227_233807/cinderx_interp_jitenabled.json`
+  - `artifacts/richards/direct_compare_pureinterp_20260227_233807/cinderx_jit.json`
+  - `artifacts/richards/direct_compare_pureinterp_20260227_233807/summary.json`
+- Remote:
+  - `/root/work/arm-sync/cmp_pureinterp_20260227_233807/*`
+

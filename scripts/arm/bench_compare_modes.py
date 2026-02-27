@@ -35,18 +35,39 @@ def time_calls(fn, n: int, calls: int, repeats: int):
 
 def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
     import cinderx.jit as jit
-    import cinderjit
+    try:
+        import cinderjit  # type: ignore[import-not-found]
+    except Exception:
+        cinderjit = None
 
-    jit.enable()
-    jit.compile_after_n_calls(1000000)
-    jit.force_uncompile(workload)
+    jit_disabled = str(os.environ.get("PYTHONJITDISABLE", "")).lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if mode == "jit" and jit_disabled:
+        raise RuntimeError(
+            "cinderx jit mode requested but PYTHONJITDISABLE is set"
+        )
+
+    if not jit_disabled:
+        jit.enable()
+        # Keep interpreter mode interpreted by default.
+        jit.compile_after_n_calls(1000000)
+        jit.force_uncompile(workload)
 
     api_flags = {
-        "get_compiled_size": hasattr(cinderjit, "get_compiled_size"),
-        "get_compiled_function": hasattr(cinderjit, "get_compiled_function"),
-        "get_compiled_functions": hasattr(cinderjit, "get_compiled_functions"),
-        "disassemble": hasattr(cinderjit, "disassemble"),
-        "dump_elf": hasattr(cinderjit, "dump_elf"),
+        "cinderjit_available": cinderjit is not None,
+        "get_compiled_size": cinderjit is not None
+        and hasattr(cinderjit, "get_compiled_size"),
+        "get_compiled_function": cinderjit is not None
+        and hasattr(cinderjit, "get_compiled_function"),
+        "get_compiled_functions": cinderjit is not None
+        and hasattr(cinderjit, "get_compiled_functions"),
+        "disassemble": cinderjit is not None and hasattr(cinderjit, "disassemble"),
+        "dump_elf": cinderjit is not None and hasattr(cinderjit, "dump_elf"),
     }
 
     for _ in range(warmup):
@@ -60,17 +81,21 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
     compiled_size = int(jit.get_compiled_size(workload)) if compiled else 0
     stack_size = (
         int(cinderjit.get_compiled_stack_size(workload))
-        if compiled and hasattr(cinderjit, "get_compiled_stack_size")
+        if compiled
+        and cinderjit is not None
+        and hasattr(cinderjit, "get_compiled_stack_size")
         else 0
     )
     spill_stack_size = (
         int(cinderjit.get_compiled_spill_stack_size(workload))
-        if compiled and hasattr(cinderjit, "get_compiled_spill_stack_size")
+        if compiled
+        and cinderjit is not None
+        and hasattr(cinderjit, "get_compiled_spill_stack_size")
         else 0
     )
 
     disassemble_ok = None
-    if api_flags["disassemble"]:
+    if api_flags["disassemble"] and cinderjit is not None:
         try:
             cinderjit.disassemble(workload)
             disassemble_ok = True
@@ -78,7 +103,7 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
             disassemble_ok = f"error:{type(exc).__name__}:{exc}"
 
     dump_elf_info = None
-    if api_flags["dump_elf"]:
+    if api_flags["dump_elf"] and cinderjit is not None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "jit_dump.elf"
             try:
@@ -110,6 +135,7 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
         "env": {
             "PYTHONJIT": os.environ.get("PYTHONJIT"),
             "PYTHONJITAUTO": os.environ.get("PYTHONJITAUTO"),
+            "PYTHONJITDISABLE": os.environ.get("PYTHONJITDISABLE"),
             "ENABLE_ADAPTIVE_STATIC_PYTHON": os.environ.get(
                 "ENABLE_ADAPTIVE_STATIC_PYTHON"
             ),
@@ -119,6 +145,7 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
         "calls": calls,
         "n": n,
         "repeats": repeats,
+        "jit_disabled": jit_disabled,
         "forced_compile": forced,
         "is_jit_compiled": compiled,
         "compiled_size": compiled_size,
