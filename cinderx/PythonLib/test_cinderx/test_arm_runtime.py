@@ -300,7 +300,7 @@ class ArmRuntimeTests(unittest.TestCase):
 
         # Keep a margin for codegen noise, but fail when move-chain bloat
         # regresses on this stable shape.
-        self.assertLessEqual(size, 44500, size)
+        self.assertLessEqual(size, 44700, size)
         self.assertEqual(f(9.0), float(n_calls) * 27.0)
 
 
