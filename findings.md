@@ -1969,3 +1969,40 @@ Interpretation:
 - Remote:
   - `/root/work/arm-sync/cmp_pureinterp_20260227_233807/*`
 
+## 2026-02-28 ARM Follow-up: lightweight frame metadata init fix for auto-jit segfault
+
+### RED (before fix)
+- Minimal repro on ARM (in pyperf venv) was crashing with `SIGSEGV`:
+  - `env PYTHONJITAUTO=0 PYTHONJITLIGHTWEIGHTFRAME=1 python -c 'g=(i for i in [1]); import re; re.compile("a+"); print("ok")'`
+- Core backtrace (new core `471733`) top:
+  - `Py_INCREF(op=0x1)` in `PyImport_Import`
+  - called from `call_typing_args_kwargs` via `JITRT_CallFunctionEx`
+- Interpretation:
+  - C API path reading current frame metadata (`globals` / frame cleanup state)
+    saw invalid values when running under lightweight-frame JIT entry.
+
+### Change
+- `cinderx/Jit/codegen/frame_asm.cpp`
+  - For lightweight function frames on both x86_64 and AArch64, eagerly set:
+    - `f_globals` from `func->func_globals`
+    - `f_builtins` from `func->func_builtins`
+    - `frame_obj = NULL`
+    - `return_offset = 0`
+    - `visited = 0`
+  - This keeps critical frame metadata valid before lazy frame population.
+- `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+  - Added regression test:
+    - `test_autojit0_lightweight_frame_typing_import_smoke`
+  - Relaxed one AArch64 size guard from `44500` to `44700` (observed +20B
+    shift due additional frame metadata init stores).
+
+### GREEN (remote entry verification)
+- Remote entrypoint (as required):
+  - `/root/work/incoming/remote_update_build_test.sh`
+- Command:
+  - `INCOMING_DIR=/root/work/incoming WORKDIR=/root/work/cinderx-main PYTHON=/opt/python-3.14/bin/python3.14 DRIVER_VENV=/root/venv-cinderx314 BENCH=richards AUTOJIT=50 PARALLEL=1 SKIP_PYPERF=1 RECREATE_PYPERF_VENV=0 /root/work/incoming/remote_update_build_test.sh`
+- Result:
+  - ARM runtime tests: `Ran 10 tests ... OK`
+  - includes new regression test `test_autojit0_lightweight_frame_typing_import_smoke`
+  - script completed successfully (`exit 0`)
+
