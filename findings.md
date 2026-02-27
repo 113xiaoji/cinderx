@@ -1744,3 +1744,36 @@ Interpretation:
   - `readelf -h` machine line:
     - `Machine:                           AArch64`
 
+## 2026-02-27 ARM Follow-up: MCS Size Sweep (post-fix)
+
+### Method
+- Entry:
+  - `ssh root@124.70.162.35`
+- Script:
+  - `scripts/arm/bench_compare_modes.py`
+- Artifact:
+  - `artifacts/asm/api_compare_20260227/mcs_sweep/summary.json`
+
+### Results (`cinderx` JIT, same workload/harness)
+- `mcs=0` baseline:
+  - median `0.248457s`
+  - compiled size `1232`
+- `mcs=1`, hot/cold each `262144`:
+  - median `0.294906s`
+  - compiled size `1288`
+- `mcs=1`, hot/cold each `524288`:
+  - median `0.297446s`
+  - compiled size `1288`
+- `mcs=1`, hot/cold each `1048576`:
+  - median `0.296165s`
+  - compiled size `1288`
+- `mcs=1`, hot/cold each `2097152`:
+  - compile failed (`RuntimeError: PYJIT_RESULT_UNKNOWN_ERROR`)
+- `mcs=1`, hot/cold each `4194304`:
+  - compile failed (`RuntimeError: PYJIT_RESULT_UNKNOWN_ERROR`)
+
+### Interpretation
+- Current fix removed the previous `1MiB` failure, but `2MiB+` section distance still fails on this ARM setup.
+- Even when `mcs=1` succeeds (`256KiB~1MiB`), this micro shape remains slower than `mcs=0` by roughly `19%`.
+- This strongly suggests remaining branch-range/layout sensitivity in split-section mode and/or extra i-cache/branch predictor cost from hot/cold separation for this loop.
+
