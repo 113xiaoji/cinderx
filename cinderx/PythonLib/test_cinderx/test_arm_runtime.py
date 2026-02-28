@@ -303,6 +303,87 @@ class ArmRuntimeTests(unittest.TestCase):
         self.assertLessEqual(size, 44700, size)
         self.assertEqual(f(9.0), float(n_calls) * 27.0)
 
+    def test_int_binary_identity_simplify_reduces_compiled_size(self) -> None:
+        # Regression guard for IntBinaryOp identity simplification in HIR.
+        # For a stable static-int loop shape, simplify-on should emit smaller
+        # native code than simplify-off.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            from cinderx.compiler.static import exec_static
+
+            ns = {}
+            src = '''
+            from __static__ import int64
+
+            def f(n: int64) -> int64:
+                s: int64 = 0
+                i: int64 = 0
+                while i < n:
+                    t: int64 = (i + 0) * 1
+                    u: int64 = (t | 0) & 0
+                    s = s + u
+                    i = i + 1
+                return s
+            '''
+            exec_static(src, ns, ns, "m")
+            f = ns["f"]
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+            ok = jit.force_compile(f)
+            assert ok, "force_compile failed"
+            assert jit.is_jit_compiled(f), "not jit compiled"
+            assert f(64) == 0
+            print(jit.get_compiled_size(f))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/int_binary_identity_size.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env_default = dict(os.environ)
+            proc_default = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env_default,
+            )
+            self.assertEqual(
+                proc_default.returncode,
+                0,
+                f"stdout:\n{proc_default.stdout}\nstderr:\n{proc_default.stderr}",
+            )
+            size_default = int(proc_default.stdout.strip().splitlines()[-1])
+
+            env_nosimplify = dict(os.environ)
+            env_nosimplify["PYTHONJITSIMPLIFY"] = "0"
+            proc_nosimplify = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env_nosimplify,
+            )
+            self.assertEqual(
+                proc_nosimplify.returncode,
+                0,
+                (
+                    f"stdout:\n{proc_nosimplify.stdout}\n"
+                    f"stderr:\n{proc_nosimplify.stderr}"
+                ),
+            )
+            size_nosimplify = int(proc_nosimplify.stdout.strip().splitlines()[-1])
+
+            self.assertLess(
+                size_default,
+                size_nosimplify,
+                (size_default, size_nosimplify),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,16 +18,11 @@ PARALLEL="${PARALLEL:-1}"
 SKIP_PYPERF="${SKIP_PYPERF:-0}"
 RECREATE_PYPERF_VENV="${RECREATE_PYPERF_VENV:-0}"
 AUTOJIT_GATE="${AUTOJIT_GATE:-$AUTOJIT}"
+ARM_RUNTIME_SKIP_TESTS="${ARM_RUNTIME_SKIP_TESTS:-}"
 
 if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AUTOJIT_GATE must be a non-negative integer, got '$AUTOJIT_GATE'"
   exit 1
-fi
-# richards benchmark worker is crash-prone at very aggressive thresholds
-# (observed SIGSEGV at 50/100 on ARM for both baseline and current branch).
-if [[ "$AUTOJIT_GATE" -lt 200 ]]; then
-  echo ">> auto-jit gate threshold $AUTOJIT_GATE is crash-prone on ARM; using 200"
-  AUTOJIT_GATE=200
 fi
 
 mkdir -p "$WORKDIR" "$INCOMING_DIR" /root/work/arm-sync
@@ -62,7 +57,62 @@ PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
 PYTHONJIT=0 python -m pip install -q -U pyperformance
 
 echo ">> unittest: ARM runtime checks"
-python cinderx/PythonLib/test_cinderx/test_arm_runtime.py
+if [[ -z "$ARM_RUNTIME_SKIP_TESTS" ]]; then
+  python cinderx/PythonLib/test_cinderx/test_arm_runtime.py
+else
+  env ARM_RUNTIME_SKIP_TESTS="$ARM_RUNTIME_SKIP_TESTS" python - <<'PY'
+import importlib.util
+import os
+import pathlib
+import sys
+import unittest
+
+skip_tokens = [
+    token.strip()
+    for token in os.environ.get("ARM_RUNTIME_SKIP_TESTS", "").split(",")
+    if token.strip()
+]
+if not skip_tokens:
+    raise SystemExit("ARM_RUNTIME_SKIP_TESTS is empty")
+
+test_path = pathlib.Path("cinderx/PythonLib/test_cinderx/test_arm_runtime.py")
+spec = importlib.util.spec_from_file_location("test_arm_runtime", test_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(f"failed to load {test_path}")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+filtered = unittest.TestSuite()
+skipped = []
+
+
+def iter_tests(s):
+    for t in s:
+        if isinstance(t, unittest.TestSuite):
+            yield from iter_tests(t)
+        else:
+            yield t
+
+
+for test in iter_tests(suite):
+    test_id = test.id()
+    if any(token in test_id for token in skip_tokens):
+        skipped.append(test_id)
+        continue
+    filtered.addTest(test)
+
+print("arm_runtime_skip_tokens=", skip_tokens)
+print("arm_runtime_skipped_count=", len(skipped))
+for test_id in skipped:
+    print("skipped:", test_id)
+
+runner = unittest.TextTestRunner(verbosity=2)
+result = runner.run(filtered)
+if not result.wasSuccessful():
+    raise SystemExit(1)
+PY
+fi
 
 echo ">> smoke: JIT is effective (compiled code executes, not just 'enabled')"
 # We verify effectiveness by:
@@ -112,12 +162,21 @@ deactivate
 
 echo ">> ensure pyperformance venv exists"
 . "$DRIVER_VENV/bin/activate"
+set +e
+PYVENV_PATH="$(
+  PYTHONJIT=0 python -m pyperformance venv show 2>/dev/null | \
+    sed -n 's/^Virtual environment path: \([^ ]*\).*$/\1/p'
+)"
+set -e
 if [[ "$RECREATE_PYPERF_VENV" == "1" ]]; then
   PYTHONJIT=0 python -m pyperformance venv recreate
-else
+elif [[ -z "$PYVENV_PATH" || ! -d "$PYVENV_PATH" ]]; then
   PYTHONJIT=0 python -m pyperformance venv create
 fi
-PYVENV_PATH="$(python -m pyperformance venv show | sed -n 's/^Virtual environment path: \([^ ]*\).*$/\1/p')"
+PYVENV_PATH="$(
+  PYTHONJIT=0 python -m pyperformance venv show | \
+    sed -n 's/^Virtual environment path: \([^ ]*\).*$/\1/p'
+)"
 echo "pyperf_venv=$PYVENV_PATH"
 if [[ -z "$PYVENV_PATH" || ! -d "$PYVENV_PATH" ]]; then
   echo "ERROR: failed to determine pyperformance venv path"

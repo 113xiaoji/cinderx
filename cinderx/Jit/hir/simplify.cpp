@@ -369,6 +369,102 @@ Register* simplifyIntConvert(Env& env, const IntConvert* instr) {
   return nullptr;
 }
 
+bool isIntConst(Register* reg, intptr_t value) {
+  Type ty = reg->type();
+  return ty.hasIntSpec() && ty.intSpec() == value;
+}
+
+Register* emitIntConstantLikeOutput(Env& env, Type output_type, uint64_t value) {
+  if (output_type <= TCSigned) {
+    return env.emit<LoadConst>(
+        Type::fromCInt(static_cast<int64_t>(value), output_type));
+  }
+  if (output_type <= TCUnsigned) {
+    return env.emit<LoadConst>(Type::fromCUInt(value, output_type));
+  }
+  JIT_ABORT("unexpected IntBinaryOp output type '{}'", output_type);
+}
+
+Register* simplifyIntBinaryOp(Env& env, const IntBinaryOp* instr) {
+  Register* left = instr->left();
+  Register* right = instr->right();
+
+  bool left_is_zero = isIntConst(left, 0);
+  bool right_is_zero = isIntConst(right, 0);
+  bool left_is_one = isIntConst(left, 1);
+  bool right_is_one = isIntConst(right, 1);
+
+  switch (instr->op()) {
+    case BinaryOpKind::kAdd:
+      if (left_is_zero) {
+        return right;
+      }
+      if (right_is_zero) {
+        return left;
+      }
+      return nullptr;
+
+    case BinaryOpKind::kSubtract:
+      if (right_is_zero) {
+        return left;
+      }
+      return nullptr;
+
+    case BinaryOpKind::kMultiply:
+      if (left_is_zero || right_is_zero) {
+        return emitIntConstantLikeOutput(env, instr->output()->type(), 0);
+      }
+      if (left_is_one) {
+        return right;
+      }
+      if (right_is_one) {
+        return left;
+      }
+      return nullptr;
+
+    case BinaryOpKind::kAnd:
+      if (left_is_zero || right_is_zero) {
+        return emitIntConstantLikeOutput(env, instr->output()->type(), 0);
+      }
+      return nullptr;
+
+    case BinaryOpKind::kOr:
+    case BinaryOpKind::kXor:
+      if (left_is_zero) {
+        return right;
+      }
+      if (right_is_zero) {
+        return left;
+      }
+      return nullptr;
+
+    case BinaryOpKind::kLShift:
+    case BinaryOpKind::kRShift:
+    case BinaryOpKind::kRShiftUnsigned:
+      if (right_is_zero) {
+        return left;
+      }
+      return nullptr;
+
+    case BinaryOpKind::kFloorDivide:
+    case BinaryOpKind::kFloorDivideUnsigned:
+      if (right_is_one) {
+        return left;
+      }
+      return nullptr;
+
+    case BinaryOpKind::kModulo:
+    case BinaryOpKind::kModuloUnsigned:
+      if (right_is_one) {
+        return emitIntConstantLikeOutput(env, instr->output()->type(), 0);
+      }
+      return nullptr;
+
+    default:
+      return nullptr;
+  }
+}
+
 Register* simplifyCompare(Env& env, const Compare* instr) {
   Register* left = instr->GetOperand(0);
   Register* right = instr->GetOperand(1);
@@ -1869,6 +1965,8 @@ Register* simplifyInstr(Env& env, const Instr* instr) {
       return simplifyBinaryOp(env, static_cast<const BinaryOp*>(instr));
     case Opcode::kInPlaceOp:
       return simplifyInPlaceOp(env, static_cast<const InPlaceOp*>(instr));
+    case Opcode::kIntBinaryOp:
+      return simplifyIntBinaryOp(env, static_cast<const IntBinaryOp*>(instr));
     case Opcode::kLongBinaryOp:
       return simplifyLongBinaryOp(env, static_cast<const LongBinaryOp*>(instr));
     case Opcode::kFloatBinaryOp:
