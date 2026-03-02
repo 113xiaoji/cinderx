@@ -31,6 +31,8 @@ class CinderXOSSTest(unittest.TestCase):
         is_meta_312 = "+meta" in sys.version and sys.version_info[:2] == (3, 12)
         is_314_arm = sys.version_info[:2] == (3, 14) and machine in {"aarch64", "arm64"}
         expected = is_meta_312 or is_314_arm
+        if hasattr(cinderx, "is_static_python_enabled") and not cinderx.is_static_python_enabled():
+            expected = False
         self.assertEqual(
             enabled,
             expected,
@@ -61,6 +63,18 @@ class CinderXOSSTest(unittest.TestCase):
                 f"expected={expected}, actual={enabled}"
             ),
         )
+
+    def test_static_python_enablement_state(self) -> None:
+        import cinderx
+
+        self.assertTrue(hasattr(cinderx, "is_static_python_enabled"))
+        enabled = cinderx.is_static_python_enabled()
+        self.assertIsInstance(enabled, bool)
+
+        # Adaptive static python must be disabled when static python core is
+        # disabled at build time.
+        if not enabled:
+            self.assertFalse(cinderx.is_adaptive_static_python_enabled())
 
 
 if __name__ == "__main__":

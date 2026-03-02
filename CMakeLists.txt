@@ -36,6 +36,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(SHARED_FLAGS "-DPy_BUILD_CORE -DPy_BUILD_CORE_MODULE -fPIC -Wall -Wextra -Wno-c99-designator -Wno-c++11-narrowing -Wno-cast-function-type-mismatch -Wno-deprecated-declarations -Wno-missing-field-initializers -Wno-null-pointer-subtraction -Wno-sign-compare -Wno-unknown-pragmas -Wno-unused-function -Wno-unused-parameter")
 
+option(ENABLE_STATIC_PYTHON "Enable Static Python features" ON)
+if(NOT ENABLE_STATIC_PYTHON AND ENABLE_ADAPTIVE_STATIC_PYTHON)
+  message(WARNING "ENABLE_STATIC_PYTHON=OFF forces ENABLE_ADAPTIVE_STATIC_PYTHON=OFF")
+  set(ENABLE_ADAPTIVE_STATIC_PYTHON OFF)
+endif()
+
 macro(set_flag VAR)
   if (DEFINED ${VAR} AND ${${VAR}})
     set(SHARED_FLAGS "-D${VAR} ${SHARED_FLAGS}")
@@ -43,6 +49,7 @@ macro(set_flag VAR)
 endmacro()
 
 set_flag(ENABLE_ADAPTIVE_STATIC_PYTHON)
+set_flag(ENABLE_STATIC_PYTHON)
 set_flag(ENABLE_DISASSEMBLER)
 set_flag(ENABLE_ELF_READER)
 set_flag(ENABLE_EVAL_HOOK)
@@ -56,6 +63,10 @@ set_flag(ENABLE_PEP523_HOOK)
 set_flag(ENABLE_PERF_TRAMPOLINE)
 set_flag(ENABLE_SYMBOLIZER)
 set_flag(ENABLE_USDT)
+
+if(ENABLE_STATIC_PYTHON)
+  set(SHARED_FLAGS "-DCINDER_ENABLE_STATIC_PYTHON ${SHARED_FLAGS}")
+endif()
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${SHARED_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SHARED_FLAGS}")

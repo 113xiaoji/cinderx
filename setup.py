@@ -495,10 +495,15 @@ class BuildExt(build_ext):
         is_314plus = py_version == "3.14" or py_version == "3.15"
 
         set_option("META_PYTHON", meta_python)
+        enable_static_python = is_env_flag_enabled("ENABLE_STATIC_PYTHON", True)
+        set_option("ENABLE_STATIC_PYTHON", enable_static_python)
         set_option(
             "ENABLE_ADAPTIVE_STATIC_PYTHON",
-            should_enable_adaptive_static_python(py_version, meta_python),
+            enable_static_python
+            and should_enable_adaptive_static_python(py_version, meta_python),
         )
+        if not enable_static_python:
+            options["ENABLE_ADAPTIVE_STATIC_PYTHON"] = "0"
         set_option("ENABLE_DISASSEMBLER", False)
         set_option("ENABLE_ELF_READER", linux)
         set_option("ENABLE_EVAL_HOOK", meta_312)

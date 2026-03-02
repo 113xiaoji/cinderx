@@ -116,6 +116,13 @@ try:
             return False
 
     try:
+        from _cinderx import is_static_python_enabled
+    except ImportError:
+
+        def is_static_python_enabled() -> bool:
+            return False
+
+    try:
         from _cinderx import is_lightweight_frames_enabled
     except ImportError:
 
@@ -150,6 +157,9 @@ except ImportError as e:
         return False
 
     def is_adaptive_static_python_enabled() -> bool:
+        return False
+
+    def is_static_python_enabled() -> bool:
         return False
 
     def is_lightweight_frames_enabled() -> bool:
