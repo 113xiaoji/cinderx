@@ -34,13 +34,7 @@ void emitIndirectCallThroughLiteral(
     Environ& env,
     const Environ::Aarch64CallTarget& target) {
   env.as->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
-  // Save the return address at [fp + 16] so that getIP() can find it at a
-  // fixed offset from the frame base for cross-thread frame inspection.
-  asmjit::Label after_call = env.as->newLabel();
-  env.as->adr(arch::reg_scratch_0, after_call);
-  env.as->str(arch::reg_scratch_0, asmjit::a64::ptr(arch::fp, 16));
   env.as->blr(arch::reg_scratch_br);
-  env.as->bind(after_call);
 }
 
 bool isInColdSection(const Environ& env) {
@@ -80,22 +74,12 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
 #if defined(CINDER_X86_64)
   env.as->call(func);
 #elif defined(CINDER_AARCH64)
-  // Note that we could do better than this if asmjit knew how to handle arm64
-  // relocations for relative calls. That work is done in
-  // https://github.com/asmjit/asmjit/issues/499, but as of writing is not yet
-  // available.
   if (isInColdSection(env)) {
     // Cold blocks can be placed >1MiB from hot text under MCS. Avoid
     // ldr-literal call lowering here because its imm19 displacement cannot
     // reach hot literals in that layout.
     env.as->mov(arch::reg_scratch_br, func);
-    // Save the return address at [fp + 16] so that getIP() can find it at a
-    // fixed offset from the frame base for cross-thread frame inspection.
-    asmjit::Label after_call = env.as->newLabel();
-    env.as->adr(arch::reg_scratch_0, after_call);
-    env.as->str(arch::reg_scratch_0, asmjit::a64::ptr(arch::fp, 16));
     env.as->blr(arch::reg_scratch_br);
-    env.as->bind(after_call);
   } else {
     auto& target = getOrCreateCallTarget(env, func);
     emitIndirectCallThroughLiteral(env, target);

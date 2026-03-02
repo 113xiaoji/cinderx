@@ -384,6 +384,59 @@ class ArmRuntimeTests(unittest.TestCase):
                 (size_default, size_nosimplify),
             )
 
+    def test_float_add_sub_mul_lower_to_double_binary_op_in_final_hir(self) -> None:
+        # Regression guard:
+        # exact-float +,-,* should lower through DoubleBinaryOp in final HIR,
+        # so codegen can emit native FP arithmetic instead of helper calls.
+        code = textwrap.dedent(
+            """
+            import cinderx
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def f(x, y):
+                a = x + y
+                b = x - y
+                c = a * b
+                d = c / x
+                return d
+
+            for _ in range(10000):
+                f(3.0, 4.0)
+
+            assert jit.force_compile(f)
+            print("compiled")
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/float_hir_double_binop.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITDUMPFINALHIR"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            dump = proc.stdout + "\n" + proc.stderr
+            self.assertIn("DoubleBinaryOp<Add>", dump)
+            self.assertIn("DoubleBinaryOp<Subtract>", dump)
+            self.assertIn("DoubleBinaryOp<Multiply>", dump)
+
 
 if __name__ == "__main__":
     unittest.main()

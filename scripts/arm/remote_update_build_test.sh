@@ -18,10 +18,16 @@ PARALLEL="${PARALLEL:-1}"
 SKIP_PYPERF="${SKIP_PYPERF:-0}"
 RECREATE_PYPERF_VENV="${RECREATE_PYPERF_VENV:-0}"
 AUTOJIT_GATE="${AUTOJIT_GATE:-$AUTOJIT}"
+AUTOJIT_USE_JITLIST_FILTER="${AUTOJIT_USE_JITLIST_FILTER:-1}"
+AUTOJIT_EXTRA_JITLIST="${AUTOJIT_EXTRA_JITLIST:-}"
 ARM_RUNTIME_SKIP_TESTS="${ARM_RUNTIME_SKIP_TESTS:-}"
 
 if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AUTOJIT_GATE must be a non-negative integer, got '$AUTOJIT_GATE'"
+  exit 1
+fi
+if [[ "$AUTOJIT_USE_JITLIST_FILTER" != "0" && "$AUTOJIT_USE_JITLIST_FILTER" != "1" ]]; then
+  echo "ERROR: AUTOJIT_USE_JITLIST_FILTER must be 0 or 1, got '$AUTOJIT_USE_JITLIST_FILTER'"
   exit 1
 fi
 
@@ -162,6 +168,28 @@ deactivate
 
 echo ">> ensure pyperformance venv exists"
 . "$DRIVER_VENV/bin/activate"
+ensure_pyperf_venv() {
+  local action="$1"
+  local cmd=()
+  if [[ "$action" == "recreate" ]]; then
+    cmd=(python -m pyperformance venv recreate)
+  else
+    cmd=(python -m pyperformance venv create)
+  fi
+
+  set +e
+  PYTHONJIT=0 "${cmd[@]}"
+  local rc=$?
+  set -e
+  if [[ $rc -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "WARN: pyperformance venv ${action} failed (rc=$rc), cleanup '$WORKDIR/venv' and retry once"
+  rm -rf "$WORKDIR/venv"
+  PYTHONJIT=0 "${cmd[@]}"
+}
+
 set +e
 PYVENV_PATH="$(
   PYTHONJIT=0 python -m pyperformance venv show 2>/dev/null | \
@@ -169,9 +197,9 @@ PYVENV_PATH="$(
 )"
 set -e
 if [[ "$RECREATE_PYPERF_VENV" == "1" ]]; then
-  PYTHONJIT=0 python -m pyperformance venv recreate
-elif [[ -z "$PYVENV_PATH" || ! -d "$PYVENV_PATH" ]]; then
-  PYTHONJIT=0 python -m pyperformance venv create
+  ensure_pyperf_venv recreate
+elif [[ -z "$PYVENV_PATH" || ! -x "$PYVENV_PATH/bin/python" ]]; then
+  ensure_pyperf_venv create
 fi
 PYVENV_PATH="$(
   PYTHONJIT=0 python -m pyperformance venv show | \
@@ -302,10 +330,32 @@ deactivate
 echo ">> pyperformance gate (auto-jit, debug-single-value)"
 . "$DRIVER_VENV/bin/activate"
 LOG="/tmp/jit_${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.log"
-env PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
-  python -m pyperformance run --debug-single-value -b "$BENCH" \
-    --inherit-environ PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE \
-    -o "/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
+AUTOJIT_JITLIST_FILE="/tmp/jitlist_autojit_gate_${RUN_ID}.txt"
+if [[ "$AUTOJIT_USE_JITLIST_FILTER" == "1" ]]; then
+  {
+    echo "__main__:*"
+    if [[ -n "$AUTOJIT_EXTRA_JITLIST" ]]; then
+      IFS=',' read -r -a _extra_jitlist <<< "$AUTOJIT_EXTRA_JITLIST"
+      for _entry in "${_extra_jitlist[@]}"; do
+        if [[ -n "$_entry" ]]; then
+          echo "$_entry"
+        fi
+      done
+    fi
+  } >"$AUTOJIT_JITLIST_FILE"
+  echo "autojit_jitlist=$AUTOJIT_JITLIST_FILE"
+  sed -n '1,50p' "$AUTOJIT_JITLIST_FILE"
+  env PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
+    PYTHONJITLISTFILE="$AUTOJIT_JITLIST_FILE" PYTHONJITENABLEJITLISTWILDCARDS=1 \
+    python -m pyperformance run --debug-single-value -b "$BENCH" \
+      --inherit-environ PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE,PYTHONJITLISTFILE,PYTHONJITENABLEJITLISTWILDCARDS \
+      -o "/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
+else
+  env PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
+    python -m pyperformance run --debug-single-value -b "$BENCH" \
+      --inherit-environ PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE \
+      -o "/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
+fi
 deactivate
 
 if [[ ! -s "$LOG" ]]; then
@@ -313,7 +363,37 @@ if [[ ! -s "$LOG" ]]; then
   exit 1
 fi
 # Ensure the benchmark actually hit JIT compilation of benchmark code (not just stdlib imports).
-if ! grep -q "Finished compiling __main__:" "$LOG"; then
+MAIN_COMPILE_COUNT="$(grep -c "Finished compiling __main__:" "$LOG" || true)"
+TOTAL_COMPILE_COUNT="$(grep -c "Finished compiling " "$LOG" || true)"
+OTHER_COMPILE_COUNT=$((TOTAL_COMPILE_COUNT - MAIN_COMPILE_COUNT))
+COMPILE_SUMMARY_JSON="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}_compile_summary.json"
+python - <<'PY' "$COMPILE_SUMMARY_JSON" "$BENCH" "$AUTOJIT_GATE" "$AUTOJIT_USE_JITLIST_FILTER" \
+  "$MAIN_COMPILE_COUNT" "$TOTAL_COMPILE_COUNT" "$OTHER_COMPILE_COUNT" "$LOG"
+import json
+import sys
+
+path = sys.argv[1]
+payload = {
+    "benchmark": sys.argv[2],
+    "autojit_gate": int(sys.argv[3]),
+    "use_jitlist_filter": bool(int(sys.argv[4])),
+    "main_compile_count": int(sys.argv[5]),
+    "total_compile_count": int(sys.argv[6]),
+    "other_compile_count": int(sys.argv[7]),
+    "jit_log_path": sys.argv[8],
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(payload, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+print(f"autojit_compile_summary={path}")
+print(
+    "autojit_compile_counts",
+    f"total={payload['total_compile_count']}",
+    f"main={payload['main_compile_count']}",
+    f"other={payload['other_compile_count']}",
+)
+PY
+if [[ "$MAIN_COMPILE_COUNT" -eq 0 ]]; then
   echo "ERROR: JIT did not compile any __main__ functions during '$BENCH' (JIT may not be active in benchmark workers)"
   echo "--- jit log tail ---"
   tail -n 120 "$LOG" || true

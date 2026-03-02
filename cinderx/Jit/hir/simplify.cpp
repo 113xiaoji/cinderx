@@ -837,6 +837,22 @@ Register* simplifyBinaryOp(Env& env, const BinaryOp* instr) {
        FloatBinaryOp::slotMethod(instr->op()))) {
     env.emit<UseType>(lhs, TFloatExact);
     env.emit<UseType>(rhs, TFloatExact);
+
+    // For common exact-float arithmetic, lower through primitive doubles so
+    // LIR can emit native FP ops (Fadd/Fsub/Fmul) instead of helper calls.
+    //
+    // Keep operations with Python-specific edge semantics (for example
+    // TrueDivide raising on +/-0.0) on the FloatBinaryOp helper path.
+    if (instr->op() == BinaryOpKind::kAdd ||
+        instr->op() == BinaryOpKind::kSubtract ||
+        instr->op() == BinaryOpKind::kMultiply) {
+      Register* lhs_unboxed = env.emit<PrimitiveUnbox>(lhs, TCDouble);
+      Register* rhs_unboxed = env.emit<PrimitiveUnbox>(rhs, TCDouble);
+      Register* out_unboxed =
+          env.emit<DoubleBinaryOp>(instr->op(), lhs_unboxed, rhs_unboxed);
+      return env.emit<PrimitiveBox>(out_unboxed, TCDouble, *instr->frameState());
+    }
+
     return env.emit<FloatBinaryOp>(instr->op(), lhs, rhs, *instr->frameState());
   }
 

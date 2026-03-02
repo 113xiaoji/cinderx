@@ -52,6 +52,9 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
             "cinderx jit mode requested but PYTHONJITDISABLE is set"
         )
 
+    # Keep interpreter measurements free of JIT metadata side effects.
+    collect_jit_metadata = mode == "jit"
+
     if not jit_disabled:
         jit.enable()
         # Keep interpreter mode interpreted by default.
@@ -77,33 +80,43 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
     if mode == "jit":
         forced = bool(jit.force_compile(workload))
 
-    compiled = bool(jit.is_jit_compiled(workload))
-    compiled_size = int(jit.get_compiled_size(workload)) if compiled else 0
+    compiled = bool(jit.is_jit_compiled(workload)) if collect_jit_metadata else False
+    compiled_size = (
+        int(jit.get_compiled_size(workload))
+        if collect_jit_metadata and compiled
+        else 0
+    )
     stack_size = (
         int(cinderjit.get_compiled_stack_size(workload))
-        if compiled
+        if collect_jit_metadata
+        and compiled
         and cinderjit is not None
         and hasattr(cinderjit, "get_compiled_stack_size")
         else 0
     )
     spill_stack_size = (
         int(cinderjit.get_compiled_spill_stack_size(workload))
-        if compiled
+        if collect_jit_metadata
+        and compiled
         and cinderjit is not None
         and hasattr(cinderjit, "get_compiled_spill_stack_size")
         else 0
     )
 
-    disassemble_ok = None
-    if api_flags["disassemble"] and cinderjit is not None:
+    disassemble_ok = "skipped_interp_mode" if not collect_jit_metadata else None
+    if collect_jit_metadata and api_flags["disassemble"] and cinderjit is not None:
         try:
             cinderjit.disassemble(workload)
             disassemble_ok = True
         except Exception as exc:
             disassemble_ok = f"error:{type(exc).__name__}:{exc}"
 
-    dump_elf_info = None
-    if api_flags["dump_elf"] and cinderjit is not None:
+    dump_elf_info = (
+        {"ok": False, "error": "skipped_interp_mode"}
+        if not collect_jit_metadata
+        else None
+    )
+    if collect_jit_metadata and api_flags["dump_elf"] and cinderjit is not None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "jit_dump.elf"
             try:
@@ -175,29 +188,37 @@ def cpython_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
         for _ in range(warmup):
             workload(n)
 
-    offset = _best_backedge_offset(workload)
+    # Keep interpreter measurements free of executor probing side effects.
+    offset = None
     executor = None
-    executor_error = None
-    if offset is not None:
-        try:
-            executor = _opcode.get_executor(workload.__code__, offset)
-        except Exception as exc:
-            executor_error = f"{type(exc).__name__}:{exc}"
-
+    executor_error = "skipped_interp_mode"
     jit_code_len = 0
-    if executor is not None and hasattr(executor, "get_jit_code"):
-        try:
-            jit_code_len = len(executor.get_jit_code())
-        except Exception:
-            jit_code_len = 0
+    if mode == "jit":
+        offset = _best_backedge_offset(workload)
+        executor_error = None
+        if offset is not None:
+            try:
+                executor = _opcode.get_executor(workload.__code__, offset)
+            except Exception as exc:
+                executor_error = f"{type(exc).__name__}:{exc}"
+
+        if executor is not None and hasattr(executor, "get_jit_code"):
+            try:
+                jit_code_len = len(executor.get_jit_code())
+            except Exception:
+                jit_code_len = 0
 
     exec_info = {
         "offset": offset,
         "exists": executor is not None,
         "is_valid": (
-            bool(getattr(executor, "is_valid", lambda: False)()) if executor is not None else False
+            bool(getattr(executor, "is_valid", lambda: False)())
+            if executor is not None
+            else False
         ),
-        "jit_code_size": int(getattr(executor, "jit_code_size", 0)) if executor is not None else 0,
+        "jit_code_size": int(getattr(executor, "jit_code_size", 0))
+        if executor is not None
+        else 0,
         "jit_code_len": jit_code_len,
         "error": executor_error,
     }
