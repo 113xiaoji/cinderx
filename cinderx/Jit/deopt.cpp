@@ -101,8 +101,10 @@ Ref<> MemoryView::readOwned(const LiveValue& value) const {
     }
     case jit::hir::ValueKind::kUnsigned:
       return Ref<>::steal(PyLong_FromSize_t(raw));
-    case hir::ValueKind::kDouble:
-      return Ref<>::steal(PyFloat_FromDouble(raw));
+    case hir::ValueKind::kDouble: {
+      double raw_double = bit_cast<double, uint64_t>(raw);
+      return Ref<>::steal(PyFloat_FromDouble(raw_double));
+    }
     case jit::hir::ValueKind::kBool:
       return Ref<>::create(raw ? Py_True : Py_False);
     case jit::hir::ValueKind::kObject:

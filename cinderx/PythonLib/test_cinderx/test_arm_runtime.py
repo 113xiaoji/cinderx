@@ -481,6 +481,125 @@ class ArmRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(int(proc.stdout.strip().splitlines()[-1]), 1, proc.stdout)
 
+    def test_primitive_box_remat_elides_frame_state_only_boxes(self) -> None:
+        # Regression guard:
+        # temporary float boxes that are only kept for FrameState deopt payloads
+        # should be rematerialized at deopt time; only the return-value box
+        # should remain in final HIR for this shape.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Body:
+                def __init__(self, x, y, z):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+
+            def dist_sq(a, b):
+                dx = a.x - b.x
+                dy = a.y - b.y
+                dz = a.z - b.z
+                return dx * dx + dy * dy + dz * dz
+
+            p = Body(1.0, 2.0, 3.0)
+            q = Body(4.0, 5.0, 6.0)
+            for _ in range(10000):
+                dist_sq(p, q)
+
+            assert jit.force_compile(dist_sq)
+            counts = cinderjit.get_function_hir_opcode_counts(dist_sq)
+            print(counts.get("PrimitiveBox", -1))
+            print(dist_sq(p, q))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/primitive_box_remat_count.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 2, proc.stdout)
+            self.assertEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(float(lines[-1]), 27.0, proc.stdout)
+
+    def test_primitive_box_remat_deopt_correctness(self) -> None:
+        # Regression guard:
+        # when a guard later deopts, CDouble values that replaced temporary
+        # PrimitiveBox outputs must be reconstructed correctly in interpreter.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Body:
+                def __init__(self, x, y, z):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+
+            class IntYBody:
+                x = 7.0
+                y = 5
+                z = 11.0
+
+            def dist_sq(a, b):
+                dx = a.x - b.x
+                dy = a.y - b.y
+                dz = a.z - b.z
+                return dx * dx + dy * dy + dz * dz
+
+            p = Body(1.0, 2.0, 3.0)
+            q = Body(4.0, 5.0, 6.0)
+            for _ in range(10000):
+                dist_sq(p, q)
+
+            assert jit.force_compile(dist_sq)
+            result = dist_sq(p, IntYBody())
+            print(result)
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/primitive_box_remat_deopt.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            self.assertEqual(float(proc.stdout.strip().splitlines()[-1]), 109.0, proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

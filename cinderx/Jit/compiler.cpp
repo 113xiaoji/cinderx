@@ -17,6 +17,7 @@
 #include "cinderx/Jit/hir/insert_update_prev_instr.h"
 #include "cinderx/Jit/hir/phi_elimination.h"
 #include "cinderx/Jit/hir/printer.h"
+#include "cinderx/Jit/hir/primitive_box_remat.h"
 #include "cinderx/Jit/hir/primitive_unbox_cse.h"
 #include "cinderx/Jit/hir/refcount_insertion.h"
 #include "cinderx/Jit/hir/simplify.h"
@@ -91,6 +92,7 @@ void Compiler::runPasses(
     if (config & PassConfig::kSimplify) {
       runPass(hir::Simplify{}, irfunc, callback);
       runPass(hir::PrimitiveUnboxCSE{}, irfunc, callback);
+      runPass(hir::PrimitiveBoxRemat{}, irfunc, callback);
     }
   };
 

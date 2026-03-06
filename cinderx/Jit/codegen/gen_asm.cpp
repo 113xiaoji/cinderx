@@ -698,8 +698,18 @@ void* generateDeoptTrampoline(bool generator_mode) {
   // free to clobber any caller-saved registers.
   //
   // IF YOU USE CALLEE-SAVED REGISTERS YOU HAVE TO RESTORE THEM MANUALLY BEFORE
-  // THE EXITING THE TRAMPOLINE.
-  a.stp(a64::x0, a64::x1, a64::ptr_pre(a64::sp, -16 * 14));
+  if (generator_mode) {
+    // Restore original frame pointer for use in epilogue.
+    RestoreOriginalGeneratorFramePointer(&a);
+  }
+
+  // Save live registers into a cold buffer laid out like PhyLocation numbering:
+  // x0..x29, x30, xzr, d0..d31. This keeps kDouble deopt values addressable
+  // through the same regs[] interface as GP values.
+  constexpr int saved_regs_slots = NUM_REGS;
+  constexpr int saved_regs_size = saved_regs_slots * kPointerSize;
+  a.sub(a64::sp, a64::sp, saved_regs_size);
+  a.stp(a64::x0, a64::x1, a64::ptr(a64::sp, 16 * 0));
   a.stp(a64::x2, a64::x3, a64::ptr(a64::sp, 16 * 1));
   a.stp(a64::x4, a64::x5, a64::ptr(a64::sp, 16 * 2));
   a.stp(a64::x6, a64::x7, a64::ptr(a64::sp, 16 * 3));
@@ -714,10 +724,33 @@ void* generateDeoptTrampoline(bool generator_mode) {
   a.stp(a64::x24, a64::x25, a64::ptr(a64::sp, 16 * 12));
   a.stp(a64::x26, a64::x27, a64::ptr(a64::sp, 16 * 13));
 
-  if (generator_mode) {
-    // Restore original frame pointer for use in epilogue.
-    RestoreOriginalGeneratorFramePointer(&a);
-  }
+  auto meta_base = a64::x14;
+  auto save_scratch = a64::x15;
+  a.add(meta_base, a64::sp, saved_regs_size);
+  a.ldr(save_scratch, a64::ptr(meta_base, 0));
+  a.str(save_scratch, a64::ptr(a64::sp, 28 * kPointerSize));
+  a.ldr(save_scratch, a64::ptr(meta_base, kPointerSize));
+  a.str(save_scratch, a64::ptr(a64::sp, 29 * kPointerSize));
+  a.mov(save_scratch, 0);
+  a.str(save_scratch, a64::ptr(a64::sp, 30 * kPointerSize));
+  a.str(save_scratch, a64::ptr(a64::sp, 31 * kPointerSize));
+
+  a.stp(a64::d0, a64::d1, a64::ptr(a64::sp, 16 * 16));
+  a.stp(a64::d2, a64::d3, a64::ptr(a64::sp, 16 * 17));
+  a.stp(a64::d4, a64::d5, a64::ptr(a64::sp, 16 * 18));
+  a.stp(a64::d6, a64::d7, a64::ptr(a64::sp, 16 * 19));
+  a.stp(a64::d8, a64::d9, a64::ptr(a64::sp, 16 * 20));
+  a.stp(a64::d10, a64::d11, a64::ptr(a64::sp, 16 * 21));
+  a.stp(a64::d12, a64::d13, a64::ptr(a64::sp, 16 * 22));
+  a.stp(a64::d14, a64::d15, a64::ptr(a64::sp, 16 * 23));
+  a.stp(a64::d16, a64::d17, a64::ptr(a64::sp, 16 * 24));
+  a.stp(a64::d18, a64::d19, a64::ptr(a64::sp, 16 * 25));
+  a.stp(a64::d20, a64::d21, a64::ptr(a64::sp, 16 * 26));
+  a.stp(a64::d22, a64::d23, a64::ptr(a64::sp, 16 * 27));
+  a.stp(a64::d24, a64::d25, a64::ptr(a64::sp, 16 * 28));
+  a.stp(a64::d26, a64::d27, a64::ptr(a64::sp, 16 * 29));
+  a.stp(a64::d28, a64::d29, a64::ptr(a64::sp, 16 * 30));
+  a.stp(a64::d30, a64::d31, a64::ptr(a64::sp, 16 * 31));
 
   annot.add("Save registers", &a, annot_cursor);
 
@@ -731,7 +764,7 @@ void* generateDeoptTrampoline(bool generator_mode) {
   //    deopting. Only the deopt trampoline will appear in the trace if
   //    we don't open a frame.
   //
-  // Right now the stack has the following layout:
+  // Right now the original stage-1 metadata lives at meta_base, with:
   //
   // +-------------------------+ <-- end of JIT's fixed frame
   // | index of deopt metadata |
@@ -741,9 +774,7 @@ void* generateDeoptTrampoline(bool generator_mode) {
   // | address of CodeRuntime  |
   // | address of epilogue     |
   // | fp                      |
-  // | x28                     |
-  // | ...                     |
-  // | x0                      | <-- sp
+  // | x28                     | <-- meta_base
   // +-------------------------+
   //
   // We want our frame to look like:
@@ -767,23 +798,13 @@ void* generateDeoptTrampoline(bool generator_mode) {
   // registers.
   a.mov(a64::x0, a64::sp);
 
-  // Load the saved pc passed to us from the JIT-compiled function, which
-  // resides where we're supposed to save the frame pointer.
-  const int saved_regs_slots = 30;
-  const int saved_metadata_slots = 4;
-
   auto saved_pc = a64::x3;
-  auto saved_fp_offset =
-      (saved_regs_slots + saved_metadata_slots) * kPointerSize;
-  a.ldr(
-      saved_pc,
-      arch::ptr_resolve(&a, a64::sp, saved_fp_offset, arch::reg_scratch_0));
+  constexpr int stage1_saved_pc_offset = 6 * kPointerSize;
+  a.ldr(saved_pc, a64::ptr(meta_base, stage1_saved_pc_offset));
 
   // Save the frame pointer and set up our frame.
-  a.str(
-      arch::fp,
-      arch::ptr_resolve(&a, a64::sp, saved_fp_offset, arch::reg_scratch_0));
-  a.add(arch::fp, a64::sp, saved_fp_offset);
+  a.str(arch::fp, a64::ptr(meta_base, stage1_saved_pc_offset));
+  a.add(arch::fp, meta_base, stage1_saved_pc_offset);
 
   // Load the index of the deopt metadata, which resides where we're supposed to
   // save the pc.
@@ -823,10 +844,7 @@ void* generateDeoptTrampoline(bool generator_mode) {
   a.blr(arch::reg_scratch_br);
 
   // Clean up saved registers.
-  //
-  // This isn't strictly necessary but saves 128 bytes on the stack if we end
-  // up resuming in the interpreter.
-  a.add(a64::sp, a64::sp, (saved_regs_slots - 2) * kPointerSize);
+  a.add(a64::sp, a64::sp, saved_regs_size);
 
   // We have to restore our scratch register manually since it's callee-saved
   // and the stage 2 trampoline used it to hold the address of this
