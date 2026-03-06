@@ -31,6 +31,7 @@
 #include "cinderx/Jit/hir/analysis.h"
 #include "cinderx/Jit/hir/hir.h"
 #include "cinderx/Jit/hir/printer.h"
+#include "cinderx/Jit/inline_cache.h"
 #include "cinderx/Jit/jit_gdb_support.h"
 #include "cinderx/Jit/jit_rt.h"
 #include "cinderx/Jit/lir/dce.h"
@@ -61,6 +62,23 @@ using namespace jit::util;
 namespace jit::codegen {
 
 namespace {
+
+uint64_t getAarch64HotCallTarget(const Instruction& instr) {
+#if defined(CINDER_AARCH64)
+  if (instr.isCall() && instr.getNumInputs() > 0 && instr.getInput(0)->isImm()) {
+    return instr.getInput(0)->getConstant();
+  }
+  if (
+      instr.isYieldFrom() || instr.isYieldFromSkipInitialSend() ||
+      instr.isYieldFromHandleStopAsyncIteration()) {
+    return reinterpret_cast<uint64_t>(
+        instr.isYieldFromHandleStopAsyncIteration()
+            ? JITRT_GenSendHandleStopAsyncIteration
+            : JITRT_GenSend);
+  }
+#endif
+  return 0;
+}
 
 #define ASM_CHECK_THROW(exp)                         \
   {                                                  \
@@ -2833,6 +2851,7 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
   // The body must be generated before the prologue to determine how much spill
   // space to allocate.
   auto prologue_cursor = as_->cursor();
+  planAarch64HotCallTargets();
   generateAssemblyBody(codeholder);
 
   auto epilogue_cursor = as_->cursor();
@@ -3040,10 +3059,100 @@ void NativeGenerator::generateAssemblyBody(const asmjit::CodeHolder& code) {
   }
 }
 
+void NativeGenerator::planAarch64HotCallTargets() {
+#if defined(CINDER_AARCH64)
+  auto& targets = env_.call_target_literals;
+  targets.clear();
+
+  for (lir::BasicBlock* basicblock : lir_func_->basicblocks()) {
+    if (basicblock->section() != CodeSection::kHot) {
+      continue;
+    }
+    for (auto& instr : basicblock->instructions()) {
+      uint64_t func = getAarch64HotCallTarget(*instr);
+      if (func == 0) {
+        continue;
+      }
+
+      auto it = targets.find(func);
+      if (it == targets.end()) {
+        Environ::Aarch64CallTarget target;
+        target.literal = as_->newLabel();
+        target.hot_call_count = 1;
+        targets.emplace(func, target);
+      } else {
+        it->second.hot_call_count++;
+      }
+    }
+  }
+
+  const uint32_t min_calls = sharedStubMinCalls();
+  for (auto& entry : targets) {
+    entry.second.use_shared_stub = entry.second.hot_call_count >= min_calls;
+  }
+#endif
+}
+
 void NativeGenerator::emitAarch64CallTargetLiteralPool() {
 #if defined(CINDER_AARCH64)
   if (env_.call_target_literals.empty()) {
     return;
+  }
+
+  CodeSectionOverride hot_override{
+      as_, as_->code(), &metadata_, CodeSection::kHot};
+
+#if PY_VERSION_HEX >= 0x030E0000 && !defined(Py_GIL_DISABLED)
+  if (env_.load_module_attr_lookup_stub.isValid()) {
+    auto module_attr_target = env_.call_target_literals.find(
+        reinterpret_cast<uint64_t>(jit::LoadModuleAttrCache::lookupHelper));
+    JIT_CHECK(
+        module_attr_target != env_.call_target_literals.end(),
+        "Missing call target literal for LoadModuleAttrCache::lookupHelper");
+
+    const auto& target = module_attr_target->second;
+    Label slow_path = as_->newLabel();
+    Label done = as_->newLabel();
+
+    constexpr int kModuleOffset = jit::LoadModuleAttrCache::moduleOffset();
+    constexpr int kCacheOffset = jit::LoadModuleAttrCache::cacheOffset();
+    constexpr int kRefcountOffset = offsetof(PyObject, ob_refcnt);
+
+    ASM_CHECK(as_->align(AlignMode::kCode, 8), GetFunction()->fullname);
+    as_->bind(env_.load_module_attr_lookup_stub);
+
+    as_->ldr(a64::x12, arch::ptr_offset(a64::x0, kModuleOffset));
+    as_->cmp(a64::x12, a64::x1);
+    as_->b_ne(slow_path);
+
+    as_->ldr(a64::x12, arch::ptr_offset(a64::x0, kCacheOffset));
+    as_->cbz(a64::x12, slow_path);
+    as_->ldr(a64::x0, a64::ptr(a64::x12));
+    as_->cbz(a64::x0, slow_path);
+
+    as_->ldr(a64::w12, arch::ptr_offset(a64::x0, kRefcountOffset, arch::AccessSize::k32));
+    as_->adds(a64::w12, a64::w12, 1);
+    as_->b_mi(done);
+    as_->str(a64::w12, arch::ptr_offset(a64::x0, kRefcountOffset, arch::AccessSize::k32));
+    as_->bind(done);
+    as_->ret(arch::lr);
+
+    as_->bind(slow_path);
+    as_->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
+    as_->br(arch::reg_scratch_br);
+  }
+#endif
+
+  for (const auto& entry : env_.call_target_literals) {
+    const auto& target = entry.second;
+    if (!target.has_shared_stub) {
+      continue;
+    }
+
+    ASM_CHECK(as_->align(AlignMode::kCode, 8), GetFunction()->fullname);
+    as_->bind(target.stub);
+    as_->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
+    as_->br(arch::reg_scratch_br);
   }
 
   ASM_CHECK(as_->align(AlignMode::kData, 8), GetFunction()->fullname);

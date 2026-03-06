@@ -352,6 +352,16 @@ class LoadModuleAttrCache {
       BorrowedRef<> name);
   PyObject* lookup(BorrowedRef<> obj, BorrowedRef<> name);
 
+#if PY_VERSION_HEX >= 0x030E0000
+  static constexpr size_t moduleOffset() {
+    return offsetof(LoadModuleAttrCache, module_);
+  }
+
+  static constexpr size_t cacheOffset() {
+    return offsetof(LoadModuleAttrCache, cache_);
+  }
+#endif
+
  private:
   PyObject* lookupSlowPath(BorrowedRef<> obj, BorrowedRef<> name);
   void

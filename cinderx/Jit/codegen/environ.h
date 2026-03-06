@@ -72,9 +72,15 @@ struct Environ {
   // Location of incoming arguments
   std::vector<PhyLocation> arg_locations;
 
+  asmjit::Label load_module_attr_lookup_stub;
+
   // AArch64 call target pool: one 64-bit literal per absolute target.
   struct Aarch64CallTarget {
     asmjit::Label literal{0};
+    asmjit::Label stub{};
+    bool has_shared_stub{false};
+    uint32_t hot_call_count{0};
+    bool use_shared_stub{false};
   };
   UnorderedMap<uint64_t, Aarch64CallTarget> call_target_literals;
 
