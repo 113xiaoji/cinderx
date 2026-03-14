@@ -981,6 +981,11 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         bbb.appendInstr(instr->output(), Instruction::kFsqrt, instr->GetOperand(0));
         break;
       }
+      case Opcode::kDoubleAbs: {
+        auto instr = static_cast<const DoubleAbs*>(&i);
+        bbb.appendInstr(instr->output(), Instruction::kFabs, instr->GetOperand(0));
+        break;
+      }
       case Opcode::kPrimitiveCompare: {
         auto instr = static_cast<const PrimitiveCompare*>(&i);
         Instruction::Opcode op;

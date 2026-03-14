@@ -39,6 +39,7 @@ MemoryEffects memoryEffects(const Instr& inst) {
     case Opcode::kCIntToCBool:
     case Opcode::kDeopt:
     case Opcode::kDeoptPatchpoint:
+    case Opcode::kDoubleAbs:
     case Opcode::kDoubleBinaryOp:
     case Opcode::kDoubleSqrt:
     case Opcode::kLongUnboxCompact:
@@ -398,6 +399,7 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kCondBranchCheckType:
     case Opcode::kCondBranchIterNotDone:
     case Opcode::kDeoptPatchpoint:
+    case Opcode::kDoubleAbs:
     case Opcode::kDoubleBinaryOp:
     case Opcode::kDoubleSqrt:
     case Opcode::kEndInlinedFunction:

@@ -51,6 +51,7 @@ namespace jit::hir {
   V(DictMerge)                         \
   V(DictSubscr)                        \
   V(DictUpdate)                        \
+  V(DoubleAbs)                         \
   V(DoubleBinaryOp)                    \
   V(DoubleSqrt)                        \
   V(EagerImportName)                   \

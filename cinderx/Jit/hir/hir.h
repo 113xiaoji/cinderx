@@ -1566,6 +1566,7 @@ class INSTR_CLASS(
   BinaryOpKind op_;
 };
 
+DEFINE_SIMPLE_INSTR(DoubleAbs, (TCDouble), HasOutput, Operands<1>);
 DEFINE_SIMPLE_INSTR(DoubleSqrt, (TCDouble), HasOutput, Operands<1>);
 
 class InlineBase {

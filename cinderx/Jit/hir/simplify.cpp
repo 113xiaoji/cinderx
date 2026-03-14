@@ -2526,6 +2526,48 @@ static Register* simplifyVectorCallMathSqrt(
   return env.emit<PrimitiveBox>(result, TCDouble, *instr->frameState());
 }
 
+static Register* simplifyVectorCallBuiltinAbs(
+    Env& env,
+    const VectorCall* instr) {
+  if (instr->numArgs() != 1) {
+    return nullptr;
+  }
+
+  Register* target = modelReg(instr->func());
+  bool is_abs = false;
+  if (target->instr()->IsGuardIs()) {
+    auto* guard = static_cast<const GuardIs*>(target->instr());
+    is_abs = isBuiltin(guard->target(), "abs");
+  } else {
+    is_abs = isBuiltin(target, "abs");
+  }
+  if (!is_abs) {
+    return nullptr;
+  }
+
+  Register* arg = instr->arg(0);
+  Register* double_arg = nullptr;
+  if (arg->isA(TCDouble)) {
+    double_arg = arg;
+  } else if (arg->instr()->IsPrimitiveBox()) {
+    auto* box = static_cast<const PrimitiveBox*>(arg->instr());
+    if (box->value()->type() <= TCDouble) {
+      double_arg = box->value();
+    }
+  }
+
+  if (double_arg == nullptr) {
+    if (!arg->isA(TFloatExact)) {
+      arg = env.emit<GuardType>(TFloatExact, arg, *instr->frameState());
+    }
+    double_arg = env.emit<PrimitiveUnbox>(arg, TCDouble);
+  }
+
+  env.emit<UseType>(target, target->type());
+  Register* result = env.emit<DoubleAbs>(double_arg);
+  return env.emit<PrimitiveBox>(result, TCDouble, *instr->frameState());
+}
+
 static Register* simplifyVectorCallBuiltinMinMax(
     Env& env,
     const VectorCall* instr) {
@@ -2875,6 +2917,9 @@ Register* simplifyVectorCall(Env& env, const VectorCall* instr) {
   }
   if (instr->flags() & CallFlags::KwArgs) {
     return nullptr;
+  }
+  if (Register* result = simplifyVectorCallBuiltinAbs(env, instr)) {
+    return result;
   }
   if (Register* result = simplifyVectorCallBuiltinMinMax(env, instr)) {
     return result;

@@ -1885,6 +1885,109 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(lines[-2], "True", proc.stdout)
             self.assertEqual(lines[-1], "True", proc.stdout)
 
+    def test_builtin_abs_float_lowers_to_double_abs(self) -> None:
+        # Regression guard:
+        # builtin abs(float) should avoid the generic VectorCall path and lower
+        # to the dedicated double abs opcode.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def abs_builtin(x):
+                return abs(x)
+
+            for _ in range(10000):
+                abs_builtin(-3.14)
+
+            assert jit.force_compile(abs_builtin)
+
+            counts = cinderjit.get_function_hir_opcode_counts(abs_builtin)
+            print(counts.get("DoubleAbs", 0))
+            print(counts.get("VectorCall", 0))
+            print(counts.get("PrimitiveUnbox", 0))
+            print(abs_builtin(-3.14))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/builtin_abs_double_abs.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertGreaterEqual(int(lines[-4]), 1, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(float(lines[-1]), 3.14, proc.stdout)
+
+    def test_builtin_abs_float_preserves_nan_and_negative_zero(self) -> None:
+        # Regression guard:
+        # the abs(float) fast path should match Python for NaN and -0.0.
+        code = textwrap.dedent(
+            """
+            import math
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def abs_builtin(x):
+                return abs(x)
+
+            for _ in range(10000):
+                abs_builtin(-3.14)
+
+            assert jit.force_compile(abs_builtin)
+
+            nan = float("nan")
+            print(math.isnan(abs_builtin(nan)))
+            print(math.copysign(1.0, abs_builtin(-0.0)))
+            print(abs_builtin(-2.5))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/builtin_abs_semantics.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertEqual(lines[-3], "True", proc.stdout)
+            self.assertEqual(float(lines[-2]), 1.0, proc.stdout)
+            self.assertEqual(float(lines[-1]), 2.5, proc.stdout)
+
     def test_slot_type_version_guards_are_deduplicated(self) -> None:
         # Regression guard:
         # repeated LOAD_ATTR_SLOT / STORE_ATTR_SLOT operations on the same SSA

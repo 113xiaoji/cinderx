@@ -675,6 +675,72 @@ void translateIntToBool(Environ* env, const Instruction* instr) {
 #endif
 }
 
+alignas(16) static const uint64_t kDoubleAbsMask[2] = {
+    0x7fffffffffffffffULL,
+    0xffffffffffffffffULL,
+};
+
+void translateFabs(Environ* env, const Instruction* instr) {
+  const OperandBase* output = instr->output();
+  const OperandBase* input = instr->getInput(0);
+  JIT_CHECK(output->isReg() && output->isVecD(), "Expected VecD output");
+
+#if defined(CINDER_X86_64)
+  x86::Builder* as = env->as;
+  auto out = AutoTranslator::getVecD(output);
+
+  switch (input->type()) {
+    case OperandBase::kReg:
+      if (output->getPhyRegister() != input->getPhyRegister()) {
+        as->movsd(out, AutoTranslator::getVecD(input));
+      }
+      break;
+    case OperandBase::kStack:
+      as->movsd(out, x86::ptr(x86::rbp, input->getStackSlot().loc));
+      break;
+    case OperandBase::kMem:
+      as->movsd(out, x86::ptr(reinterpret_cast<uint64_t>(input->getMemoryAddress())));
+      break;
+    case OperandBase::kInd:
+      as->movsd(out, AsmIndirectOperandBuilder(input));
+      break;
+    default:
+      JIT_ABORT("Unsupported operand type for Fabs: {}", input->type());
+  }
+
+  auto mask = x86::ptr(reinterpret_cast<uint64_t>(kDoubleAbsMask));
+  mask.setSize(16);
+  as->andpd(out, mask);
+#elif defined(CINDER_AARCH64)
+  a64::Builder* as = env->as;
+  auto out = AutoTranslator::getVecD(output);
+
+  switch (input->type()) {
+    case OperandBase::kReg:
+      as->fabs(out, AutoTranslator::getVecD(input));
+      break;
+    case OperandBase::kStack: {
+      auto ptr =
+          arch::ptr_resolve(as, arch::fp, input->getStackSlot().loc, arch::reg_scratch_0);
+      as->ldr(out, ptr);
+      as->fabs(out, out);
+      break;
+    }
+    case OperandBase::kMem:
+      as->mov(arch::reg_scratch_0, input->getMemoryAddress());
+      as->ldr(out, a64::ptr(arch::reg_scratch_0));
+      as->fabs(out, out);
+      break;
+    case OperandBase::kInd:
+      JIT_ABORT("Unsupported operand type for Fabs: {}", input->type());
+    default:
+      JIT_ABORT("Unsupported operand type for Fabs: {}", input->type());
+  }
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
 // Store meta-data about this yield in a generator suspend data pointed to by
 // suspend_data_r. Data includes things like the address to resume execution at,
 // and owned entries in the suspended spill data needed for GC operations etc.
@@ -1663,6 +1729,11 @@ END_RULES
 
 BEGIN_RULES(Instruction::kFsqrt)
   GEN("Xx", ASM(sqrtsd, OP(0), OP(1)))
+END_RULES
+
+BEGIN_RULES(Instruction::kFabs)
+  GEN("Xx", CALL_C(translateFabs))
+  GEN("Xm", CALL_C(translateFabs))
 END_RULES
 
 BEGIN_RULES(Instruction::kPush)
@@ -2993,6 +3064,11 @@ END_RULES
 
 BEGIN_RULES(Instruction::kFsqrt)
   GEN("Xx", ASM(fsqrt, OP(0), OP(1)))
+END_RULES
+
+BEGIN_RULES(Instruction::kFabs)
+  GEN("Xx", CALL_C(translateFabs))
+  GEN("Xm", CALL_C(translateFabs))
 END_RULES
 
 BEGIN_RULES(Instruction::kPush)

@@ -517,6 +517,7 @@ static std::string format_immediates(const Function* func, const Instr& instr) {
       const auto& bin_op = static_cast<const DoubleBinaryOp&>(instr);
       return std::string{GetBinaryOpName(bin_op.op())};
     }
+    case Opcode::kDoubleAbs:
     case Opcode::kDoubleSqrt:
       return "";
     case Opcode::kLoadArg: {

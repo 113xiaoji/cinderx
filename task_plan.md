@@ -82,3 +82,39 @@ Phase 1: reproduce and localize the regression.
 
 ### Status
 - Current local code for issue34 is ready for review/commit.
+
+## Issue 33: builtin `abs` on float
+
+### Goal
+- Remove the generic `VectorCall` path for `abs(x)` when `x` is an exact float.
+- Lower the hot path to a dedicated double abs opcode that can become ARM64 `FABS`.
+
+### Analysis
+- Unlike builtin `min/max`, `abs(float)` does not need to preserve operand object identity.
+- The safe specialization strategy is:
+  - keep the builtin `GuardIs`
+  - guard the argument to `FloatExact`
+  - `PrimitiveUnbox<CDouble>`
+  - `DoubleAbs`
+  - `PrimitiveBox<CDouble>`
+- The repo does not have a generic `DoubleUnaryOp` hierarchy, so the minimal fit is a dedicated `DoubleAbs`, mirroring existing `DoubleSqrt`.
+
+### Verification
+- Remote ARM editable rebuild on `/root/work/frame-stage-local`: completed
+- Targeted tests:
+  - `test_builtin_abs_float_lowers_to_double_abs`: passed
+  - `test_builtin_abs_float_preserves_nan_and_negative_zero`: passed
+- Probe results (`N=2_000_000`):
+  - `abs_builtin`: `0.7133366869529709s`
+  - `abs_manual`: `0.649760145926848s`
+  - `abs_ratio`: `1.0978461689666028x`
+- Optimized HIR evidence:
+  - `GuardIs = 1`
+  - `GuardType = 1`
+  - `PrimitiveUnbox = 1`
+  - `DoubleAbs = 1`
+  - `PrimitiveBox = 1`
+  - `VectorCall = 0`
+
+### Status
+- Current local code for issue33 is ready for review/commit.

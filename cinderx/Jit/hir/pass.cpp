@@ -296,6 +296,9 @@ Type outputType(
     case Opcode::kDoubleBinaryOp: {
       return TCDouble;
     }
+    case Opcode::kDoubleAbs: {
+      return TCDouble;
+    }
     case Opcode::kDoubleSqrt: {
       return TCDouble;
     }

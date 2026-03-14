@@ -3445,3 +3445,75 @@ Conclusion:
   - current: `1.3242973680607975s`
   - base: `1.5738149019889534s`
   - speedup: about `15.9%`
+
+## 2026-03-15 issue33 builtin abs float specialization
+
+Problem confirmation:
+- builtin `abs(x)` on an exact float still compiled through a generic `VectorCall`
+- this paid full builtin call overhead even though the hot path only needed a float absolute-value operation plus boxing
+
+Implementation:
+- `cinderx/Jit/hir/simplify.cpp`
+  - added `simplifyVectorCallBuiltinAbs()`
+  - recognizes builtin `abs` through the existing `GuardIs`/builtin-object shape
+  - specializes one-arg float calls into:
+    - `GuardType<FloatExact>`
+    - `PrimitiveUnbox<CDouble>`
+    - `DoubleAbs`
+    - `PrimitiveBox<CDouble>`
+- `cinderx/Jit/hir/*`
+  - added the new HIR opcode `DoubleAbs`
+- `cinderx/Jit/lir/*`
+  - added the new LIR opcode `Fabs`
+- `cinderx/Jit/codegen/autogen.cpp`
+  - ARM64 lowering uses `fabs`
+  - x86_64 fallback uses `movsd + andpd(mask)`
+- `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+  - added `test_builtin_abs_float_lowers_to_double_abs`
+  - added `test_builtin_abs_float_preserves_nan_and_negative_zero`
+
+Design note:
+- the issue proposal suggested a generalized `DoubleUnaryOp<Abs>`
+- the current codebase does not have a reusable `DoubleUnaryOp` family, only dedicated nodes like `DoubleSqrt`
+- the minimal consistent implementation is therefore a dedicated `DoubleAbs`
+
+Remote ARM verification:
+- editable rebuild on `/root/work/frame-stage-local`: success
+- targeted tests:
+  - `test_builtin_abs_float_lowers_to_double_abs`: passed
+  - `test_builtin_abs_float_preserves_nan_and_negative_zero`: passed
+
+Optimized HIR for `__main__:abs_builtin`:
+- `LoadGlobalCached<"abs">`
+- `GuardIs<builtin abs>`
+- `GuardType<FloatExact>`
+- `PrimitiveUnbox<CDouble>`
+- `DoubleAbs`
+- `PrimitiveBox<CDouble>`
+- `Return`
+- no `VectorCall`
+
+Opcode counts:
+- `counts_builtin`
+  - `DoubleAbs = 1`
+  - `GuardIs = 1`
+  - `GuardType = 1`
+  - `PrimitiveUnbox = 1`
+  - `PrimitiveBox = 1`
+  - `VectorCall = 0`
+
+Correctness checks:
+- `abs(float("nan"))` still yields `nan`
+- `abs(-0.0)` yields positive zero
+- representative finite values matched the manual implementation
+
+Performance (`N = 2_000_000`):
+- `abs_builtin`: `0.7133366869529709s`
+- `abs_manual`: `0.649760145926848s`
+- `abs_ratio`: `1.0978461689666028x`
+
+Conclusion:
+- issue33 is fixed against the stated acceptance bar:
+  - the generic `VectorCall` path is gone
+  - the optimized HIR contains `DoubleAbs`
+  - performance is now close to the manual branch baseline on ARM (`~1.10x`, below the issue's `1.3x` problem threshold)
