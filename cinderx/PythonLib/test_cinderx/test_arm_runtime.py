@@ -2124,6 +2124,64 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreaterEqual(len(lines), 6, proc.stdout)
             self.assertEqual(lines[-6:], ["-1", "1", "2", "2", "3", "26"])
 
+    def test_len_truthiness_avoids_boxed_int_compare(self) -> None:
+        # Regression guard:
+        # `while len(lst):` should not box the length result back to LongExact
+        # just to compare it against zero for truthiness.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def test_len_truthiness(lst):
+                hits = 0
+                while len(lst):
+                    hits += 1
+                    break
+                return hits
+
+            data = list(range(8))
+            for _ in range(100000):
+                test_len_truthiness(data)
+
+            assert jit.force_compile(test_len_truthiness)
+            print(test_len_truthiness([]))
+            print(test_len_truthiness([1]))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/len_truthiness_primitive_bool.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITDUMPFINALHIR"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            dump = proc.stdout + "\n" + proc.stderr
+            self.assertNotIn("PrimitiveBox<CInt64>", dump)
+            self.assertIn("GetLengthInt64", dump)
+            self.assertIn("PrimitiveCompare<NotEqual>", dump)
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 2, proc.stdout)
+            self.assertEqual(lines[-2:], ["0", "1"])
+
     def test_primitive_unbox_cse_for_float_add_self(self) -> None:
         # Regression guard:
         # for g(x) = x + x (float path), final HIR should keep a single

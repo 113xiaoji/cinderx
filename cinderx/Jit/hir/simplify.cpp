@@ -1314,6 +1314,22 @@ Register* simplifyPrimitiveCompare(Env& env, const PrimitiveCompare* instr) {
   Register* right = instr->GetOperand(1);
   if (instr->op() == PrimitiveCompareOp::kEqual ||
       instr->op() == PrimitiveCompareOp::kNotEqual) {
+    Register* left_unboxed = unboxLenArithmeticInt(left);
+    Register* right_unboxed = unboxLenArithmeticInt(right);
+    auto left_const = getBoxedLongConst(left);
+    auto right_const = getBoxedLongConst(right);
+
+    if (left_unboxed != nullptr && right_const.has_value() &&
+        *right_const == 0 && isLenDerivedInt(left_unboxed)) {
+      Register* zero = env.emit<LoadConst>(Type::fromCInt(0, TCInt64));
+      return env.emit<PrimitiveCompare>(instr->op(), left_unboxed, zero);
+    }
+    if (right_unboxed != nullptr && left_const.has_value() &&
+        *left_const == 0 && isLenDerivedInt(right_unboxed)) {
+      Register* zero = env.emit<LoadConst>(Type::fromCInt(0, TCInt64));
+      return env.emit<PrimitiveCompare>(instr->op(), zero, right_unboxed);
+    }
+
     auto do_cbool = [&](bool value) {
       env.emit<UseType>(left, left->type());
       env.emit<UseType>(right, right->type());

@@ -3445,7 +3445,6 @@ Conclusion:
   - current: `1.3242973680607975s`
   - base: `1.5738149019889534s`
   - speedup: about `15.9%`
-
 ## 2026-03-15 issue33 builtin abs float specialization
 
 Problem confirmation:
@@ -3517,3 +3516,97 @@ Conclusion:
   - the generic `VectorCall` path is gone
   - the optimized HIR contains `DoubleAbs`
   - performance is now close to the manual branch baseline on ARM (`~1.10x`, below the issue's `1.3x` problem threshold)
+
+## 2026-03-15 DeltaBlue HIR/LIR analysis
+
+- Host: `124.70.162.35`
+- Worktrees:
+  - base: `/root/work/cinderx-deltablue-base` @ `c3ac4a6`
+  - dev: `/root/work/cinderx-deltablue-dev`
+- Runtime entry:
+  - `PYTHONPATH=<worktree>/cinderx/PythonLib:<worktree>/scratch/temp.linux-aarch64-cpython-314`
+  - `/root/venv-cinderx314-loadmethodstub-20260309_210647/bin/python`
+
+### Hotspot summary
+
+- The hottest DeltaBlue function on the current base was `bm_deltablue_run.BinaryConstraint.choose_method`.
+- Base direct HIR counts for `choose_method` showed:
+  - `CallMethod: 5`
+  - `LoadAttrCached: 24`
+  - `LoadGlobalCached: 13`
+  - `GuardIs: 13`
+- The 5 `CallMethod` sites were all `Strength.stronger/weaker` classmethod wrappers.
+
+### Optimization candidate that was tested
+
+- Extended builtin load-method elimination for exact type-receiver method loads from:
+  - `{LoadTypeMethodCacheEntryValue | FillTypeMethodCache}`
+- Added runtime regressions:
+  - `ArmRuntimeTests.test_type_classmethod_call_eliminates_callmethod`
+  - `ArmRuntimeTests.test_type_classmethod_call_deopts_on_mutation`
+- Both regressions passed on the remote host.
+
+### Measured outcomes
+
+- Phase 1, `CallMethod -> VectorCall` only:
+  - the small repro removed `CallMethod` and deopted correctly on classmethod mutation
+  - but DeltaBlue steady-state signal was not better than base
+- Phase 2, rerun inliner after builtin-load-method elimination:
+  - did not inline `Strength.stronger/weaker` in practice
+- Phase 3, directly inline trivial `return a.attr < b.attr` / `>` wrappers:
+  - correctness still passed
+  - but `choose_method` grew from compiled size `7576` to `8808`
+  - `LoadAttrCached` rose from `24` to `34`
+  - steady-state benchmark regressed
+
+### Benchmark conclusion
+
+- The classmethod-wrapper direction is not worth landing in its current form.
+- A more stable steady-state remote benchmark on `delta_blue(100)` with warmup plus 120 timed iterations per sample showed:
+  - base median: `6.4474593489430845s`
+  - wrapper-inline candidate median: `7.182860421948135s`
+- This is a regression, so the candidate should be treated as rejected.
+
+### Remaining promising areas
+
+- `OrderedCollection` list-subclass method specialization inside `Planner.remove_propagate_from`
+- `len()` truthiness / loop-predicate cleanup in planner paths
+- A safer preloader-assisted route for exact helper-function inlining that does not bloat caller HIR
+
+## 2026-03-15 DeltaBlue follow-up: `len()` truthiness boxing removal
+
+- Remote source trees:
+  - base: `/root/work/deltablue-upload-base`
+  - dev: `/root/work/deltablue-upload-dev`
+- Python:
+  - `/opt/python-3.14/bin/python3.14`
+- Added a narrow HIR simplification in [simplify.cpp](/c:/work/code/issue14/cinderx/Jit/hir/simplify.cpp) for:
+  - `PrimitiveCompare<Equal|NotEqual>`
+  - one side is `len()`-derived primitive integer or a `PrimitiveBox` of it
+  - the other side is boxed zero
+- This removes the unnecessary `PrimitiveBox<CInt64>` bridge from loop predicates such as `while len(todo):`.
+
+### Regression coverage
+
+- Added [test_arm_runtime.py](/c:/work/code/issue14/cinderx/PythonLib/test_cinderx/test_arm_runtime.py):
+  - `ArmRuntimeTests.test_len_truthiness_avoids_boxed_int_compare`
+- Re-ran:
+  - `ArmRuntimeTests.test_len_arithmetic_uses_primitive_int_chain`
+- Remote result: both `OK`
+
+### Benchmark
+
+- Steady-state remote benchmark on `bm_deltablue` inner workload `delta_blue(100)`:
+  - warmup: 120 calls
+  - samples: 7
+  - each sample: 120 timed calls
+- Median results:
+  - base: `0.798756735981442`
+  - dev: `0.7747377860359848`
+- Improvement:
+  - about `3.0%` faster
+
+### Conclusion
+
+- This `len()` truthiness cleanup is a viable positive optimization.
+- It is much smaller and lower-risk than the rejected classmethod-wrapper experiment above.
