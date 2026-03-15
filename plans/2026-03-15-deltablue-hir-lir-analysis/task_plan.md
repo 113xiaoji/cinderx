@@ -53,3 +53,35 @@ Find the highest-value HIR/LIR optimization opportunities in `pyperformance bm_d
   - very small HIR change
   - targeted regression test passed remotely
   - steady-state DeltaBlue benchmark improved on the remote host
+- Current local follow-up findings:
+  - attempted:
+    - narrow `CallMethod -> VectorCall<..., static>` rewrite for constant
+      `PyMethodDescr` receivers in `simplifyCallMethod()`
+    - builder/bytecode plumbing to preserve
+      `CALL_LIST_APPEND` / `CALL_METHOD_DESCRIPTOR_*`
+  - remote ARM result on `/root/work/cinderx-main`:
+    - targeted list-subclass repros still compiled to
+      `LoadMethodCached + GetSecondOutput + CallMethod`
+    - `CallMethod` count stayed at `1` for both `append` and `pop(0)`
+  - conclusion:
+    - this patch is not worth keeping in code form
+    - the real optimization point is earlier than the current HIR simplify hook
+      and likely earlier than the current builder call lowering as well
+- Follow-up on the follow-up:
+  - root cause proved by remote instrumentation:
+    - builder already saw specialized call opcodes
+      (`CALL_LIST_APPEND`, `CALL_METHOD_DESCRIPTOR_FAST`)
+    - but the callable register had no output type yet during HIR construction
+  - fix:
+    - preserve the specialized call families in `BytecodeInstruction::specializedOpcode()`
+    - in `emitAnyCall()`, inspect the callable's defining `LoadConst` instruction
+      instead of the register output type
+    - rewrite method-descriptor specialized calls to `VectorCall<..., static>`
+  - remote ARM result on `/root/work/cinderx-main`:
+    - `append_once`: `CallMethod: 0`, `ListAppend: 1`
+    - `pop_front`: `CallMethod: 0`, `VectorCall: 1`
+    - targeted runtime regressions passed
+  - benchmark result:
+    - stable positive DeltaBlue signal on remote AArch64
+    - direct `delta_blue(100)` samples in isolated base/dev venvs showed about
+      `2.0%` to `2.3%` median speedup for `dev`

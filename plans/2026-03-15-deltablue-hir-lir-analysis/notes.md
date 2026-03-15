@@ -154,3 +154,156 @@
 ### Current assessment
 - Unlike the classmethod experiment, this optimization is small, safe, and benchmark-positive.
 - This is a viable candidate to keep and prepare for commit once the unrelated failed experiment changes are cleaned out locally.
+
+## Current local follow-up: list-subclass queue methods
+
+### Motivation
+- DeltaBlue still spends meaningful time in planner queue maintenance.
+- A direct repro with `OrderedCollection(list)` confirms 3.14 adaptive
+  bytecode reaches:
+  - `LOAD_ATTR_METHOD_WITH_VALUES`
+  - `CALL_LIST_APPEND`
+  - `CALL_METHOD_DESCRIPTOR_FAST`
+
+### Attempted implementation
+- Attempt 1:
+  - in `simplifyCallMethod()`, convert constant-`PyMethodDescr` method calls to
+    `VectorCall<..., static>`
+- Attempt 2:
+  - preserve `CALL_LIST_APPEND` and `CALL_METHOD_DESCRIPTOR_*` in
+    `BytecodeInstruction::specializedOpcode()`
+  - in `emitAnyCall()`, rewrite those specialized call families to
+    `VectorCall<..., static>` so existing vectorcall/list-append fast paths can
+    trigger
+
+### Remote validation
+- Host: `124.70.162.35`
+- Workdir: `/root/work/cinderx-main`
+- Runtime used for validation:
+  - `/root/venv-cinderx314/bin/python`
+  - `PYTHONPATH=/root/work/cinderx-main/cinderx/PythonLib`
+- Result:
+  - targeted repros still compiled to:
+    - `LoadMethodCached`
+    - `GetSecondOutput`
+    - `CallMethod`
+  - opcode counts stayed:
+    - `append_once`: `CallMethod: 1`, `ListAppend: 0`
+    - `pop_front`: `CallMethod: 1`, `VectorCall: 0`
+
+### Conclusion
+- The current code patch is not effective and should not be kept.
+- The important finding is architectural:
+  - the profitable DeltaBlue direction is still planner queue maintenance
+  - but the real loss of specialization happens before the current HIR rewrite
+    takes effect
+- Best next step:
+  - instrument or test the exact bytecode-to-HIR path for
+    `LOAD_ATTR_METHOD_WITH_VALUES` + specialized call families
+  - find where that path is collapsing back to
+    `LoadMethodCached + GetSecondOutput + CallMethod`
+  - only then add a new fast path
+
+## Successful follow-up: builder-time method-descriptor calls
+
+### Root cause
+- Remote instrumentation on `append_once` / `pop_front` showed:
+  - builder did see specialized call opcodes:
+    - `CALL_LIST_APPEND`
+    - `CALL_METHOD_DESCRIPTOR_FAST`
+  - but the callable register still had no output type during HIR building
+- The specialized load path was already doing the right thing:
+  - `LOAD_ATTR_METHOD_WITH_VALUES` produced a constant `LoadConst` carrying the
+    method descriptor
+- The missed optimization was specifically:
+  - checking the register output type too early instead of inspecting the
+    defining `LoadConst` instruction
+
+### Final implementation
+- `BytecodeInstruction::specializedOpcode()` now preserves:
+  - `CALL_LIST_APPEND`
+  - `CALL_METHOD_DESCRIPTOR_FAST`
+  - `CALL_METHOD_DESCRIPTOR_FAST_WITH_KEYWORDS`
+  - `CALL_METHOD_DESCRIPTOR_NOARGS`
+  - `CALL_METHOD_DESCRIPTOR_O`
+- `HIRBuilder::emitAnyCall()` now:
+  - detects those specialized call families
+  - looks through the callable's defining `LoadConst`
+  - rewrites exact method-descriptor calls to `VectorCall<..., static>`
+
+### Remote validation
+- Host: `124.70.162.35`
+- Workdir: `/root/work/cinderx-main`
+- Runtime:
+  - `/root/venv-cinderx314/bin/python`
+  - `PYTHONPATH=/root/work/cinderx-main/cinderx/PythonLib`
+- Initial HIR after the fix:
+  - `append_once`:
+    - `LoadConst<method_descriptor>`
+    - `VectorCall<2, static>` for `todo.append(value)`
+  - `pop_front`:
+    - `LoadConst<method_descriptor>`
+    - `VectorCall<2, static>` for `todo.pop(0)`
+- Final HIR opcode counts:
+  - `append_once`:
+    - `CallMethod: 0`
+    - `ListAppend: 1`
+  - `pop_front`:
+    - `CallMethod: 0`
+    - `VectorCall: 1`
+
+### Regression coverage
+- Added:
+  - `ArmRuntimeTests.test_list_subclass_append_eliminates_callmethod`
+  - `ArmRuntimeTests.test_list_subclass_pop_front_eliminates_callmethod`
+- Remote targeted result:
+  - both tests `OK`
+
+### Benchmark
+- Setup:
+  - host: `124.70.162.35`
+  - Python: `/opt/python-3.14/bin/python3.14`
+  - isolated installs:
+    - base venv: `/root/venv-deltablue-call-base`
+    - dev venv: `/root/venv-deltablue-call-dev`
+  - source trees:
+    - base: `/root/work/deltablue-call-base` from local `HEAD`
+    - dev: `/root/work/deltablue-call-dev` from the local working tree with
+      the builder-time method-descriptor call patch
+- Workload:
+  - import `bm_deltablue/run_benchmark.py`
+  - run `delta_blue(100)`
+  - per sample:
+    - warmup: 120 calls
+    - timed section: 120 calls
+  - JIT config:
+    - `jit.enable()`
+    - `jit.enable_specialized_opcodes()`
+    - `jit.compile_after_n_calls(50)`
+
+#### Sample set A
+- Order:
+  - each round ran `base` then `dev`
+  - rounds: `9`
+- Results:
+  - base median: `0.6895708830561489`
+  - dev median: `0.6754572099307552`
+  - speedup: about `2.05%`
+
+#### Sample set B
+- Order:
+  - odd rounds: `dev` then `base`
+  - even rounds: `base` then `dev`
+  - rounds: `8`
+- Results:
+  - base median: `0.6928998510120437`
+  - dev median: `0.6767660090117715`
+  - speedup: about `2.33%`
+
+### Assessment
+- The signal stayed positive even after removing fixed ordering bias.
+- This looks like a real but modest DeltaBlue improvement.
+- Current expectation:
+  - worth keeping if code review stays comfortable with the builder-time
+    specialized-call rewrite
+  - not a huge benchmark swing, but meaningfully above noise

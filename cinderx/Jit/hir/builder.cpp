@@ -79,6 +79,18 @@ std::optional<Type> getLoadGlobalGuardType(BorrowedRef<> value) {
   return exact_type;
 }
 
+PyObject* getConstantObject(Register* reg) {
+  if (reg->instr()->IsLoadConst()) {
+    return static_cast<LoadConst*>(reg->instr())->type().asObject();
+  }
+  return reg->type().asObject();
+}
+
+bool isMethodDescr(Register* callable) {
+  PyObject* callable_obj = getConstantObject(callable);
+  return callable_obj != nullptr && Py_TYPE(callable_obj) == &PyMethodDescr_Type;
+}
+
 struct StdlibArrayDescr {
   char typecode;
   int itemsize;
@@ -2151,6 +2163,42 @@ void HIRBuilder::emitAnyCall(
         flags |= CallFlags::KwArgs;
       }
 
+      if (getConfig().specialized_opcodes &&
+          !(tc.frame.stack.peek(num_stack_inputs - 1)->type() <= TNullptr)) {
+        Register* callable = tc.frame.stack.peek(num_stack_inputs);
+        switch (bc_instr.specializedOpcode()) {
+          case CALL_LIST_APPEND:
+          case CALL_METHOD_DESCRIPTOR_FAST:
+          case CALL_METHOD_DESCRIPTOR_FAST_WITH_KEYWORDS:
+          case CALL_METHOD_DESCRIPTOR_NOARGS:
+          case CALL_METHOD_DESCRIPTOR_O:
+            if (isMethodDescr(callable)) {
+              Register* out = temps_.AllocateStack();
+              auto call = tc.emit<VectorCall>(
+                  num_operands, out, flags | CallFlags::Static);
+              for (auto i = num_stack_inputs; i > 0; i--) {
+                Register* arg = tc.frame.stack.pop();
+                call->SetOperand(i - 1, arg);
+              }
+              if (kwnames_ != nullptr) {
+                JIT_CHECK(
+                    call->GetOperand(num_operands - 1) == nullptr,
+                    "Somehow already set the kwnames argument");
+                call->SetOperand(num_operands - 1, kwnames_);
+                kwnames_ = nullptr;
+              }
+              call->setFrameState(tc.frame);
+              tc.frame.stack.push(out);
+              break;
+            }
+            [[fallthrough]];
+          default:
+            goto generic_call;
+        }
+        break;
+      }
+
+generic_call:
       // Manually set up the instruction instead of using emitVariadic.
       // kwnames_ isn't on the stack, but it has to be part of the operand
       // count.

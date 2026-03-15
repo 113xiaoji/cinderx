@@ -1582,6 +1582,122 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(float(lines[-1]), 48.0, proc.stdout)
 
+    def test_list_subclass_append_eliminates_callmethod(self) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        # Regression guard:
+        # heap list subclasses inheriting list.append should avoid CallMethod
+        # and reach the dedicated ListAppend fast path.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class OrderedCollection(list):
+                pass
+
+            def append_once(todo, value):
+                todo.append(value)
+                return len(todo)
+
+            todo = OrderedCollection()
+            for i in range(10000):
+                append_once(todo, i)
+
+            assert jit.force_compile(append_once)
+            counts = cinderjit.get_function_hir_opcode_counts(append_once)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("ListAppend", 0))
+            print(append_once(todo, 10000))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/list_subclass_append_no_callmethod.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 10001, proc.stdout)
+
+    def test_list_subclass_pop_front_eliminates_callmethod(self) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        # Regression guard:
+        # heap list subclasses inheriting list.pop should avoid CallMethod and
+        # keep the specialized method-descriptor call as VectorCall.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class OrderedCollection(list):
+                pass
+
+            def pop_front(todo):
+                return todo.pop(0)
+
+            todo = OrderedCollection([0, 1, 2, 3])
+            for _ in range(10000):
+                item = pop_front(todo)
+                todo.append(item)
+
+            assert jit.force_compile(pop_front)
+            counts = cinderjit.get_function_hir_opcode_counts(pop_front)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("VectorCall", 0))
+            print(pop_front(OrderedCollection([7, 8, 9])))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/list_subclass_pop_front_no_callmethod.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 7, proc.stdout)
+
     def test_math_sqrt_cdouble_lowers_to_double_sqrt(self) -> None:
         # Regression guard:
         # builtin math.sqrt on a CDouble input should lower to DoubleSqrt and
