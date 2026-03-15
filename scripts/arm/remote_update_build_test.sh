@@ -15,12 +15,21 @@ BENCH="${BENCH:-richards}"
 AUTOJIT="${AUTOJIT:-50}"
 SMOKE_AUTOJIT="${SMOKE_AUTOJIT:-10}"
 PARALLEL="${PARALLEL:-1}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_PYPERF="${SKIP_PYPERF:-0}"
 RECREATE_PYPERF_VENV="${RECREATE_PYPERF_VENV:-0}"
 AUTOJIT_GATE="${AUTOJIT_GATE:-$AUTOJIT}"
 AUTOJIT_USE_JITLIST_FILTER="${AUTOJIT_USE_JITLIST_FILTER:-1}"
 AUTOJIT_EXTRA_JITLIST="${AUTOJIT_EXTRA_JITLIST:-}"
 ARM_RUNTIME_SKIP_TESTS="${ARM_RUNTIME_SKIP_TESTS:-}"
+SKIP_ARM_RUNTIME_TESTS="${SKIP_ARM_RUNTIME_TESTS:-0}"
+EXTRA_TEST_CMD="${EXTRA_TEST_CMD:-}"
+EXTRA_VERIFY_CMD="${EXTRA_VERIFY_CMD:-}"
+PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES="${PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES:-1}"
+CINDERX_ENABLE_SPECIALIZED_OPCODES="${CINDERX_ENABLE_SPECIALIZED_OPCODES:-0}"
+CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS="${CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS:-0}"
+CINDERX_PYPERF_PRECOMPILE_LOCALS="${CINDERX_PYPERF_PRECOMPILE_LOCALS:-0}"
+CINDERX_JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-}"
 
 if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AUTOJIT_GATE must be a non-negative integer, got '$AUTOJIT_GATE'"
@@ -30,10 +39,45 @@ if [[ "$AUTOJIT_USE_JITLIST_FILTER" != "0" && "$AUTOJIT_USE_JITLIST_FILTER" != "
   echo "ERROR: AUTOJIT_USE_JITLIST_FILTER must be 0 or 1, got '$AUTOJIT_USE_JITLIST_FILTER'"
   exit 1
 fi
+if [[ "$SKIP_BUILD" != "0" && "$SKIP_BUILD" != "1" ]]; then
+  echo "ERROR: SKIP_BUILD must be 0 or 1, got '$SKIP_BUILD'"
+  exit 1
+fi
+if [[ "$PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES" != "0" && "$PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES" != "1" ]]; then
+  echo "ERROR: PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES must be 0 or 1, got '$PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES'"
+  exit 1
+fi
+if [[ "$CINDERX_ENABLE_SPECIALIZED_OPCODES" != "0" && "$CINDERX_ENABLE_SPECIALIZED_OPCODES" != "1" ]]; then
+  echo "ERROR: CINDERX_ENABLE_SPECIALIZED_OPCODES must be 0 or 1, got '$CINDERX_ENABLE_SPECIALIZED_OPCODES'"
+  exit 1
+fi
+if [[ "$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS" != "0" && "$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS" != "1" ]]; then
+  echo "ERROR: CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS must be 0 or 1, got '$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS'"
+  exit 1
+fi
+if [[ "$CINDERX_PYPERF_PRECOMPILE_LOCALS" != "0" && "$CINDERX_PYPERF_PRECOMPILE_LOCALS" != "1" ]]; then
+  echo "ERROR: CINDERX_PYPERF_PRECOMPILE_LOCALS must be 0 or 1, got '$CINDERX_PYPERF_PRECOMPILE_LOCALS'"
+  exit 1
+fi
+if [[ "$SKIP_ARM_RUNTIME_TESTS" != "0" && "$SKIP_ARM_RUNTIME_TESTS" != "1" ]]; then
+  echo "ERROR: SKIP_ARM_RUNTIME_TESTS must be 0 or 1, got '$SKIP_ARM_RUNTIME_TESTS'"
+  exit 1
+fi
 
 mkdir -p "$WORKDIR" "$INCOMING_DIR" /root/work/arm-sync
 
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
+
+run_extra_cmd() {
+  local label="$1"
+  local cmd="$2"
+  if [[ -z "$cmd" ]]; then
+    return 0
+  fi
+  echo ">> $label"
+  env WORKDIR="$WORKDIR" DRIVER_VENV="$DRIVER_VENV" PYTHON="$DRIVER_VENV/bin/python" \
+    bash -lc "cd '$WORKDIR' && $cmd"
+}
 
 echo ">> staging extract"
 stage="$(mktemp -d /root/work/cinderx-stage.XXXXXX)"
@@ -45,10 +89,19 @@ rm -rf "$stage" "$INCOMING_DIR/cinderx-update.tar"
 
 cd "$WORKDIR"
 export CMAKE_BUILD_PARALLEL_LEVEL="$PARALLEL"
+export CINDERX_BUILD_JOBS="$PARALLEL"
 
-echo ">> build wheel (CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL)"
-"$PY" -m build --wheel
+if [[ "$SKIP_BUILD" == "1" ]]; then
+  echo ">> skip build and reuse latest wheel from dist/"
+else
+  echo ">> build wheel (CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL, CINDERX_BUILD_JOBS=$CINDERX_BUILD_JOBS)"
+  "$PY" -m build --wheel
+fi
 WHEEL="$(ls -1t dist/cinderx-*.whl | head -n 1)"
+if [[ -z "$WHEEL" || ! -f "$WHEEL" ]]; then
+  echo "ERROR: no wheel found under dist/"
+  exit 1
+fi
 echo "wheel=$WHEEL"
 
 if [[ ! -d "$DRIVER_VENV" ]]; then
@@ -63,14 +116,15 @@ PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
 PYTHONJIT=0 python -m pip install -q -U pyperformance
 
 echo ">> unittest: ARM runtime checks"
-if [[ -z "$ARM_RUNTIME_SKIP_TESTS" ]]; then
+if [[ "$SKIP_ARM_RUNTIME_TESTS" == "1" ]]; then
+  echo "skipping ARM runtime suite because SKIP_ARM_RUNTIME_TESTS=1"
+elif [[ -z "$ARM_RUNTIME_SKIP_TESTS" ]]; then
   python cinderx/PythonLib/test_cinderx/test_arm_runtime.py
 else
   env ARM_RUNTIME_SKIP_TESTS="$ARM_RUNTIME_SKIP_TESTS" python - <<'PY'
 import importlib.util
 import os
 import pathlib
-import sys
 import unittest
 
 skip_tokens = [
@@ -120,6 +174,8 @@ if not result.wasSuccessful():
 PY
 fi
 
+run_extra_cmd "extra test command" "$EXTRA_TEST_CMD"
+
 echo ">> smoke: JIT is effective (compiled code executes, not just 'enabled')"
 # We verify effectiveness by:
 # 1) Run a function in interpreted mode and observe interpreted call count increases.
@@ -166,6 +222,8 @@ print("jit-effective-ok", "compiled_size", code_size, "interp_calls", interp1)
 PY
 deactivate
 
+run_extra_cmd "extra verification command" "$EXTRA_VERIFY_CMD"
+
 echo ">> ensure pyperformance venv exists"
 . "$DRIVER_VENV/bin/activate"
 ensure_pyperf_venv() {
@@ -211,105 +269,67 @@ if [[ -z "$PYVENV_PATH" || ! -d "$PYVENV_PATH" ]]; then
   python -m pyperformance venv show || true
   exit 1
 fi
+if [[ "$PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES" == "1" ]]; then
+  echo ">> normalize pyperformance venv to include system site-packages"
+  python - <<'PY' "$PYVENV_PATH/pyvenv.cfg"
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines()
+updated = False
+for idx, line in enumerate(lines):
+    if line.startswith("include-system-site-packages"):
+        lines[idx] = "include-system-site-packages = true"
+        updated = True
+        break
+if not updated:
+    lines.append("include-system-site-packages = true")
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+fi
+PYPERF_VENV_CHECK_ARGS=()
+if [[ "$PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES" == "1" ]]; then
+  PYPERF_VENV_CHECK_ARGS+=(--require-system-site-packages)
+fi
+python scripts/arm/verify_pyperf_venv.py \
+  --venv "$PYVENV_PATH" \
+  "${PYPERF_VENV_CHECK_ARGS[@]}" \
+  --output "/root/work/arm-sync/pyperf_venv_${RUN_ID}_cfg.json"
 deactivate
 
 echo ">> install wheel into pyperformance venv"
 . "$PYVENV_PATH/bin/activate"
 PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
-SITEPKG="$(python -c 'import site; print(site.getsitepackages()[0])')"
-
-cat >"$SITEPKG/sitecustomize.py" <<'PY'
-# Auto-load CinderX for pyperformance benchmark subprocesses.
-#
-# This file lives inside the pyperformance benchmark venv. It runs at
-# interpreter startup, so keep it defensive and side-effect free.
-#
-# We intentionally skip loading CinderX/JIT for packaging/bootstrap commands
-# (ensurepip, get-pip, pip) to keep environment setup stable.
-
-import os
-import sys
-
-
-def _argv_tokens():
-    toks = []
-    orig = getattr(sys, "orig_argv", None)
-    if orig:
-        toks.extend([str(x) for x in orig])
-    toks.extend([str(x) for x in getattr(sys, "argv", [])])
-    return toks
-
-
-tokens = _argv_tokens()
-argv = getattr(sys, "argv", [])
-argv0 = argv[0] if argv else ""
-orig_argv = getattr(sys, "orig_argv", None)
-
-
-def _has_token(name: str) -> bool:
-    for t in tokens:
-        if t == name:
-            return True
-    return False
-
-
-def _has_suffix(suffix: str) -> bool:
-    for t in tokens:
-        if t.endswith(suffix):
-            return True
-    return False
-
-
-def _contains(substr: str) -> bool:
-    for t in tokens:
-        if substr in t:
-            return True
-    return False
-
-
-skip = (
-    _has_token("ensurepip")
-    or _has_token("pip")
-    or _has_suffix("get-pip.py")
-    or argv0.endswith("get-pip.py")
-    # ensurepip bootstraps pip via: python -c '... runpy.run_module("pip", ...)'
-    or _contains('run_module("pip"')
-    or _contains("run_module('pip'")
-)
-
-try:
-    with open("/tmp/cinderx_sitecustomize.log", "a", encoding="utf-8") as f:
-        f.write(
-            "argv=%r orig_argv=%r tokens=%r skip=%s disable=%r auto=%r\n"
-            % (
-                argv,
-                orig_argv,
-                tokens,
-                skip,
-                os.environ.get("PYTHONJITDISABLE"),
-                os.environ.get("PYTHONJITAUTO"),
-            )
-        )
-except Exception:
-    pass
-
-if not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
-    try:
-        import cinderx.jit as jit
-
-        if os.environ.get("PYTHONJITDISABLE") in (None, "", "0"):
-            jit.enable()
-    except Exception:
-        # Don't make interpreter startup depend on the JIT.
-        pass
-PY
-
 deactivate
+HOOK_DIR="$WORKDIR/scripts/arm/pyperf_env_hook"
+if [[ ! -f "$HOOK_DIR/sitecustomize.py" ]]; then
+  echo "ERROR: missing pyperformance startup hook: $HOOK_DIR/sitecustomize.py"
+  exit 1
+fi
+
+echo ">> verify pyperformance venv worker startup"
+env PYTHONJITAUTO="$SMOKE_AUTOJIT" \
+  PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+  CINDERX_ENABLE_SPECIALIZED_OPCODES="$CINDERX_ENABLE_SPECIALIZED_OPCODES" \
+  CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS="$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS" \
+  CINDERX_PYPERF_PRECOMPILE_LOCALS="$CINDERX_PYPERF_PRECOMPILE_LOCALS" \
+  "$DRIVER_VENV/bin/python" scripts/arm/verify_pyperf_venv.py \
+    --venv "$PYVENV_PATH" \
+    --probe-worker \
+    --worker-argv-token=--debug-single-value \
+    --worker-env=PYPERFORMANCE_RUNID=pyperf-probe \
+    --require-sitecustomize-prefix "$HOOK_DIR" \
+    --require-cinderx-initialized \
+    --require-jit-enabled \
+    "${PYPERF_VENV_CHECK_ARGS[@]}" \
+    --output "/root/work/arm-sync/pyperf_venv_${RUN_ID}_worker.json"
 
 echo ">> smoke: JIT init + generator + regex compile"
 # Keep startup smoke below known crash-prone aggressive thresholds while still
 # exercising JIT-enabled initialization in the benchmark venv.
-env PYTHONJITAUTO="$SMOKE_AUTOJIT" "$PYVENV_PATH/bin/python" -c 'g=(i for i in [1]); next(g, None); import re; re.compile("a+"); print("smoke-ok")'
+env PYTHONJITAUTO="$SMOKE_AUTOJIT" PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" CINDERX_ENABLE_SPECIALIZED_OPCODES="$CINDERX_ENABLE_SPECIALIZED_OPCODES" CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS="$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS" CINDERX_PYPERF_PRECOMPILE_LOCALS="$CINDERX_PYPERF_PRECOMPILE_LOCALS" "$PYVENV_PATH/bin/python" -c 'g=(i for i in [1]); next(g, None); import re; re.compile("a+"); print("smoke-ok")'
 
 if [[ "$SKIP_PYPERF" == "1" ]]; then
   echo "SKIP_PYPERF=1 set; done after smoke."
@@ -317,43 +337,34 @@ if [[ "$SKIP_PYPERF" == "1" ]]; then
 fi
 
 echo ">> pyperformance gate (jitlist, debug-single-value)"
-cat >/tmp/jitlist_gate.txt <<'EOF'
-__main__:*
-EOF
 . "$DRIVER_VENV/bin/activate"
-env PYTHONJITLISTFILE=/tmp/jitlist_gate.txt PYTHONJITENABLEJITLISTWILDCARDS=1 \
+JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-__main__:*}"
+env PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" CINDERX_JITLIST_ENTRIES="$JITLIST_ENTRIES" PYTHONJITENABLEJITLISTWILDCARDS=1 \
+  CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS="$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS" \
+  CINDERX_PYPERF_PRECOMPILE_LOCALS="$CINDERX_PYPERF_PRECOMPILE_LOCALS" \
   python -m pyperformance run --debug-single-value -b "$BENCH" \
-    --inherit-environ PYTHONJITLISTFILE,PYTHONJITENABLEJITLISTWILDCARDS \
+    --inherit-environ PYTHONPATH,CINDERX_JITLIST_ENTRIES,PYTHONJITENABLEJITLISTWILDCARDS,CINDERX_ENABLE_SPECIALIZED_OPCODES,CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS,CINDERX_PYPERF_PRECOMPILE_LOCALS \
     -o "/root/work/arm-sync/${BENCH}_jitlist_${RUN_ID}.json"
 deactivate
 
 echo ">> pyperformance gate (auto-jit, debug-single-value)"
 . "$DRIVER_VENV/bin/activate"
 LOG="/tmp/jit_${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.log"
-AUTOJIT_JITLIST_FILE="/tmp/jitlist_autojit_gate_${RUN_ID}.txt"
 if [[ "$AUTOJIT_USE_JITLIST_FILTER" == "1" ]]; then
-  {
-    echo "__main__:*"
-    if [[ -n "$AUTOJIT_EXTRA_JITLIST" ]]; then
-      IFS=',' read -r -a _extra_jitlist <<< "$AUTOJIT_EXTRA_JITLIST"
-      for _entry in "${_extra_jitlist[@]}"; do
-        if [[ -n "$_entry" ]]; then
-          echo "$_entry"
-        fi
-      done
-    fi
-  } >"$AUTOJIT_JITLIST_FILE"
-  echo "autojit_jitlist=$AUTOJIT_JITLIST_FILE"
-  sed -n '1,50p' "$AUTOJIT_JITLIST_FILE"
-  env PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
-    PYTHONJITLISTFILE="$AUTOJIT_JITLIST_FILE" PYTHONJITENABLEJITLISTWILDCARDS=1 \
+  AUTOJIT_JITLIST_ENTRIES="__main__:*"
+  if [[ -n "$AUTOJIT_EXTRA_JITLIST" ]]; then
+    AUTOJIT_JITLIST_ENTRIES="$AUTOJIT_JITLIST_ENTRIES,$AUTOJIT_EXTRA_JITLIST"
+  fi
+  echo "autojit_jitlist_entries=$AUTOJIT_JITLIST_ENTRIES"
+  env PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
+    CINDERX_JITLIST_ENTRIES="$AUTOJIT_JITLIST_ENTRIES" PYTHONJITENABLEJITLISTWILDCARDS=1 CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS="$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS" CINDERX_PYPERF_PRECOMPILE_LOCALS="$CINDERX_PYPERF_PRECOMPILE_LOCALS" \
     python -m pyperformance run --debug-single-value -b "$BENCH" \
-      --inherit-environ PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE,PYTHONJITLISTFILE,PYTHONJITENABLEJITLISTWILDCARDS \
+      --inherit-environ PYTHONPATH,PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE,CINDERX_JITLIST_ENTRIES,PYTHONJITENABLEJITLISTWILDCARDS,CINDERX_ENABLE_SPECIALIZED_OPCODES,CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS,CINDERX_PYPERF_PRECOMPILE_LOCALS \
       -o "/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
 else
-  env PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
+  env PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS="$CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS" CINDERX_PYPERF_PRECOMPILE_LOCALS="$CINDERX_PYPERF_PRECOMPILE_LOCALS" \
     python -m pyperformance run --debug-single-value -b "$BENCH" \
-      --inherit-environ PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE \
+      --inherit-environ PYTHONPATH,PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE,CINDERX_ENABLE_SPECIALIZED_OPCODES,CINDERX_ENABLE_TYPE_ANNOTATION_GUARDS,CINDERX_PYPERF_PRECOMPILE_LOCALS \
       -o "/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
 fi
 deactivate
