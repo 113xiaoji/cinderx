@@ -1567,7 +1567,20 @@ class INSTR_CLASS(
 };
 
 DEFINE_SIMPLE_INSTR(DoubleAbs, (TCDouble), HasOutput, Operands<1>);
+DEFINE_SIMPLE_INSTR(
+    DoubleRoundToInt,
+    (TCDouble),
+    HasOutput,
+    Operands<1>,
+    DeoptBase);
 DEFINE_SIMPLE_INSTR(DoubleSqrt, (TCDouble), HasOutput, Operands<1>);
+
+DEFINE_SIMPLE_INSTR(
+    DoubleToInt,
+    (TCDouble),
+    HasOutput,
+    Operands<1>,
+    DeoptBase);
 
 class InlineBase {
  public:

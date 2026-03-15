@@ -208,6 +208,14 @@ void updateRefTotal(BasicBlockBuilder& bbb, Instruction::Opcode op) {
   }
 }
 
+Instruction* emitDoubleConst(BasicBlockBuilder& bbb, double value) {
+  auto bits = bbb.appendInstr(
+      Instruction::kMove,
+      OutVReg{OperandBase::k64bit},
+      Imm{bit_cast<uint64_t>(value)});
+  return bbb.appendInstr(Instruction::kMove, OutVReg{OperandBase::kDouble}, bits);
+}
+
 } // namespace
 
 LIRGenerator::LIRGenerator(
@@ -592,6 +600,53 @@ void LIRGenerator::MakeDecref(
       obj->type().runtimePyTypeDestructor(),
       xdecref,
       kImmortalInstances && obj->type().couldBe(TImmortalObject));
+}
+
+void LIRGenerator::emitDoubleToInt64WithGuards(
+    BasicBlockBuilder& bbb,
+    hir::Register* output,
+    Instruction* input,
+    const hir::DeoptBase& hir_instr,
+    bool round_to_nearest) {
+  Instruction* value = input;
+  if (round_to_nearest) {
+    value = bbb.appendInstr(
+        Instruction::kFrintn, OutVReg{OperandBase::kDouble}, input);
+  }
+
+  Instruction* lower = emitDoubleConst(bbb, -9223372036854775808.0);
+  Instruction* upper = emitDoubleConst(bbb, 9223372036854775808.0);
+
+  auto check_lower = bbb.allocateBlock();
+  auto check_upper = bbb.allocateBlock();
+  auto convert = bbb.allocateBlock();
+  auto deopt = bbb.allocateBlock();
+
+  Instruction* is_not_nan = bbb.appendInstr(
+      Instruction::kEqual, OutVReg{OperandBase::k8bit}, value, value);
+  bbb.appendBranch(Instruction::kCondBranch, is_not_nan, check_lower, deopt);
+
+  bbb.switchBlock(check_lower);
+  Instruction* ge_lower = bbb.appendInstr(
+      Instruction::kGreaterThanEqualUnsigned,
+      OutVReg{OperandBase::k8bit},
+      value,
+      lower);
+  bbb.appendBranch(Instruction::kCondBranch, ge_lower, check_upper, deopt);
+
+  bbb.switchBlock(check_upper);
+  Instruction* lt_upper = bbb.appendInstr(
+      Instruction::kLessThanUnsigned,
+      OutVReg{OperandBase::k8bit},
+      value,
+      upper);
+  bbb.appendBranch(Instruction::kCondBranch, lt_upper, convert, deopt);
+
+  bbb.switchBlock(deopt);
+  appendGuardAlwaysFail(bbb, hir_instr);
+
+  bbb.switchBlock(convert);
+  bbb.appendInstr(output, Instruction::kFcvtzs, value);
 }
 
 LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
@@ -984,6 +1039,18 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       case Opcode::kDoubleAbs: {
         auto instr = static_cast<const DoubleAbs*>(&i);
         bbb.appendInstr(instr->output(), Instruction::kFabs, instr->GetOperand(0));
+        break;
+      }
+      case Opcode::kDoubleToInt: {
+        auto instr = static_cast<const DoubleToInt*>(&i);
+        emitDoubleToInt64WithGuards(
+            bbb, instr->output(), bbb.getDefInstr(instr->GetOperand(0)), *instr, false);
+        break;
+      }
+      case Opcode::kDoubleRoundToInt: {
+        auto instr = static_cast<const DoubleRoundToInt*>(&i);
+        emitDoubleToInt64WithGuards(
+            bbb, instr->output(), bbb.getDefInstr(instr->GetOperand(0)), *instr, true);
         break;
       }
       case Opcode::kPrimitiveCompare: {

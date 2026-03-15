@@ -129,6 +129,12 @@ class LIRGenerator {
       BasicBlockBuilder& bbb,
       const jit::hir::Instr& instr,
       bool xdecref);
+  void emitDoubleToInt64WithGuards(
+      BasicBlockBuilder& bbb,
+      hir::Register* output,
+      Instruction* input,
+      const hir::DeoptBase& hir_instr,
+      bool round_to_nearest);
 
   bool TranslateSpecializedCall(
       BasicBlockBuilder& bbb,

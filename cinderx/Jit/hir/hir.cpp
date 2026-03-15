@@ -371,7 +371,9 @@ bool Instr::isReplayable() const {
     case Opcode::kCIntToCBool:
     case Opcode::kDoubleAbs:
     case Opcode::kDoubleBinaryOp:
+    case Opcode::kDoubleRoundToInt:
     case Opcode::kDoubleSqrt:
+    case Opcode::kDoubleToInt:
     case Opcode::kFloatCompare:
     case Opcode::kFormatValue:
     case Opcode::kFormatWithSpec:
@@ -723,7 +725,9 @@ bool isPassthrough(const Instr& instr) {
     case Opcode::kDictUpdate:
     case Opcode::kDoubleAbs:
     case Opcode::kDoubleBinaryOp:
+    case Opcode::kDoubleRoundToInt:
     case Opcode::kDoubleSqrt:
+    case Opcode::kDoubleToInt:
     case Opcode::kEagerImportName:
     case Opcode::kFillTypeAttrCache:
     case Opcode::kFillTypeMethodCache:

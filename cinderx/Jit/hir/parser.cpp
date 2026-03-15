@@ -591,6 +591,16 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
       NEW_INSTR(DoubleAbs, dst, operand);
       break;
     }
+    case Opcode::kDoubleRoundToInt: {
+      auto operand = ParseRegister();
+      NEW_INSTR(DoubleRoundToInt, dst, operand);
+      break;
+    }
+    case Opcode::kDoubleToInt: {
+      auto operand = ParseRegister();
+      NEW_INSTR(DoubleToInt, dst, operand);
+      break;
+    }
     case Opcode::kCompare: {
       expect("<");
       CompareOp op = ParseCompareOpName(GetNextToken());

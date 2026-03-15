@@ -423,6 +423,8 @@ static DeoptReason getDeoptReason(const jit::hir::DeoptBase& instr) {
     }
     case jit::hir::Opcode::kDeopt:
     case jit::hir::Opcode::kDeoptPatchpoint:
+    case jit::hir::Opcode::kDoubleRoundToInt:
+    case jit::hir::Opcode::kDoubleToInt:
     case jit::hir::Opcode::kGuard:
     case jit::hir::Opcode::kGuardIs:
     case jit::hir::Opcode::kGuardType:

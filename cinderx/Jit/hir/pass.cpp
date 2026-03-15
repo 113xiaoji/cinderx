@@ -299,9 +299,13 @@ Type outputType(
     case Opcode::kDoubleAbs: {
       return TCDouble;
     }
+    case Opcode::kDoubleRoundToInt:
+      return TCInt64;
     case Opcode::kDoubleSqrt: {
       return TCDouble;
     }
+    case Opcode::kDoubleToInt:
+      return TCInt64;
     case Opcode::kLongUnboxCompact:
       return TCInt64;
     case Opcode::kPrimitiveCompare:

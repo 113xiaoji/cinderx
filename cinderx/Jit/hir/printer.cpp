@@ -520,6 +520,10 @@ static std::string format_immediates(const Function* func, const Instr& instr) {
     case Opcode::kDoubleAbs:
     case Opcode::kDoubleSqrt:
       return "";
+    case Opcode::kDoubleRoundToInt:
+      return "";
+    case Opcode::kDoubleToInt:
+      return "";
     case Opcode::kLoadArg: {
       const auto& load = static_cast<const LoadArg&>(instr);
       auto varname = format_varname(func, load, load.arg_idx());

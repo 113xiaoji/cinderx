@@ -628,10 +628,10 @@ void TranslateCompare(Environ* env, const Instruction* instr) {
           output, is_fp ? arm::CondCode::kGE : arm::CondCode::kHS);
       break;
     case Instruction::kLessThanUnsigned:
-      as->cset(output, arm::CondCode::kLO);
+      as->cset(output, is_fp ? arm::CondCode::kLT : arm::CondCode::kLO);
       break;
     case Instruction::kLessThanEqualUnsigned:
-      as->cset(output, arm::CondCode::kLS);
+      as->cset(output, is_fp ? arm::CondCode::kLE : arm::CondCode::kLS);
       break;
     default:
       JIT_ABORT("bad instruction for TranslateCompare");
@@ -1727,6 +1727,14 @@ BEGIN_RULES(Instruction::kFdiv)
   GEN("xx", ASM(divsd, OP(0), OP(1)))
 END_RULES
 
+BEGIN_RULES(Instruction::kFcvtzs)
+  GEN("Rx", ASM(cvttsd2si, OP(0), OP(1)))
+END_RULES
+
+BEGIN_RULES(Instruction::kFrintn)
+  GEN("Xx", CALL_C(translateFrintn))
+END_RULES
+
 BEGIN_RULES(Instruction::kFsqrt)
   GEN("Xx", ASM(sqrtsd, OP(0), OP(1)))
 END_RULES
@@ -2782,6 +2790,24 @@ void translateCmp(Environ* env, const Instruction* instr) {
   }
 }
 
+void translateFrintn(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  auto as = env->as;
+  auto output = AutoTranslator::getVecD(instr->output());
+  const OperandBase* input = instr->getInput(0);
+  JIT_CHECK(input->isVecD(), "Frintn expects vector-double input");
+  as->roundsd(output, AutoTranslator::getVecD(input), 0);
+#elif defined(CINDER_AARCH64)
+  auto as = env->as;
+  auto output = AutoTranslator::getVecD(instr->output());
+  const OperandBase* input = instr->getInput(0);
+  JIT_CHECK(input->isVecD(), "Frintn expects vector-double input");
+  as->frintn(output, AutoTranslator::getVecD(input));
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
 template <typename EmitFn>
 void translateIncDecOp(
     Environ* env,
@@ -3060,6 +3086,14 @@ END_RULES
 BEGIN_RULES(Instruction::kFdiv)
   GEN("Xxx", ASM(fdiv, OP(0), OP(1), OP(2)))
   GEN("xx", ASM(fdiv, OP(0), OP(0), OP(1)))
+END_RULES
+
+BEGIN_RULES(Instruction::kFcvtzs)
+  GEN("Rx", ASM(fcvtzs, OP(0), OP(1)))
+END_RULES
+
+BEGIN_RULES(Instruction::kFrintn)
+  GEN("Xx", CALL_C(translateFrintn))
 END_RULES
 
 BEGIN_RULES(Instruction::kFsqrt)

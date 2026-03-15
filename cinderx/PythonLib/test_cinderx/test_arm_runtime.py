@@ -1703,6 +1703,106 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(float(lines[-1]), 4.0, proc.stdout)
 
+    def test_int_float_builtin_lowers_to_double_to_int(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def int_builtin(x):
+                return int(x)
+
+            for _ in range(10000):
+                int_builtin(3.7)
+
+            assert jit.force_compile(int_builtin)
+            counts = cinderjit.get_function_hir_opcode_counts(int_builtin)
+            print(counts.get("DoubleToInt", 0))
+            print(counts.get("VectorCall", 0))
+            print(int_builtin(3.7))
+            print(int_builtin(-3.7))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/int_float_builtin_lowering.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertGreaterEqual(int(lines[-4]), 1, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertEqual(int(lines[-2]), 3, proc.stdout)
+            self.assertEqual(int(lines[-1]), -3, proc.stdout)
+
+    def test_round_float_builtin_lowers_to_round_to_int(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def round_builtin(x):
+                return round(x)
+
+            for _ in range(10000):
+                round_builtin(3.7)
+
+            assert jit.force_compile(round_builtin)
+            counts = cinderjit.get_function_hir_opcode_counts(round_builtin)
+            print(counts.get("DoubleRoundToInt", 0))
+            print(counts.get("VectorCall", 0))
+            print(round_builtin(2.5))
+            print(round_builtin(3.5))
+            print(round_builtin(-0.5))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/round_float_builtin_lowering.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 5, proc.stdout)
+            self.assertGreaterEqual(int(lines[-5]), 1, proc.stdout)
+            self.assertEqual(int(lines[-4]), 0, proc.stdout)
+            self.assertEqual(int(lines[-3]), 2, proc.stdout)
+            self.assertEqual(int(lines[-2]), 4, proc.stdout)
+            self.assertEqual(int(lines[-1]), 0, proc.stdout)
+
     def test_math_sqrt_negative_input_preserves_value_error(self) -> None:
         # Regression guard:
         # the native sqrt fast path must deopt/slow-path on negative doubles so

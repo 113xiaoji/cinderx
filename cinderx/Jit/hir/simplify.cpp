@@ -2489,6 +2489,79 @@ static PyObject* getKnownBuiltinMathSqrt(PyObject* value) {
   return value;
 }
 
+static PyObject* getKnownBuiltinByName(PyObject* value, const char* name) {
+  ThreadedCompileSerialize guard;
+  BorrowedRef<PyObject> builtins{PyEval_GetBuiltins()};
+  if (builtins == nullptr || !PyDict_Check(builtins)) {
+    PyErr_Clear();
+    return nullptr;
+  }
+
+  BorrowedRef<PyObject> expected{PyDict_GetItemString(builtins, name)};
+  if (expected == nullptr) {
+    PyErr_Clear();
+    return nullptr;
+  }
+  return expected == value ? expected.get() : nullptr;
+}
+
+static PyObject* getKnownBuiltinInt(PyObject* value) {
+  PyObject* expected = getKnownBuiltinByName(value, "int");
+  return expected == reinterpret_cast<PyObject*>(&PyLong_Type) ? expected : nullptr;
+}
+
+static PyObject* getKnownBuiltinRound(PyObject* value) {
+  PyObject* expected = getKnownBuiltinByName(value, "round");
+  if (expected == nullptr || !PyCFunction_Check(expected)) {
+    return nullptr;
+  }
+  auto* func = reinterpret_cast<PyCFunctionObject*>(expected);
+  if (func->m_ml == nullptr || func->m_ml->ml_name == nullptr) {
+    return nullptr;
+  }
+  return std::strcmp(func->m_ml->ml_name, "round") == 0 ? expected : nullptr;
+}
+
+static Register* getBuiltinFloatArg(
+    Env& env,
+    Register* arg,
+    const FrameState& frame) {
+  if (arg->isA(TCDouble)) {
+    return arg;
+  }
+  if (arg->instr()->IsPrimitiveBox()) {
+    auto* box = static_cast<const PrimitiveBox*>(arg->instr());
+    if (box->value()->type() <= TCDouble) {
+      return box->value();
+    }
+  }
+
+  Register* float_arg =
+      arg->isA(TFloatExact) ? arg : env.emit<GuardType>(TFloatExact, arg, frame);
+  return env.emit<PrimitiveUnbox>(float_arg, TCDouble);
+}
+
+static FrameState makeBuiltinUnaryCallFallbackFrame(
+    Env& env,
+    const VectorCall* instr) {
+  FrameState frame = *instr->frameState();
+  Register* func = instr->func();
+  Register* arg = instr->arg(0);
+
+  bool has_callable_and_null =
+      frame.stack.size() >= 2 && frame.stack.top(1) == func &&
+      frame.stack.top()->type() <= TNullptr;
+  if (!has_callable_and_null) {
+    frame.stack.push(func);
+    frame.stack.push(env.emit<LoadConst>(TNullptr));
+  }
+
+  if (frame.stack.isEmpty() || frame.stack.top() != arg) {
+    frame.stack.push(arg);
+  }
+  return frame;
+}
+
 static Register* simplifyVectorCallMathSqrt(
     Env& env,
     const VectorCall* instr) {
@@ -2540,6 +2613,43 @@ static Register* simplifyVectorCallMathSqrt(
   env.emit<GuardNonNegativeDouble>(double_arg, *instr->frameState());
   Register* result = env.emit<DoubleSqrt>(double_arg);
   return env.emit<PrimitiveBox>(result, TCDouble, *instr->frameState());
+}
+
+static Register* simplifyVectorCallBuiltinRoundOrInt(
+    Env& env,
+    const VectorCall* instr) {
+  if (instr->numArgs() != 1) {
+    return nullptr;
+  }
+
+  Register* target = modelReg(instr->func());
+  if (!target->instr()->IsGuardIs()) {
+    return nullptr;
+  }
+
+  auto* guard = static_cast<const GuardIs*>(target->instr());
+  Register* double_arg = nullptr;
+  if (getKnownBuiltinInt(guard->target()) != nullptr) {
+    FrameState fallback_frame = makeBuiltinUnaryCallFallbackFrame(env, instr);
+    double_arg = getBuiltinFloatArg(env, instr->arg(0), *instr->frameState());
+    if (double_arg == nullptr) {
+      return nullptr;
+    }
+    Register* result = env.emit<DoubleToInt>(double_arg, fallback_frame);
+    return env.emit<PrimitiveBox>(result, TCInt64, *instr->frameState());
+  }
+
+  if (getKnownBuiltinRound(guard->target()) != nullptr) {
+    FrameState fallback_frame = makeBuiltinUnaryCallFallbackFrame(env, instr);
+    double_arg = getBuiltinFloatArg(env, instr->arg(0), *instr->frameState());
+    if (double_arg == nullptr) {
+      return nullptr;
+    }
+    Register* result = env.emit<DoubleRoundToInt>(double_arg, fallback_frame);
+    return env.emit<PrimitiveBox>(result, TCInt64, *instr->frameState());
+  }
+
+  return nullptr;
 }
 
 static Register* simplifyVectorCallBuiltinAbs(
@@ -2629,11 +2739,11 @@ static Register* simplifyVectorCallBuiltinMinMax(
       [&](BasicBlock* rhs_block, BasicBlock* lhs_block) {
         env.emit<CondBranch>(choose_rhs, rhs_block, lhs_block);
       },
-      [&] { // rhs wins
+      [&] {
         env.emit<UseType>(rhs, TFloatExact);
         return rhs;
       },
-      [&] { // lhs wins
+      [&] {
         env.emit<UseType>(lhs, TFloatExact);
         return lhs;
       });
@@ -2938,6 +3048,9 @@ Register* simplifyVectorCall(Env& env, const VectorCall* instr) {
     return result;
   }
   if (Register* result = simplifyVectorCallBuiltinMinMax(env, instr)) {
+    return result;
+  }
+  if (Register* result = simplifyVectorCallBuiltinRoundOrInt(env, instr)) {
     return result;
   }
   if (Register* result = simplifyVectorCallMathSqrt(env, instr)) {

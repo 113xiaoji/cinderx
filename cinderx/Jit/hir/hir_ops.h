@@ -53,7 +53,9 @@ namespace jit::hir {
   V(DictUpdate)                        \
   V(DoubleAbs)                         \
   V(DoubleBinaryOp)                    \
+  V(DoubleRoundToInt)                  \
   V(DoubleSqrt)                        \
+  V(DoubleToInt)                       \
   V(EagerImportName)                   \
   V(EndInlinedFunction)                \
   V(FillTypeAttrCache)                 \
