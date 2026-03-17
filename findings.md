@@ -3660,3 +3660,77 @@ Conclusion:
 - The merged branch is substantially faster than the pre-merge bench branch on
   all three requested workloads while keeping the targeted ARM runtime suite
   green.
+
+## 2026-03-17 Issue 45: mutable small-int global speculation deopt loop
+
+### Scope
+
+- Issue:
+  - `#45`
+- Files:
+  - `cinderx/Jit/hir/builder.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+- Change:
+  - `LOAD_GLOBAL` exact-int speculation now uses `GuardType(LongExact)` for all
+    `PyLong_CheckExact` globals, including immortal small-int objects
+  - added a low-threshold small-int regression test to prove repeated deopts do
+    not come back
+
+### ARM validation
+
+- Scheduler-controlled leases used:
+  - compile: `21`
+  - verify: `22`
+  - benchmark: `23`
+  - baseline compile: `24`
+- Targeted runtime tests on `124.70.162.35`:
+  - `test_load_global_mutable_large_int_avoids_repeated_deopts`: `OK`
+  - `test_load_global_mutable_small_int_avoids_repeated_deopts`: `OK`
+  - `test_load_global_rebound_object_uses_type_guard`: `OK`
+
+### Target benchmark result
+
+- Clean-build direct `go` runner:
+  - `autojit2`: `0.2012550740 s`
+  - `autojit1000`: `0.2092397540 s`
+  - `nojit`: `0.2066617920 s`
+- Standard pyperformance smoke A/B:
+  - current `go`: `276 ms`
+  - baseline `go`: `350 ms`
+- Full matrix A/B (`PYTHONJITAUTO=50`, `__main__:*`):
+  - `go`: `265 ms` vs `336 ms` (about `21%` faster)
+
+### Regression summary
+
+- No large regression was found across:
+  - `generators`
+  - `coroutines`
+  - `comprehensions`
+  - `richards`
+  - `richards_super`
+  - `float`
+  - `go`
+  - `deltablue`
+  - `raytrace`
+  - `nqueens`
+  - `nbody`
+  - `unpack_sequence`
+  - `fannkuch`
+  - `coverage`
+  - `scimark`
+  - `spectral_norm`
+  - `chaos`
+  - `logging`
+- One small repeatable slowdown remains documented:
+  - `richards`: about `+4%`
+- `logging` subbenchmarks emitted pyperformance instability warnings and should
+  be treated as noisy microbench results.
+
+### Assessment
+
+- The HIR-first issue `#45` fix achieved a clear ARM win on the intended `go`
+  shape.
+- The tradeoff is acceptable for this round:
+  - strong target gain
+  - no broad regression
+  - one small `richards` slowdown explicitly recorded

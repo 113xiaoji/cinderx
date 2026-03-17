@@ -154,6 +154,97 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(int(lines[-1]), 800, proc.stdout)
 
+    def test_load_global_mutable_small_int_avoids_repeated_deopts(self) -> None:
+        # Regression guard:
+        # low-threshold autojit must not permanently value-speculate a mutable
+        # small-int global, otherwise every later call deopts forever.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(2)
+
+            TIMESTAMP = 0
+
+            class Square:
+                __slots__ = ("timestamp", "color")
+
+                def __init__(self):
+                    self.timestamp = -1
+                    self.color = 0
+
+            class Board:
+                __slots__ = ("squares", "color")
+
+                def __init__(self):
+                    self.squares = [Square() for _ in range(4)]
+                    self.color = 1
+
+                def useful(self, pos):
+                    global TIMESTAMP
+                    TIMESTAMP += 1
+
+                    square = self.squares[pos]
+                    empties = 0
+                    for neighbour in self.squares:
+                        if neighbour.timestamp != TIMESTAMP:
+                            neighbour.timestamp = TIMESTAMP
+                            empties += 1
+
+                    return empties
+
+            board = Board()
+            for _ in range(3):
+                board.useful(0)
+
+            assert jit.is_jit_compiled(Board.useful)
+            counts = cinderjit.get_function_hir_opcode_counts(Board.useful)
+
+            jit.get_and_clear_runtime_stats()
+            total = 0
+            for i in range(200):
+                total += board.useful(i % 4)
+
+            stats = jit.get_and_clear_runtime_stats()
+            deopt_count = sum(
+                entry["int"]["count"]
+                for entry in stats["deopt"]
+                if entry["normal"]["func_qualname"] == "Board.useful"
+            )
+            print(counts.get("GuardIs", 0))
+            print(counts.get("GuardType", 0))
+            print(deopt_count)
+            print(total)
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/load_global_mutable_small_int_deopt.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertEqual(int(lines[-4]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-3]), 1, proc.stdout)
+            self.assertEqual(int(lines[-2]), 0, proc.stdout)
+            self.assertEqual(int(lines[-1]), 800, proc.stdout)
+
     def test_specialized_numeric_leaf_mixed_types_avoid_deopts(self) -> None:
         # Regression guard:
         # specialized numeric opcodes should not pin no-backedge leaf helpers

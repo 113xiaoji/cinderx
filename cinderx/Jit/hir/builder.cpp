@@ -46,15 +46,15 @@ namespace jit::hir {
 namespace {
 
 std::optional<Type> getLoadGlobalGuardType(BorrowedRef<> value) {
-  Type value_type = Type::fromObject(value);
   PyTypeObject* pytype = Py_TYPE(value);
   Type exact_type = Type::fromTypeExact(pytype);
 
-  // Mortal exact ints are identity-unstable once they move outside the
-  // immortal small-int range. Keep the cached load, but guard on exact type
-  // instead of the compile-time object identity so TIMESTAMP += 1 style
-  // counters can stay on the compiled path.
-  if (PyLong_CheckExact(value) && !(value_type <= TImmortalLongExact)) {
+  // Exact ints are value-unstable for mutable counters regardless of whether
+  // the current object happens to come from the immortal small-int cache.
+  // Guard on exact type instead of object identity so low-threshold autojit
+  // does not permanently pin a mutable global like TIMESTAMP to one cached
+  // small-int object and deopt forever after the next increment.
+  if (PyLong_CheckExact(value)) {
     return exact_type;
   }
 
