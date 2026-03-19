@@ -388,98 +388,12 @@ bool hasStableExactReceiverType(Register* reg) {
   return type.isExact() && type.runtimePyType() != nullptr;
 }
 
-bool typeHasNoSubclasses(PyTypeObject* owner_type) {
-  PyObject* subclasses = reinterpret_cast<PyObject*>(owner_type->tp_subclasses);
-#if PY_VERSION_HEX >= 0x030C0000
-  if (owner_type->tp_flags & _Py_TPFLAGS_STATIC_BUILTIN) {
-    PyInterpreterState* interp = PyInterpreterState_Get();
-    if (interp == nullptr) {
-      PyErr_Clear();
-      return false;
-    }
-    managed_static_type_state* state =
-        Cix_PyStaticType_GetState(interp, owner_type);
-    if (state == nullptr) {
-      return false;
-    }
-    subclasses = state->tp_subclasses;
-  }
-#endif
-  if (subclasses == nullptr) {
-    return true;
-  }
-  return PyDict_Check(subclasses) && PyDict_Size(subclasses) == 0;
-}
-
-bool receiverIsNamedSelfArg(Register* reg, BorrowedRef<PyCodeObject> code) {
-  reg = chaseAssign(reg);
-  if (reg == nullptr || !reg->instr()->IsLoadArg()) {
-    return false;
-  }
-
-  auto* load_arg = static_cast<LoadArg*>(reg->instr());
-  if (load_arg->arg_idx() != 0) {
-    return false;
-  }
-
-  BorrowedRef<> arg0_name_obj{jit::getVarname(code, 0)};
-  if (!PyUnicode_CheckExact(arg0_name_obj)) {
-    return false;
-  }
-  const char* arg0_name = PyUnicode_AsUTF8(arg0_name_obj);
-  if (arg0_name == nullptr) {
-    PyErr_Clear();
-    return false;
-  }
-  return std::strcmp(arg0_name, "self") == 0;
-}
-
-bool methodDescrOwnerHasNoSubclasses(
-    PyObject* descr,
-    BorrowedRef<PyDictObject> globals) {
-  if (!PyFunction_Check(descr)) {
-    return false;
-  }
-
-  PyObject* qualname_obj =
-      reinterpret_cast<PyFunctionObject*>(descr)->func_qualname;
-  if (!PyUnicode_CheckExact(qualname_obj)) {
-    return false;
-  }
-
-  const char* qualname = PyUnicode_AsUTF8(qualname_obj);
-  if (qualname == nullptr) {
-    PyErr_Clear();
-    return false;
-  }
-
-  const char* dot = std::strchr(qualname, '.');
-  if (dot == nullptr || dot == qualname || std::strchr(dot + 1, '.') != nullptr ||
-      std::strchr(qualname, '<') != nullptr) {
-    return false;
-  }
-
-  std::string owner_name{qualname, static_cast<size_t>(dot - qualname)};
-  BorrowedRef<> owner_obj{PyDict_GetItemString(globals, owner_name.c_str())};
-  if (owner_obj == nullptr || !PyType_Check(owner_obj)) {
-    return false;
-  }
-
-  return typeHasNoSubclasses(reinterpret_cast<PyTypeObject*>(owner_obj.get()));
-}
-
 bool canUseMethodWithValuesFastPath(
     Register* receiver,
-    PyObject* descr,
-    BorrowedRef<PyCodeObject> code,
-    BorrowedRef<PyDictObject> globals) {
-  if (hasStableExactReceiverType(receiver)) {
-    return true;
-  }
-  if (receiverIsNamedSelfArg(receiver, code)) {
-    return false;
-  }
-  return methodDescrOwnerHasNoSubclasses(descr, globals);
+    PyObject* /*descr*/,
+    BorrowedRef<PyCodeObject> /*code*/,
+    BorrowedRef<PyDictObject> /*globals*/) {
+  return hasStableExactReceiverType(receiver);
 }
 
 bool isBuiltinSetType(Register* reg) {
@@ -3942,9 +3856,9 @@ void HIRBuilder::emitLoadAttr(
           break;
         }
         // This lowering turns the method load into a constant descriptor plus
-        // the receiver, so keep it on exact/stable receivers or leaf-owner
-        // argument receivers. Polymorphic unpacked locals like raytrace's
-        // `o.intersectionTime(...)` should stay on LoadMethod.
+        // the receiver, so keep it on receivers whose exact runtime type is
+        // already stable in HIR. Polymorphic args and loop locals should stay
+        // on LoadMethod to preserve the cache-backed fallback path.
         if (!canUseMethodWithValuesFastPath(
                 receiver, descr, code_, preloader_.globals())) {
           break;
