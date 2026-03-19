@@ -1042,6 +1042,94 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(int(lines[-1]), 30000, proc.stdout)
 
+    def test_polymorphic_loop_local_method_load_avoids_method_with_values_deopts(
+        self,
+    ) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        # Regression guard:
+        # a polymorphic method call inside a loop should not be lowered to a
+        # monomorphic LOAD_ATTR_METHOD_WITH_VALUES guard that deopts once per
+        # loop invocation on the rare receiver type.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class RareType:
+                def execute(self):
+                    return 0
+
+            class MainType:
+                def __init__(self):
+                    self.value = 0
+
+                def execute(self):
+                    self.value += 1
+                    return self.value
+
+            def hot_loop(items):
+                total = 0
+                for item in items:
+                    total += item.execute()
+                return total
+
+            warm = [MainType() for _ in range(32)]
+            for _ in range(20000):
+                hot_loop(warm)
+
+            assert jit.force_compile(hot_loop)
+            counts = cinderjit.get_function_hir_opcode_counts(hot_loop)
+
+            items = [RareType()] + [MainType() for _ in range(100)]
+            jit.get_and_clear_runtime_stats()
+            total = 0
+            for _ in range(2000):
+                total += hot_loop(items)
+
+            stats = jit.get_and_clear_runtime_stats()
+            relevant = [
+                entry
+                for entry in stats["deopt"]
+                if entry["normal"]["func_qualname"] == "hot_loop"
+                and entry["normal"]["description"] == "LOAD_ATTR_METHOD_WITH_VALUES"
+            ]
+            print(counts.get("LoadMethod", 0))
+            print(counts.get("LoadMethodCached", 0))
+            print(len(relevant))
+            print(sum(entry["int"]["count"] for entry in relevant))
+            print(total)
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/polymorphic_loop_local_method_load.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 5, proc.stdout)
+            self.assertGreaterEqual(int(lines[-5]) + int(lines[-4]), 1, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertEqual(int(lines[-2]), 0, proc.stdout)
+
     def test_self_only_float_leaf_mixed_factor_avoids_deopts(self) -> None:
         # Regression guard:
         # no-backedge helpers that only read `self` attrs should not keep the
