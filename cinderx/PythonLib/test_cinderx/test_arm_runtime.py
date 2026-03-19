@@ -245,6 +245,81 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(int(lines[-1]), 800, proc.stdout)
 
+    def test_skip_chars_handled_index_error_avoids_repeated_unhandled_deopts(
+        self,
+    ) -> None:
+        # Regression guard:
+        # a hot `try/except IndexError` string scan may need to deopt once, but
+        # must stop re-entering the compiled path on every later end-of-string.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(2)
+
+            def skip_chars(src, pos, chars):
+                try:
+                    while src[pos] in chars:
+                        pos += 1
+                except IndexError:
+                    pass
+                return pos
+
+            src = " " * 50
+            chars = " "
+
+            for _ in range(3):
+                assert skip_chars(src, 0, chars) == 50
+
+            assert jit.is_jit_compiled(skip_chars)
+            counts = jit.get_function_hir_opcode_counts(skip_chars)
+
+            jit.get_and_clear_runtime_stats()
+            result = 0
+            for _ in range(200):
+                result += skip_chars(src, 0, chars)
+
+            stats = jit.get_and_clear_runtime_stats()
+            deopt_count = sum(
+                entry["int"]["count"]
+                for entry in stats.get("deopt", [])
+                if entry["normal"]["func_qualname"] == "skip_chars"
+            )
+
+            print(counts.get("BinaryOp", 0))
+            print(counts.get("UnicodeSubscr", 0))
+            print(deopt_count)
+            print(jit.is_jit_compiled(skip_chars))
+            print(result)
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/skip_chars_handled_index_error.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 5, proc.stdout)
+            self.assertGreaterEqual(int(lines[-5]) + int(lines[-4]), 1, proc.stdout)
+            self.assertLessEqual(int(lines[-3]), 3, proc.stdout)
+            self.assertEqual(lines[-2], "False", proc.stdout)
+            self.assertEqual(int(lines[-1]), 10000, proc.stdout)
+
     def test_specialized_numeric_leaf_mixed_types_avoid_deopts(self) -> None:
         # Regression guard:
         # specialized numeric opcodes should not pin no-backedge leaf helpers

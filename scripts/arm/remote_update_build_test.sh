@@ -20,10 +20,13 @@ RECREATE_PYPERF_VENV="${RECREATE_PYPERF_VENV:-0}"
 AUTOJIT_GATE="${AUTOJIT_GATE:-$AUTOJIT}"
 AUTOJIT_USE_JITLIST_FILTER="${AUTOJIT_USE_JITLIST_FILTER:-1}"
 AUTOJIT_EXTRA_JITLIST="${AUTOJIT_EXTRA_JITLIST:-}"
+JITLIST_ENTRIES="${JITLIST_ENTRIES:-__main__:*}"
+AUTOJIT_JITLIST_ENTRIES="${AUTOJIT_JITLIST_ENTRIES:-}"
 ARM_RUNTIME_SKIP_TESTS="${ARM_RUNTIME_SKIP_TESTS:-}"
 ARM_RUNTIME_ONLY_TESTS="${ARM_RUNTIME_ONLY_TESTS:-}"
 ARM_RUNTIME_TEST_NAMES="${ARM_RUNTIME_TEST_NAMES:-}"
 FORCE_CLEAN_BUILD="${FORCE_CLEAN_BUILD:-0}"
+SKIP_PYPERF_WORKER_PROBE="${SKIP_PYPERF_WORKER_PROBE:-0}"
 
 if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AUTOJIT_GATE must be a non-negative integer, got '$AUTOJIT_GATE'"
@@ -254,99 +257,38 @@ echo ">> install wheel into pyperformance venv"
 . "$PYVENV_PATH/bin/activate"
 PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
 SITEPKG="$(python -c 'import site; print(site.getsitepackages()[0])')"
+HOOK_SRC="$WORKDIR/scripts/arm/pyperf_env_hook/sitecustomize.py"
+if [[ ! -f "$HOOK_SRC" ]]; then
+  echo "ERROR: missing pyperf env hook: $HOOK_SRC"
+  exit 1
+fi
+install -m 0644 "$HOOK_SRC" "$SITEPKG/sitecustomize.py"
 
-cat >"$SITEPKG/sitecustomize.py" <<'PY'
-# Auto-load CinderX for pyperformance benchmark subprocesses.
-#
-# This file lives inside the pyperformance benchmark venv. It runs at
-# interpreter startup, so keep it defensive and side-effect free.
-#
-# We intentionally skip loading CinderX/JIT for packaging/bootstrap commands
-# (ensurepip, get-pip, pip) to keep environment setup stable.
-
-import os
-import sys
-
-
-def _argv_tokens():
-    toks = []
-    orig = getattr(sys, "orig_argv", None)
-    if orig:
-        toks.extend([str(x) for x in orig])
-    toks.extend([str(x) for x in getattr(sys, "argv", [])])
-    return toks
-
-
-tokens = _argv_tokens()
-argv = getattr(sys, "argv", [])
-argv0 = argv[0] if argv else ""
-orig_argv = getattr(sys, "orig_argv", None)
-
-
-def _has_token(name: str) -> bool:
-    for t in tokens:
-        if t == name:
-            return True
-    return False
-
-
-def _has_suffix(suffix: str) -> bool:
-    for t in tokens:
-        if t.endswith(suffix):
-            return True
-    return False
-
-
-def _contains(substr: str) -> bool:
-    for t in tokens:
-        if substr in t:
-            return True
-    return False
-
-
-skip = (
-    _has_token("ensurepip")
-    or _has_token("pip")
-    or _has_suffix("get-pip.py")
-    or argv0.endswith("get-pip.py")
-    # ensurepip bootstraps pip via: python -c '... runpy.run_module("pip", ...)'
-    or _contains('run_module("pip"')
-    or _contains("run_module('pip'")
-)
-
-try:
-    with open("/tmp/cinderx_sitecustomize.log", "a", encoding="utf-8") as f:
-        f.write(
-            "argv=%r orig_argv=%r tokens=%r skip=%s disable=%r auto=%r\n"
-            % (
-                argv,
-                orig_argv,
-                tokens,
-                skip,
-                os.environ.get("PYTHONJITDISABLE"),
-                os.environ.get("PYTHONJITAUTO"),
-            )
-        )
-except Exception:
-    pass
-
-if not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
-    try:
-        import cinderx.jit as jit
-
-        if os.environ.get("PYTHONJITDISABLE") in (None, "", "0"):
-            jit.enable()
-    except Exception:
-        # Don't make interpreter startup depend on the JIT.
-        pass
-PY
+if [[ "$SKIP_PYPERF_WORKER_PROBE" == "1" ]]; then
+  echo ">> skip pyperformance worker probe"
+else
+  echo ">> verify pyperformance worker startup"
+  env PYTHONPATH="$PYTHONPATH" python "$WORKDIR/scripts/arm/verify_pyperf_venv.py" \
+    --venv "$PYVENV_PATH" \
+    --output "/root/work/arm-sync/${BENCH}_pyperf_venv_${RUN_ID}.json" \
+    --probe-worker \
+    --worker-argv-token="--worker" \
+    --worker-env "PYPERFORMANCE_RUNID=verify-${RUN_ID}" \
+    --worker-env "PYTHONPATH=$PYTHONPATH" \
+    --worker-env "CINDERX_WORKER_PYTHONJITAUTO=$SMOKE_AUTOJIT" \
+    --require-sitecustomize-prefix "$SITEPKG" \
+    --require-cinderx-initialized \
+    --require-jit-enabled
+fi
 
 deactivate_if_active
 
 echo ">> smoke: JIT init + generator + regex compile"
 # Keep startup smoke below known crash-prone aggressive thresholds while still
 # exercising JIT-enabled initialization in the benchmark venv.
-env PYTHONPATH="$PYTHONPATH" PYTHONJITAUTO="$SMOKE_AUTOJIT" "$PYVENV_PATH/bin/python" -c 'g=(i for i in [1]); next(g, None); import re; re.compile("a+"); print("smoke-ok")'
+env PYTHONPATH="$PYTHONPATH" PYPERFORMANCE_RUNID="smoke-${RUN_ID}" \
+  CINDERX_WORKER_PYTHONJITAUTO="$SMOKE_AUTOJIT" \
+  "$PYVENV_PATH/bin/python" -c 'g=(i for i in [1]); next(g, None); import re; re.compile("a+"); print("smoke-ok")'
 
 if [[ "$SKIP_PYPERF" == "1" ]]; then
   echo "SKIP_PYPERF=1 set; done after smoke."
@@ -354,9 +296,7 @@ if [[ "$SKIP_PYPERF" == "1" ]]; then
 fi
 
 echo ">> pyperformance gate (jitlist, debug-single-value)"
-cat >/tmp/jitlist_gate.txt <<'EOF'
-__main__:*
-EOF
+printf '%s\n' "$JITLIST_ENTRIES" | tr ',' '\n' >/tmp/jitlist_gate.txt
 . "$DRIVER_VENV/bin/activate"
 env PYTHONJITLISTFILE=/tmp/jitlist_gate.txt PYTHONJITENABLEJITLISTWILDCARDS=1 \
   PYTHONPATH="$PYTHONPATH" \
@@ -370,28 +310,36 @@ echo ">> pyperformance gate (auto-jit, debug-single-value)"
 LOG="/tmp/jit_${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.log"
 AUTOJIT_JITLIST_FILE="/tmp/jitlist_autojit_gate_${RUN_ID}.txt"
 if [[ "$AUTOJIT_USE_JITLIST_FILTER" == "1" ]]; then
-  {
-    echo "__main__:*"
-    if [[ -n "$AUTOJIT_EXTRA_JITLIST" ]]; then
-      IFS=',' read -r -a _extra_jitlist <<< "$AUTOJIT_EXTRA_JITLIST"
-      for _entry in "${_extra_jitlist[@]}"; do
-        if [[ -n "$_entry" ]]; then
-          echo "$_entry"
-        fi
-      done
-    fi
-  } >"$AUTOJIT_JITLIST_FILE"
+  if [[ -n "$AUTOJIT_JITLIST_ENTRIES" ]]; then
+    printf '%s\n' "$AUTOJIT_JITLIST_ENTRIES" | tr ',' '\n' >"$AUTOJIT_JITLIST_FILE"
+  else
+    {
+      echo "__main__:*"
+      if [[ -n "$AUTOJIT_EXTRA_JITLIST" ]]; then
+        IFS=',' read -r -a _extra_jitlist <<< "$AUTOJIT_EXTRA_JITLIST"
+        for _entry in "${_extra_jitlist[@]}"; do
+          if [[ -n "$_entry" ]]; then
+            echo "$_entry"
+          fi
+        done
+      fi
+    } >"$AUTOJIT_JITLIST_FILE"
+  fi
   echo "autojit_jitlist=$AUTOJIT_JITLIST_FILE"
   sed -n '1,50p' "$AUTOJIT_JITLIST_FILE"
-  env PYTHONPATH="$PYTHONPATH" PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
+  env PYTHONPATH="$PYTHONPATH" PYTHONJITAUTO="$AUTOJIT_GATE" \
+    CINDERX_WORKER_PYTHONJITAUTO="$AUTOJIT_GATE" \
+    PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
     PYTHONJITLISTFILE="$AUTOJIT_JITLIST_FILE" PYTHONJITENABLEJITLISTWILDCARDS=1 \
     python -m pyperformance run --debug-single-value -b "$BENCH" \
-      --inherit-environ PYTHONPATH,PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE,PYTHONJITLISTFILE,PYTHONJITENABLEJITLISTWILDCARDS \
+      --inherit-environ PYTHONPATH,PYTHONJITAUTO,CINDERX_WORKER_PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE,PYTHONJITLISTFILE,PYTHONJITENABLEJITLISTWILDCARDS \
       -o "/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
 else
-  env PYTHONPATH="$PYTHONPATH" PYTHONJITAUTO="$AUTOJIT_GATE" PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
+  env PYTHONPATH="$PYTHONPATH" PYTHONJITAUTO="$AUTOJIT_GATE" \
+    CINDERX_WORKER_PYTHONJITAUTO="$AUTOJIT_GATE" \
+    PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG" \
     python -m pyperformance run --debug-single-value -b "$BENCH" \
-      --inherit-environ PYTHONPATH,PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE \
+      --inherit-environ PYTHONPATH,PYTHONJITAUTO,CINDERX_WORKER_PYTHONJITAUTO,PYTHONJITDEBUG,PYTHONJITLOGFILE \
       -o "/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
 fi
 deactivate_if_active
@@ -432,11 +380,19 @@ print(
 )
 PY
 if [[ "$MAIN_COMPILE_COUNT" -eq 0 ]]; then
-  echo "ERROR: JIT did not compile any __main__ functions during '$BENCH' (JIT may not be active in benchmark workers)"
-  echo "--- jit log tail ---"
-  tail -n 120 "$LOG" || true
-  exit 1
+  if [[ -z "$AUTOJIT_JITLIST_ENTRIES" ]]; then
+    echo "ERROR: JIT did not compile any __main__ functions during '$BENCH' (JIT may not be active in benchmark workers)"
+    echo "--- jit log tail ---"
+    tail -n 120 "$LOG" || true
+    exit 1
+  elif [[ "$TOTAL_COMPILE_COUNT" -eq 0 ]]; then
+    echo "ERROR: JIT did not compile any functions during '$BENCH'"
+    echo "--- jit log tail ---"
+    tail -n 120 "$LOG" || true
+    exit 1
+  fi
 fi
 
 echo "--- jit log tail ---"
 tail -n 50 "$LOG" || true
+deactivate_if_active

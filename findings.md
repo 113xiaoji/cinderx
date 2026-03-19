@@ -3734,3 +3734,136 @@ Conclusion:
   - strong target gain
   - no broad regression
   - one small `richards` slowdown explicitly recorded
+
+## 2026-03-19 Issue 48: tomli_loads handled-subscript deopt loop
+
+### Scope
+
+- Issue:
+  - `#48`
+- First implemented fix:
+  - runtime suppression after repeated handled-subscript
+    `UnhandledException` deopts
+- Primary code files:
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/Jit/pyjit.h`
+  - `cinderx/Jit/codegen/gen_asm.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+
+### Standard-entry validation
+
+- Remote entry:
+  - `scripts/arm/remote_update_build_test.sh`
+- Host:
+  - `124.70.162.35`
+- Targeted runtime regression:
+  - `ArmRuntimeTests.test_skip_chars_handled_index_error_avoids_repeated_unhandled_deopts`
+  - result:
+    - `OK`
+
+### Benchmark status
+
+- Standard-entry jitlist gate:
+  - `tomli_loads`: `3.71 sec`
+  - artifact:
+    - `/root/work/arm-sync/tomli_loads_jitlist_20260319_193934.json`
+- Standard-entry autojit2 gate:
+  - still in progress
+  - current blocker:
+    - later benchmark-worker segmentation fault
+  - latest log:
+    - `/tmp/jit_tomli_loads_autojit2_20260319_194237.log`
+
+### Assessment
+
+- The first patch is validated for the minimal `skip_chars()` deopt loop.
+- Full `tomli_loads` performance closure is still blocked by a later autojit
+  crash, so this issue remains in progress.
+
+### Isolated ARM environment
+
+- To remove interference from previous workdirs and shared venvs, the issue was
+  re-run in an isolated environment:
+  - workdir:
+    - `/root/work/cinderx-tomli-issue48-iso`
+  - driver venv:
+    - `/root/venv-cinderx314-issue48`
+  - pyperformance venv:
+    - `/root/work/cinderx-tomli-issue48-iso/venv/cpython3.14-5c1b530ee639-compat-31b33d68c68a`
+- Narrow whitelists:
+  - jitlist:
+    - `tomli._parser:skip_chars`
+  - autojit:
+    - `tomli._parser:skip_chars`
+
+### Isolated ARM results
+
+- Targeted runtime regression:
+  - `ArmRuntimeTests.test_skip_chars_handled_index_error_avoids_repeated_unhandled_deopts`
+  - `OK`
+- jitlist:
+  - `3.6831124689997523 s`
+  - artifact:
+    - `/root/work/arm-sync/tomli_loads_jitlist_20260319_214336.json`
+- autojit2:
+  - `3.6588112600002205 s`
+  - artifact:
+    - `/root/work/arm-sync/tomli_loads_autojit2_20260319_214336.json`
+- autojit compile summary:
+  - artifact:
+    - `/root/work/arm-sync/tomli_loads_autojit2_20260319_214336_compile_summary.json`
+  - compiled functions:
+    - `1`
+  - compiled target:
+    - `tomli._parser:skip_chars`
+
+### Updated assessment
+
+- The isolated environment shows the issue48 fix is not responsible for the
+  earlier wide autojit crash chain.
+- With only `skip_chars` compiled, the patch produces a small but real speedup:
+  - about `0.7%`
+- Further benchmark gains will likely require optimization beyond the minimal
+  handled-subscript deopt suppression itself.
+
+### 2026-03-20 main-workspace isolated revalidation
+
+- Standard remote entrypoint rerun from the migrated main workspace:
+  - workdir:
+    - `/root/work/cinderx-tomli-issue48-main`
+  - driver venv:
+    - `/root/venv-cinderx314-issue48-main`
+  - run id:
+    - `20260320_000014`
+  - parameters:
+    - `BENCH=tomli_loads`
+    - `AUTOJIT=2`
+    - `JITLIST_ENTRIES=tomli._parser:skip_chars`
+    - `AUTOJIT_JITLIST_ENTRIES=tomli._parser:skip_chars`
+    - `SKIP_PYPERF_WORKER_PROBE=1`
+- Targeted runtime regression:
+  - `ArmRuntimeTests.test_skip_chars_handled_index_error_avoids_repeated_unhandled_deopts`
+  - result:
+    - `OK`
+- jitlist:
+  - `3.6337578909988224 s`
+  - artifact:
+    - `/root/work/arm-sync/tomli_loads_jitlist_20260320_000014.json`
+- autojit2:
+  - `3.7181417380015773 s`
+  - artifact:
+    - `/root/work/arm-sync/tomli_loads_autojit2_20260320_000014.json`
+- autojit compile summary:
+  - artifact:
+    - `/root/work/arm-sync/tomli_loads_autojit2_20260320_000014_compile_summary.json`
+  - `main_compile_count = 0`
+  - `total_compile_count = 1`
+  - `other_compile_count = 1`
+  - compiled target from the log:
+    - `tomli._parser:skip_chars`
+- Assessment:
+  - the main workspace now reproduces the isolated issue48 validation path
+    through the standard remote entrypoint
+  - the fix is functionally revalidated after migration back from the clean
+    worktree
+  - the narrow single-sample benchmark effect remains small and noisy
