@@ -1421,9 +1421,6 @@ Interpretation:
   - `scripts/arm/remote_update_build_test.sh` injects `sitecustomize.py` that auto-loads CinderX unless `CINDERX_DISABLE=1`.
   - Therefore current `nojit` should be interpreted as "CinderX loaded, JIT disabled", not pure CPython baseline.
 
-### Writing-plans output
-- Plan file created: `docs/plans/2026-02-27-cpython-vs-cinderx-314-arm-analysis.md`.
-
 ### TDD status for this task
 - RED/GREEN target defined:
   - add explicit `cpython` mode to richards sampling contract,
@@ -1550,8 +1547,6 @@ Interpretation:
 - `artifacts/asm/cpython_executor_full4096.bin`
 - `artifacts/asm/byte_compare_cinderx_vs_cpython_head952.txt`
 - `artifacts/asm/inst_mix_cinderx_vs_cpython_head952.txt`
-- design note: `docs/plans/2026-02-27-cinderx-vs-cpython-jit-asm-aligned.md`
-
 ### Quantitative summary
 - Byte-level equal-size compare (`952` vs `952`):
   - `same_bytes=62`
