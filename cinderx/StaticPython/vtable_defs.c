@@ -693,6 +693,11 @@ __attribute__((used)) _PyClassLoader_StaticCallReturn _PyVTable_thunk_native(
   return return_to_native_typecode(obj, sig->ta_rettype);
 }
 
+#if defined(__APPLE__)
+__asm__(".globl _PyVTable_thunk_native\n"
+        "_PyVTable_thunk_native = __PyVTable_thunk_native");
+#endif
+
 #if defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
 __attribute__((naked))
 PyObject* _PyVTable_native_entry(PyObject* state, void** args) {
