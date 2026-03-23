@@ -3740,6 +3740,16 @@ DEFINE_SIMPLE_INSTR(
     Operands<3>,
     DeoptBase);
 
+// InlineIter: 内联迭代器状态机指令
+// 对于不可逃逸的生成器，将生成器状态机内联到调用栈，消除帧切换开销
+// 操作数: send_value, iter, state_size
+DEFINE_SIMPLE_INSTR(
+    InlineIter,
+    (TObject, TOptObject),
+    HasOutput,
+    Operands<3>,
+    DeoptBase);
+
 // A more compact (in terms of emitted code) equivalent to YieldValue followed
 // by YieldFrom.
 DEFINE_SIMPLE_INSTR(

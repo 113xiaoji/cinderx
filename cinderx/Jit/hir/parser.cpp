@@ -1132,6 +1132,7 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
     case Opcode::kOptimizedYieldFrom:
+    case Opcode::kInlineIter:
     case Opcode::kYieldFromHandleStopAsyncIteration: {
       JIT_ABORT("Unsupported opcode: {}", opcode);
     }

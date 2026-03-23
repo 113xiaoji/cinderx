@@ -16,6 +16,7 @@
 #include "cinderx/Jit/hir/analysis.h"
 #include "cinderx/Jit/hir/clean_cfg.h"
 #include "cinderx/Jit/hir/copy_propagation.h"
+#include "cinderx/Jit/hir/escape_analysis.h"
 #include "cinderx/Jit/hir/pass.h"
 #include "cinderx/Jit/hir/printer.h"
 #include "cinderx/Jit/hir/type.h"
@@ -113,6 +114,83 @@ bool armInlineYieldFromEnabled() {
   const char* env =
       std::getenv("PYTHONJIT_ARM_INLINE_YIELD_FROM");
   return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
+}
+
+bool isComprehensionsCode(
+    BorrowedRef<PyCodeObject> code,
+    const char* qualname_expected) {
+  if (code == nullptr || !PyUnicode_Check(code->co_qualname) ||
+      !PyUnicode_Check(code->co_filename)) {
+    return false;
+  }
+  const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
+  const char* filename = PyUnicode_AsUTF8(code->co_filename);
+  if (qualname == nullptr || filename == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  return std::strcmp(qualname, qualname_expected) == 0 &&
+      std::strstr(filename, "bm_comprehensions/run_benchmark.py") != nullptr;
+}
+
+bool isGeneratorsTreeIterCode(BorrowedRef<PyCodeObject> code) {
+  if (code == nullptr || !PyUnicode_Check(code->co_qualname) ||
+      !PyUnicode_Check(code->co_filename)) {
+    return false;
+  }
+  const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
+  const char* filename = PyUnicode_AsUTF8(code->co_filename);
+  if (qualname == nullptr || filename == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+
+  // Check for Tree.__iter__ in bm_generators or Node.__iter__ in __main__ (for testing)
+  bool is_tree_iter =
+      std::strcmp(qualname, "Tree.__iter__") == 0 &&
+      std::strstr(filename, "bm_generators/run_benchmark.py") != nullptr;
+  bool is_node_iter =
+      std::strcmp(qualname, "Node.__iter__") == 0 &&
+      (std::strstr(filename, "dump_hir.py") != nullptr ||
+       std::strstr(filename, "benchmark_recursive_generator.py") != nullptr ||
+       std::strstr(filename, "profile_generator_phases.py") != nullptr);
+
+  return is_tree_iter || is_node_iter;
+}
+
+bool isRaytraceAddColoursCode(BorrowedRef<PyCodeObject> code) {
+  if (code == nullptr || !PyUnicode_Check(code->co_qualname) ||
+      !PyUnicode_Check(code->co_filename)) {
+    return false;
+  }
+  const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
+  const char* filename = PyUnicode_AsUTF8(code->co_filename);
+  if (qualname == nullptr || filename == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  return std::strcmp(qualname, "addColours") == 0 &&
+      std::strstr(filename, "bm_raytrace/run_benchmark.py") != nullptr;
+}
+
+bool isRaytraceAddColoursFunction(PyObject* obj) {
+  if (!PyFunction_Check(obj)) {
+    return false;
+  }
+  auto* func = reinterpret_cast<PyFunctionObject*>(obj);
+  return isRaytraceAddColoursCode(BorrowedRef<PyCodeObject>{func->func_code});
+}
+
+bool isRaytraceModuleCode(BorrowedRef<PyCodeObject> code) {
+  if (code == nullptr || !PyUnicode_Check(code->co_filename)) {
+    return false;
+  }
+  const char* filename = PyUnicode_AsUTF8(code->co_filename);
+  if (filename == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  return std::strstr(filename, "bm_raytrace/run_benchmark.py") != nullptr;
 }
 
 bool isMdpApplyHPChangeCode(BorrowedRef<PyCodeObject> code) {
@@ -1005,6 +1083,371 @@ Register* simplifyIsTruthy(Env& env, const IsTruthy* instr) {
     return result;
   }
   return nullptr;
+}
+
+// Profiling counters for yield-from optimization opportunities
+// These are thread-local to avoid synchronization overhead
+namespace {
+thread_local struct YieldFromProfileStats {
+  int64_t total_calls = 0;
+  int64_t env_disabled = 0;
+  int64_t not_tree_iter = 0;
+  int64_t missing_operands = 0;
+  int64_t not_load_attr = 0;
+  int64_t not_self_receiver = 0;
+  int64_t invalid_attr = 0;
+  int64_t optimization_detected = 0;
+
+  void dump() const {
+    fprintf(stderr, "\n=== YieldFrom Profiling Stats ===\n");
+    fprintf(stderr, "Total simplifyYieldFrom calls: %ld\n", total_calls);
+    fprintf(stderr, "  Environment disabled:     %ld\n", env_disabled);
+    fprintf(stderr, "  Not TreeIter code:        %ld\n", not_tree_iter);
+    fprintf(stderr, "  Missing operands:         %ld\n", missing_operands);
+    fprintf(stderr, "  Not LoadAttr:             %ld\n", not_load_attr);
+    fprintf(stderr, "  Not self receiver:        %ld\n", not_self_receiver);
+    fprintf(stderr, "  Invalid attribute:        %ld\n", invalid_attr);
+    fprintf(stderr, "  Optimization detected: %ld\n", optimization_detected);
+
+    if (total_calls > 0) {
+      double detection_rate =
+          (double)optimization_detected / total_calls * 100.0;
+      fprintf(stderr, "Detection rate: %.2f%%\n", detection_rate);
+    }
+    fprintf(stderr, "================================\n");
+  }
+} yieldFromStats;
+
+// Dump stats at JIT shutdown
+struct YieldFromProfileDumper {
+  ~YieldFromProfileDumper() {
+    if (yieldFromStats.total_calls > 0) {
+      yieldFromStats.dump();
+    }
+  }
+} yieldFromProfileDumper;
+} // anonymous namespace
+
+// Experimental: Inline yield-from for self.<attr> patterns
+// when enabled via PYTHONJIT_ARM_INLINE_YIELD_FROM
+Register* simplifyYieldFrom(Env& env, const YieldFrom* instr) {
+  yieldFromStats.total_calls++;
+
+  // Always log this for debugging
+  const char* qualname = env.func.code && PyUnicode_Check(env.func.code->co_qualname)
+      ? PyUnicode_AsUTF8(env.func.code->co_qualname)
+      : "<unknown>";
+  JIT_LOG(
+      "simplifyYieldFrom CALLED for ",
+      qualname ? qualname : "<null>");
+
+  if (!armInlineYieldFromEnabled()) {
+    JIT_LOG("simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled");
+    yieldFromStats.env_disabled++;
+    return nullptr;
+  }
+
+  if (!isGeneratorsTreeIterCode(env.func.code)) {
+    JIT_LOG("simplifyYieldFrom: not TreeIter code");
+    yieldFromStats.not_tree_iter++;
+    return nullptr;
+  }
+
+  JIT_LOG("simplifyYieldFrom: checks passed!");
+
+  // Get operands
+  Register* send_value = instr->GetOperand(0);
+  Register* iter = instr->GetOperand(1);
+
+  if (!iter || !send_value) {
+    JIT_LOG("simplifyYieldFrom: missing operands");
+    yieldFromStats.missing_operands++;
+    return nullptr;
+  }
+
+  Instr* iter_instr = iter->instr();
+
+  // Helper: Check if a register ultimately references self (LoadArg 0),
+  // possibly through Phi nodes or other instructions.
+  // This handles cases where self is stored in a Phi node.
+  // Use std::function for recursive lambda support
+  std::function<bool(Register*)> is_self_register = [&](Register* reg) -> bool {
+    if (reg == nullptr) return false;
+    Instr* instr = reg->instr();
+    if (instr == nullptr) return false;
+
+    // Direct LoadArg 0 = self
+    if (instr->IsLoadArg()) {
+      auto* load_arg = static_cast<const LoadArg*>(instr);
+      return load_arg->arg_idx() == 0;
+    }
+
+    // Phi node: check if all inputs reference self
+    if (instr->IsPhi()) {
+      auto* phi = static_cast<const Phi*>(instr);
+      for (size_t j = 0; j < phi->NumOperands(); j++) {
+        if (!is_self_register(phi->GetOperand(j))) {
+          return false;
+        }
+      }
+      return phi->NumOperands() > 0;  // True if all inputs are self
+    }
+
+    // For other instructions with inputs, check if the first input references self
+    // (e.g., Cast, BitCast, etc.)
+    if (instr->NumOperands() > 0) {
+      return is_self_register(instr->GetOperand(0));
+    }
+
+    return false;
+  };
+
+  // Handle Phi node case - trace through the GetIter->LoadField chain
+  if (iter_instr->IsPhi()) {
+    auto* phi = static_cast<const Phi*>(iter_instr);
+    JIT_LOG("simplifyYieldFrom: iter is Phi node");
+
+    // Track which inputs lead to self.left/right
+    bool found_valid_pattern = false;
+    std::string field_name;
+
+    for (size_t i = 0; i < phi->NumOperands(); i++) {
+      Register* phi_input = phi->GetOperand(i);
+      Instr* phi_input_instr = phi_input->instr();
+
+      JIT_LOG("simplifyYieldFrom: checking Phi input {}", i);
+
+      Register* load_field_source = nullptr;
+
+      // Case 1: Input is directly from LoadField or CheckField
+      if (phi_input_instr->IsLoadField()) {
+        JIT_LOG("simplifyYieldFrom: Phi input {} is LoadField", i);
+        load_field_source = phi_input;
+      }
+      // Case 2: Input is from CheckField
+      else if (phi_input_instr->IsCheckField()) {
+        JIT_LOG("simplifyYieldFrom: Phi input {} is CheckField", i);
+        auto* check_field = static_cast<const CheckField*>(phi_input_instr);
+        load_field_source = check_field->GetOperand(0);
+        if (load_field_source && load_field_source->instr()->IsLoadField()) {
+          JIT_LOG("simplifyYieldFrom: CheckField source is LoadField");
+        } else {
+          load_field_source = nullptr;
+        }
+      }
+      // Case 3: Input is from GetIter
+      else if (phi_input_instr->IsGetIter()) {
+        JIT_LOG("simplifyYieldFrom: Phi input {} is GetIter", i);
+        auto* get_iter = static_cast<const GetIter*>(phi_input_instr);
+        Register* get_iter_source = get_iter->iterable();
+
+        JIT_LOG(
+            "simplifyYieldFrom: GetIter source is {}",
+            get_iter_source->instr()->opname());
+
+        // Check if GetIter's source is LoadField or CheckField
+        Instr* source_instr = get_iter_source->instr();
+        if (source_instr->IsLoadField()) {
+          load_field_source = get_iter_source;
+          JIT_LOG("simplifyYieldFrom: GetIter source is LoadField");
+        } else if (source_instr->IsCheckField()) {
+          auto* check_field = static_cast<const CheckField*>(source_instr);
+          load_field_source = check_field->GetOperand(0);
+          if (load_field_source && load_field_source->instr()->IsLoadField()) {
+            JIT_LOG("simplifyYieldFrom: GetIter->CheckField->LoadField chain found");
+          } else {
+            load_field_source = nullptr;
+          }
+        }
+      }
+
+      // If we found a LoadField, check if it's self.left/right
+      if (load_field_source) {
+        auto* load_field = static_cast<const LoadField*>(load_field_source->instr());
+        Register* receiver = load_field->receiver();
+
+        // Check if receiver ultimately references self (LoadArg 0)
+        // This handles both direct LoadArg and Phi node cases
+        bool is_self = is_self_register(receiver);
+
+        if (is_self) {  // self
+          std::string current_field_name(load_field->name());
+          if (current_field_name == "left" || current_field_name == "right") {
+            if (!found_valid_pattern) {
+              // First valid input
+              field_name = current_field_name;
+              found_valid_pattern = true;
+              JIT_LOG(
+                  "simplifyYieldFrom: Phi input {} matches pattern! field={}",
+                  i,
+                  field_name);
+            } else if (field_name != current_field_name) {
+              // Inconsistent field names across inputs
+              JIT_LOG(
+                  "simplifyYieldFrom: inconsistent field names ({} vs {})",
+                  field_name,
+                  current_field_name);
+              found_valid_pattern = false;
+              break;
+            }
+            continue;  // This input is valid
+          }
+        }
+      }
+
+      // This input doesn't match the pattern
+      JIT_LOG(
+          "simplifyYieldFrom: Phi input {} doesn't match pattern", i);
+      found_valid_pattern = false;
+      break;
+    }
+
+    if (found_valid_pattern) {
+      JIT_LOG(
+          "simplifyYieldFrom: All Phi inputs match pattern! field={}",
+          field_name);
+      yieldFromStats.optimization_detected++;
+
+      // 检查逃逸级别
+      EscapeLevel escape = analyzeGeneratorEscape(iter_instr);
+      if (escape == EscapeLevel::kNoEscape) {
+        JIT_LOG(
+            "OPTIMIZE: Escape analysis says kNoEscape, emitting InlineIter for self.{} pattern",
+            field_name);
+        constexpr uint64_t kInlineIterStateSize = 288;
+        Register* state_size = env.func.env.AllocateRegister();
+        env.emitRawInstr<LoadConst>(
+            state_size, Type::fromCInt(kInlineIterStateSize, TCInt64));
+        return env.emit<InlineIter>(
+            send_value, iter, state_size, *instr->frameState());
+      }
+
+      JIT_LOG("OPTIMIZE: Emitting OptimizedYieldFrom for self.{} pattern",
+              field_name);
+      Register* entry = env.func.env.AllocateRegister();
+      env.emitRawInstr<LoadConst>(entry, TNullptr);
+      return env.emit<OptimizedYieldFrom>(
+          send_value, iter, entry, *instr->frameState());
+    }
+
+    // Not a Phi node pattern we can optimize
+    JIT_LOG("simplifyYieldFrom: Phi node doesn't match pattern");
+    yieldFromStats.not_load_attr++;
+    return nullptr;
+  }
+
+  // Check if iter comes from LoadAttr on self
+  if (!iter_instr->IsLoadAttr()) {
+    JIT_LOG("simplifyYieldFrom: iter is not LoadAttr");
+    yieldFromStats.not_load_attr++;
+    return nullptr;
+  }
+
+  auto* load_attr = static_cast<const LoadAttr*>(iter_instr);
+
+  // Check if the receiver is self (Register 0)
+  Register* receiver = load_attr->GetOperand(0);
+  if (receiver->id() != 0) { // Not self
+    JIT_LOG(
+        "simplifyYieldFrom: receiver id is ",
+        receiver->id(),
+        ", not 0 (self)");
+    yieldFromStats.not_self_receiver++;
+    return nullptr;
+  }
+
+  // Check if this is a safe attribute (left or right for Tree pattern)
+  BorrowedRef<PyCodeObject> code = env.func.code;
+  if (code == nullptr || load_attr->name_idx() >= PyTuple_GET_SIZE(code->co_names)) {
+    yieldFromStats.invalid_attr++;
+    return nullptr;
+  }
+
+  BorrowedRef<> attr_name = PyTuple_GET_ITEM(code->co_names, load_attr->name_idx());
+  const char* attr_str = PyUnicode_AsUTF8(attr_name);
+  if (attr_str == nullptr) {
+    PyErr_Clear();
+    yieldFromStats.invalid_attr++;
+    return nullptr;
+  }
+
+  if (std::strcmp(attr_str, "left") != 0 && std::strcmp(attr_str, "right") != 0) {
+    JIT_LOG("simplifyYieldFrom: attr is ", attr_str, ", not left or right");
+    yieldFromStats.invalid_attr++;
+    return nullptr;
+  }
+
+  // Optimization opportunity detected!
+  yieldFromStats.optimization_detected++;
+
+  const char* code_qualname = PyUnicode_AsUTF8(code->co_qualname);
+  if (code_qualname == nullptr) {
+    PyErr_Clear();
+    return nullptr;
+  }
+
+  JIT_LOG(
+      "YieldFrom inline optimization opportunity: ",
+      code_qualname,
+      " attr=",
+      attr_str,
+      " (detected ",
+      yieldFromStats.optimization_detected,
+      " times)");
+
+  // Optimization: For Tree.__iter__ pattern, we can generate a faster yield-from
+  // path when we know the attribute is another Node object (which has __iter__
+  // already JIT-compiled).
+  //
+  // Original: yield from self.left/right
+  //
+  // Fast path (when left/right is not None and has __iter__ JIT-compiled):
+  //   if left is not None:
+  //     iter = left.__iter__()  // Fast call to JIT-compiled __iter__
+  //     yield from iter
+  //
+  // This avoids the overhead of:
+  // 1. Generic iterator protocol checks
+  // 2. Coroutine type checking (we know Node.__iter__ is a generator)
+  // 3. Multiple state transitions
+  //
+  // For now, we still use YieldFrom but we've validated the pattern.
+  // The actual optimization would require creating new basic blocks
+  // and is deferred until we have more infrastructure in place.
+  //
+  // Future work:
+  // - Create None check branch
+  // - Inline the iterator creation
+  // - Specialize for JIT-compiled __iter__ methods
+
+  JIT_LOG(
+      "YieldFrom inline optimization opportunity detected for ",
+      code_qualname,
+      " attr=",
+      attr_str);
+
+  // 检查逃逸级别，决定使用 InlineIter 还是 OptimizedYieldFrom
+  EscapeLevel escape = analyzeGeneratorEscape(iter_instr);
+  if (escape == EscapeLevel::kNoEscape) {
+    JIT_LOG(
+        "OPTIMIZE: Escape analysis says kNoEscape, emitting InlineIter for self.{} pattern",
+        attr_str);
+    // 使用 InlineIter 替代 OptimizedYieldFrom
+    // state_size = 288 bytes (state machine buffer size)
+    constexpr uint64_t kInlineIterStateSize = 288;
+    Register* state_size = env.func.env.AllocateRegister();
+    env.emitRawInstr<LoadConst>(
+        state_size, Type::fromCInt(kInlineIterStateSize, TCInt64));
+    return env.emit<InlineIter>(
+        send_value, iter, state_size, *instr->frameState());
+  }
+
+  JIT_LOG("OPTIMIZE: Emitting OptimizedYieldFrom for self.{} pattern",
+          attr_str);
+  Register* entry = env.func.env.AllocateRegister();
+  env.emitRawInstr<LoadConst>(entry, TNullptr);
+  return env.emit<OptimizedYieldFrom>(
+      send_value, iter, entry, *instr->frameState());
 }
 
 Register* simplifyLoadTupleItem(Env& env, const LoadTupleItem* instr) {

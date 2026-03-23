@@ -1005,6 +1005,7 @@ void stealInputs(
         case Opcode::kYieldValue:
         case Opcode::kYieldFrom:
         case Opcode::kOptimizedYieldFrom:
+        case Opcode::kInlineIter:
         case Opcode::kYieldAndYieldFrom:
         case Opcode::kYieldFromHandleStopAsyncIteration:
         case Opcode::kInitialYield: {

@@ -308,6 +308,7 @@ static std::string format_immediates(const Function* func, const Instr& instr) {
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
     case Opcode::kOptimizedYieldFrom:
+    case Opcode::kInlineIter:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kUnicodeConcat:
     case Opcode::kUnicodeRepeat:

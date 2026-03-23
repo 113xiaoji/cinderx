@@ -191,6 +191,13 @@ enum OperandSizeType {
     0,                                                                        \
     {},                                                                       \
     1)                                                                        \
+  X(InlineIter,                                                               \
+    false,                                                                    \
+    FlagEffects::kInvalidate,                                                 \
+    kDefault,                                                                 \
+    0,                                                                        \
+    {},                                                                       \
+    1)                                                                        \
   X(YieldValue, false, FlagEffects::kInvalidate, kDefault, 0, {}, 1)
 
 // Instruction class defines instructions in LIR.

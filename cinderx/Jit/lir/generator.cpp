@@ -1301,12 +1301,13 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       case Opcode::kYieldAndYieldFrom:
       case Opcode::kYieldFrom:
       case Opcode::kOptimizedYieldFrom:
-      case Opcode::kYieldFromHandleStopAsyncIteration: {
+      case Opcode::kYieldFromHandleStopAsyncIteration:
+      case Opcode::kInlineIter: {
         Instruction::Opcode op = [&] {
           if (opcode == Opcode::kYieldAndYieldFrom) {
             return Instruction::kYieldFromSkipInitialSend;
-          } else if (opcode == Opcode::kOptimizedYieldFrom) {
-            return Instruction::kOptimizedYieldFrom;
+          } else if (opcode == Opcode::kOptimizedYieldFrom || opcode == Opcode::kInlineIter) {
+            return opcode == Opcode::kInlineIter ? Instruction::kInlineIter : Instruction::kOptimizedYieldFrom;
           } else if (opcode == Opcode::kYieldFrom) {
             return Instruction::kYieldFrom;
           } else {
@@ -1316,6 +1317,11 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         Instruction* instr = [&] {
           if (opcode == Opcode::kOptimizedYieldFrom) {
             // OptimizedYieldFrom has 3 operands: send_value, iter, entry
+            return bbb.appendInstr(
+                i.output(), op, env_->asm_tstate, i.GetOperand(0),
+                i.GetOperand(1), i.GetOperand(2));
+          } else if (opcode == Opcode::kInlineIter) {
+            // InlineIter has 3 operands: send_value, iter, state_size
             return bbb.appendInstr(
                 i.output(), op, env_->asm_tstate, i.GetOperand(0),
                 i.GetOperand(1), i.GetOperand(2));

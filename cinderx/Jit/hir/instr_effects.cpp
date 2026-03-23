@@ -324,7 +324,6 @@ MemoryEffects memoryEffects(const Instr& inst) {
       return {true, AFuncArgs, {1, 1}, AAny};
 
     case Opcode::kYieldFrom:
-    case Opcode::kOptimizedYieldFrom:
 #if PY_VERSION_HEX >= 0x030C0000
       // In 3.12+ YieldFrom is actually YieldValue but has an additional arg for
       // the subiterator for use when querying yield-from.
@@ -332,6 +331,16 @@ MemoryEffects memoryEffects(const Instr& inst) {
 #else
       [[fallthrough]];
 #endif
+    case Opcode::kOptimizedYieldFrom:
+      // 与 YieldFrom 相同的内存效果
+#if PY_VERSION_HEX >= 0x030C0000
+      return {true, AFuncArgs, {3, 1}, AAny};
+#else
+      return commonEffects(inst, AAny);
+#endif
+    case Opcode::kInlineIter:
+      // 内联迭代器读写栈上状态机
+      return {true, AFuncArgs, {3, 1}, AAny};
     case Opcode::kYieldFromHandleStopAsyncIteration: {
       // In 3.10 YieldFrom's output is either the yielded value from the subiter
       // or the final result from a StopIteration, and is owned in either case.
@@ -555,6 +564,7 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
     case Opcode::kOptimizedYieldFrom:
+    case Opcode::kInlineIter:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return true;
