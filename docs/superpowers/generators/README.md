@@ -15,7 +15,7 @@
 | Phase 0 | 基线分析 | ✅ 完成 | - | 性能剖析 |
 | Phase 1 | OptimizedYieldFrom | ✅ 完成 | ~1% | Entry point 缓存 |
 | Phase 2 | **InlineIter** | ✅ **完成** | **3-32%** ⭐ | **逃逸分析 + HIR 内联** |
-| Phase 3 | 状态机生成 | 📋 计划中 | 5-8x (预期) | 编译时状态机 |
+| Phase 3 | **状态机生成** | 📋 **计划中** | **4-6x** ⭐ | **编译时状态机扁平化** |
 | Phase 4 | 帧消除 | 📋 计划中 | 10-12x (预期) | 直接代码生成 |
 
 ---
@@ -37,11 +37,18 @@ generators/
 
 ## 快速导航
 
-### ⭐ InlineIter Phase 1（最新完成）
-- **[Phase 1 完整总结](./diagnostics/2026-03-23-generators-inline-iter-phase1-summary.md)** - InlineIter 优化完整报告 ⭐ 新增
+### ⭐ Phase 2（InlineIter - 最新完成）
+- **[Phase 2 完整总结](./diagnostics/2026-03-23-generators-inline-iter-phase1-summary.md)** - InlineIter 优化完整报告 ⭐ 最新
   - 性能：3-32% 提升（depth 10-12 达到 32%）
   - 技术：逃逸分析 + InlineIter HIR 指令
   - 包含：架构设计、性能数据、实现细节、已知陷阱
+
+### 📋 Phase 3（状态机生成 - 计划中）
+- **[Phase 3 实施计划](./plans/2026-03-24-generators-phase2-state-machine-plan.md)** - 状态机生成完整计划 📋 新增
+  - 目标：4-6x 性能提升（深度 ≤ 5）
+  - 技术：HIR 级别状态机生成 + 扁平化嵌套
+  - 包含：技术设计、任务分解、风险评估、测试计划
+- **[状态机研究报告](./research/2026-03-23-generators-phase2-state-machine-research.md)** - 理论基础
 
 ### 🔍 快速开始
 - [生成器初始分析](./plans/2026-03-16-generators-initial-analysis.md) - 了解问题背景
@@ -50,6 +57,7 @@ generators/
 ### 📋 实施计划
 - [递归生成器 JIT 优化计划](./plans/2026-03-17-recursive-generator-jit-optimization.md) - 完整路线图
 - [Yield-From 内联优化计划](./plans/2026-03-18-generators-yield-from-inline-optimization-plan.md) - Phase 2-C 详细计划
+- **[Phase 3 状态机生成计划](./plans/2026-03-24-generators-phase2-state-machine-plan.md)** ⭐ **最新**
 
 ### 📐 设计文档
 - [递归生成器 JIT 优化设计](./specs/2026-03-17-generators-recursive-jit-optimization-design.md) - 技术设计
@@ -59,6 +67,7 @@ generators/
 - [Yield-From 内联分析](./research/2026-03-17-generators-yield-from-inlining-analysis.md) - 内联可行性研究
 - [帧池化发现](./research/2026-03-18-generators-frame-pooling-discovery.md) - 发现现有实现
 - [帧池化分析](./research/2026-03-18-generators-frame-pooling-analysis.md) - 优化配置分析
+- **[状态机生成研究报告](./research/2026-03-23-generators-phase2-state-machine-research.md)** ⭐ **最新**
 
 ### 📊 诊断报告
 - [Phase 0 诊断报告](./diagnostics/2026-03-17-generators-phase0-report.md) - 初始瓶颈分析
