@@ -2,7 +2,21 @@
 
 **目标**: 消除 CinderX JIT 编译递归生成器（Tree.__iter__ 模式）中的性能回退
 
-**当前状态**: Chunk 1 完成，OptimizedYieldFrom HIR 指令已实施，entry point 解析已实现
+**当前状态**: InlineIter Phase 1 完成（3-32% 性能提升） ✅
+
+**最新进展**: InlineIter HIR 指令 + 逃逸分析已实施，远超 OptimizedYieldFrom 的 ~1% 改进
+
+---
+
+## 🎯 优化阶段概览
+
+| 阶段 | 优化 | 状态 | 性能改进 | 关键技术 |
+|------|------|------|----------|----------|
+| Phase 0 | 基线分析 | ✅ 完成 | - | 性能剖析 |
+| Phase 1 | OptimizedYieldFrom | ✅ 完成 | ~1% | Entry point 缓存 |
+| Phase 2 | **InlineIter** | ✅ **完成** | **3-32%** ⭐ | **逃逸分析 + HIR 内联** |
+| Phase 3 | 状态机生成 | 📋 计划中 | 5-8x (预期) | 编译时状态机 |
+| Phase 4 | 帧消除 | 📋 计划中 | 10-12x (预期) | 直接代码生成 |
 
 ---
 
@@ -10,16 +24,24 @@
 
 ```
 generators/
-├── plans/           # 实施计划
-├── specs/           # 设计文档
-├── research/        # 研究报告
-├── diagnostics/     # 诊断和结果报告
-└── decisions/       # 决策记录
+├── plans/                          # 实施计划
+├── specs/                          # 设计文档
+├── research/                       # 研究报告
+├── diagnostics/                    # 诊断和结果报告
+├── decisions/                      # 决策记录
+├── inline-iter-phase1-summary.md  # Phase 1 (InlineIter) 完整总结 ⭐ 新增
+└── README.md                       # 本文件
 ```
 
 ---
 
 ## 快速导航
+
+### ⭐ InlineIter Phase 1（最新完成）
+- **[Phase 1 完整总结](./diagnostics/2026-03-23-generators-inline-iter-phase1-summary.md)** - InlineIter 优化完整报告 ⭐ 新增
+  - 性能：3-32% 提升（depth 10-12 达到 32%）
+  - 技术：逃逸分析 + InlineIter HIR 指令
+  - 包含：架构设计、性能数据、实现细节、已知陷阱
 
 ### 🔍 快速开始
 - [生成器初始分析](./plans/2026-03-16-generators-initial-analysis.md) - 了解问题背景
@@ -48,7 +70,8 @@ generators/
 - [Phase 2-B Phi 验证报告](./diagnostics/2026-03-17-generators-phi-detection-verification-report.md)
 - [Phase 2 技术总结](./diagnostics/2026-03-18-generators-phase2-technical-summary-report.md)
 - [Phase 2-C 实施报告](./diagnostics/2026-03-18-generators-phase2c-implementation-report.md)
-- [Phase 2-C 最终结果](./diagnostics/2026-03-19-generators-phase2c-final-results.md) ⭐ 最新
+- [Phase 2-C 最终结果](./diagnostics/2026-03-19-generators-phase2c-final-results.md)
+- [InlineIter Phase 1 总结](./diagnostics/2026-03-23-generators-inline-iter-phase1-summary.md) ⭐ **最新**
 - [Task 2 完成报告](./diagnostics/2026-03-18-generators-task2-completion-report.md)
 
 ### 📈 基线和日志数据
@@ -67,7 +90,7 @@ generators/
 
 ## 关键发现总结
 
-### 性能瓶颈分布
+### 性能瓶颈分布（基线）
 ```
 Yield-from委托:  53.9%  ← 主要瓶颈
 值yield:          45.8%  ← 次要
@@ -75,23 +98,125 @@ Yield-from委托:  53.9%  ← 主要瓶颈
 ```
 
 ### 已实施的优化
-| 优化 | 状态 | 效果 |
-|------|------|------|
-| 帧池化 (32768条目) | ✅ 有效 | ~1.5% 改进 |
-| 寄存器分配 (CALLER_SAVE_REGS) | ❌ 回滚 | 导致断言失败 |
+| 优化 | 状态 | 效果 | 日期 |
+|------|------|------|------|
+| 帧池化 (32768条目) | ✅ 有效 | ~1.5% 改进 | 2026-03-18 |
+| 寄存器分配 (CALLER_SAVE_REGS) | ❌ 回滚 | 导致断言失败 | 2026-03-18 |
+| OptimizedYieldFrom | ✅ 完成 | ~1% 改进 | 2026-03-21 |
+| **InlineIter (Phase 1)** | ✅ **完成** | **3-32% 改进** ⭐ | 2026-03-23 |
+
+### InlineIter Phase 1 性能数据
+
+| 树深度 | 节点数 | 改进幅度 |
+|--------|--------|---------|
+| 5-8 | 63-511 | 6-7% |
+| 10-12 | 2047-8191 | **32%** ⭐ |
+| 14-16 | 32767-131071 | 3-6% |
 
 ### 结论
-真正的性能提升需要优化 **yield-from 委托机制**，而不是帧池化或寄存器分配。
+1. **OptimizedYieldFrom**: ~1% 改进，受限于运行时帧切换
+2. **InlineIter Phase 1**: 3-32% 改进，通过逃逸分析和 HIR 内联
+3. **未来潜力**: Phase 2-3（状态机生成 + 帧消除）可实现 10-12x 改进
 
 ---
 
 ## 相关代码
+
+### InlineIter Phase 1（最新）
+- `cinderx/Jit/hir/escape_analysis.cpp/h` - 逃逸分析实现 ⭐ 新增
+- `cinderx/Jit/hir/simplify.cpp` - InlineIter HIR 发射 ⭐ 修改
+- `cinderx/Jit/codegen/autogen.cpp` - InlineIter 代码生成 ⭐ 修改
+- `cinderx/Jit/inline_iter.md` - InlineIter 技术文档 ⭐ 新增
+
+### OptimizedYieldFrom（历史）
 - `cinderx/Jit/generators_mm.h` - 帧池化配置
 - `cinderx/Jit/lir/regalloc.cpp` - 寄存器分配
 - `cinderx/Jit/hir/builder.cpp` - HIR 构建
 - `cinderx/Jit/jit_rt.cpp` - JIT 运行时函数
 
 ## 相关脚本
+
+### InlineIter 测试（最新）
+- `test_inline_iter.py` - 性能基准测试 ⭐ 新增
+- `dump_hir.py` - HIR dump 和验证 ⭐ 新增
+
+### OptimizedYieldFrom 测试（历史）
 - `scripts/diagnostics/benchmark_recursive_generator.py` - 性能基准测试
 - `scripts/diagnostics/profile_recursive_generator.py` - 性能剖析工具
 - `scripts/diagnostics/simple_perf_test.py` - 简化性能测试
+
+---
+
+## 🚀 快速开始（InlineIter）
+
+### 环境配置
+
+```bash
+# macOS 必须
+export PYTHONJITHUGEPAGES=0
+
+# 启用 JIT 和 InlineIter
+export PYTHONJIT=1
+export PYTHONJIT_ARM_INLINE_YIELD_FROM=1
+
+# 生产环境禁用调试
+export PYTHONJITDEBUG=0
+```
+
+### 运行测试
+
+```bash
+# 性能基准测试
+.venv/bin/python3 test_inline_iter.py
+
+# 调试模式
+PYTHONJITDEBUG=1 .venv/bin/python3 test_inline_iter.py
+```
+
+### 预期结果
+
+```
+JIT enabled: True
+Testing InlineIter optimization...
+  depth=10: 2047 values (expected 2047), 100 iterations in 77.13ms (0.7713ms/iter)
+  depth=12: 8191 values (expected 8191), 100 iterations in 340.25ms (3.4025ms/iter)
+All tests passed!
+```
+
+---
+
+## ⚠️ 已知陷阱（InlineIter）
+
+### 1. force_compile 冲突
+
+❌ **错误**:
+```python
+cinderx.jit.force_compile(Node.__iter__)  # 会导致崩溃
+```
+
+✅ **正确**:
+```python
+cinderx.jit.force_compile(traverse_and_collect)  # 只编译调用方
+```
+
+### 2. macOS 特殊要求
+
+- 必须设置 `PYTHONJITHUGEPAGES=0`
+- GCC 15 构建需要 `-lstdc++` 链接
+- 构建后必须重新签名 `.so` 文件
+
+详见：**[Phase 1 完整总结](./inline-iter-phase1-summary.md)**
+
+---
+
+## 📚 扩展阅读
+
+- [JIT Guide](../../cinderx/Jit/guide.md) - JIT 整体架构
+- [InlineIter 技术文档](../../cinderx/Jit/inline_iter.md) - InlineIter 详细实现
+- [Progress Log](../../progress.md) - 项目进度记录
+
+---
+
+**维护者**: Claude Code Agent
+**最后更新**: 2026-03-23
+**项目状态**: InlineIter Phase 1 完成 ✅
