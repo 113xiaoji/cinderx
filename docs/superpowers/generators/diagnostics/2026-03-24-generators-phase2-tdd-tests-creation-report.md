@@ -289,14 +289,38 @@ OK
 PYTHONJITHUGEPAGES=0 PYTHONJIT=1 .venv/bin/python3 test_state_machine.py -v
 ```
 
-### 3. 添加性能测试（0.5 天）
+### 3. 添加性能测试（0.5 天） ✅ **已完成**（2026-03-24）
 
-**文件**: `benchmark_state_machine.py`
+**任务**: ✅
+- ✅ 创建 benchmark_state_machine.py
+- ✅ 创建 compare_performance.py
+- ✅ 运行性能基准测试（JIT 启用/禁用）
+- ✅ 分析性能对比结果
 
-**测试内容**:
-- depth=1, 2, 3, 5, 10 的树遍历
-- 验证 4-6x 性能提升
-- 对比 InlineIter 性能
+**结果**:
+- ✅ 当前性能改进: 1.3-1.5x (depth ≤ 7)
+- ✅ 平均加速比: 1.11x
+- ⚠ 与目标差距: ~3-4x (目标 4-6x)
+
+**原因分析**:
+- 状态机优化未实现（Week 2 任务 T2.3-T2.5）
+- YieldFrom 优化未启用
+- 生成器帧切换开销仍存在
+
+**文档**:
+- [性能基准测试报告](./2026-03-24-generators-phase2-performance-benchmark-report.md) ⭐ **最新**
+
+**命令**:
+```bash
+# JIT 启用
+PYTHONJITHUGEPAGES=0 PYTHONJIT=1 .venv/bin/python3 benchmark_state_machine.py
+
+# JIT 禁用（基线）
+PYTHONJITHUGEPAGES=0 PYTHONJIT=0 .venv/bin/python3 benchmark_state_machine.py
+
+# 性能对比
+.venv/bin/python3 compare_performance.py
+```
 
 ### 4. 添加 HIR 验证（1 天）
 
@@ -313,9 +337,9 @@ PYTHONJITHUGEPAGES=0 PYTHONJIT=1 .venv/bin/python3 test_state_machine.py -v
 |------|------|---------|------|
 | 完善C++测试 | test_state_machine_*.cpp | 1 天 | 🚧 进行中 |
 | 运行Python测试 | test_state_machine.py | 0.5 天 | ✅ 完成 |
-| 性能测试 | benchmark_state_machine.py | 0.5 天 | ⏳ 待开始 |
+| 性能测试 | benchmark_state_machine.py | 0.5 天 | ✅ 完成 |
 | HIR验证 | test_hir_dump.cpp | 1 天 | ⏳ 待开始 |
-| **总计** | - | **3 天** | **33% 完成** |
+| **总计** | - | **3 天** | **67% 完成** |
 
 ---
 
