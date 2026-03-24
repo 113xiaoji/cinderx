@@ -75,6 +75,7 @@ struct StateMachine {
   std::vector<State> states;  // 状态列表
   Register* state_reg;  // 状态寄存器
   Register* self_reg;  // self 参数寄存器（arg 0）
+  const FrameState* frame_state;  // FrameState（用于 YieldValue 等指令）
 
   // Pattern 信息（用于状态块生成）
   const YieldFromPatternInfo* pattern;  // 模式信息
@@ -95,7 +96,10 @@ class StateMachineGenerator {
 
   // 主入口：尝试将生成器转换为状态机
   // 返回生成的状态机，失败返回 nullptr
-  std::unique_ptr<StateMachine> tryGenerateStateMachine(Register* iter_reg);
+  // frame_state: 用于生成 YieldValue 等需要 FrameState 的指令
+  std::unique_ptr<StateMachine> tryGenerateStateMachine(
+      Register* iter_reg,
+      const FrameState* frame_state = nullptr);
 
   // 检查是否可以扁平化
   bool canFlatten(Register* iter_reg, int depth) const;
@@ -112,7 +116,8 @@ class StateMachineGenerator {
 
   // 状态机构建
   std::unique_ptr<StateMachine> buildStateMachine(
-      const YieldFromPatternInfo& pattern);
+      const YieldFromPatternInfo& pattern,
+      const FrameState* frame_state);
 
   // 创建基本块
   BasicBlock* createEntryBlock(StateMachine* sm);

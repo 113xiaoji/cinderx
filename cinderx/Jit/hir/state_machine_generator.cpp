@@ -15,7 +15,8 @@ StateMachineGenerator::StateMachineGenerator(Function* func)
     : func_(func) {}
 
 std::unique_ptr<StateMachine> StateMachineGenerator::tryGenerateStateMachine(
-    Register* iter_reg) {
+    Register* iter_reg,
+    const FrameState* frame_state) {
   // 检查深度限制
   if (!canFlatten(iter_reg, 0)) {
     return nullptr;
@@ -28,7 +29,7 @@ std::unique_ptr<StateMachine> StateMachineGenerator::tryGenerateStateMachine(
   }
 
   // 构建状态机
-  return buildStateMachine(*pattern);
+  return buildStateMachine(*pattern, frame_state);
 }
 
 bool StateMachineGenerator::canFlatten(Register* iter_reg, int depth) const {
@@ -195,15 +196,17 @@ int StateMachineGenerator::countStates(Register* iter_reg) const {
 }
 
 std::unique_ptr<StateMachine> StateMachineGenerator::buildStateMachine(
-    const YieldFromPatternInfo& pattern) {
+    const YieldFromPatternInfo& pattern,
+    const FrameState* frame_state) {
   auto sm = std::make_unique<StateMachine>();
   sm->func = func_;
   sm->pattern = &pattern;
+  sm->frame_state = frame_state;
 
   // 查找 self 参数（arg 0）
   // 遍历所有寄存器，找到 LoadArg(0) 指令
   for (auto& [id, reg] : func_->env.GetRegisters()) {
-    if (reg && reg->instr() && reg->instr()->IsLoadArg()) {
+    if (reg && reg->instr() && reg->instr()->opcode() == Opcode::kLoadArg) {
       auto* load_arg = static_cast<const LoadArg*>(reg->instr());
       if (load_arg->arg_idx() == 0) {
         sm->self_reg = reg.get();
