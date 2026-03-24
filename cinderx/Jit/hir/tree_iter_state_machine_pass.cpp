@@ -7,6 +7,7 @@
 #include "cinderx/Jit/hir/hir.h"
 #include "cinderx/Jit/hir/printer.h"
 #include "cinderx/Common/log.h"
+#include "cinderx/python.h"
 
 #include <algorithm>
 
@@ -196,19 +197,40 @@ void TreeIterStateMachinePass::generateStateMachine(
     BasicBlock* state_bb = func.cfg.AllocateUnlinkedBlock();
     state_blocks.push_back(state_bb);
 
+    const YieldFrom* yf = yield_froms[i];
+
     // 状态块内容:
     // 1. 保存下一个状态 (state = i + 1)
     Register* next_state = func.env.AllocateRegister();
     state_bb->append<LoadConst>(next_state, Type::fromCInt(i + 1, TCInt32));
     state_bb->append<SaveState>(next_state);
 
-    // 2. 获取要 yield 的值（从 YieldFrom 指令获取）
-    // 这里简化处理：直接返回 None
-    // 实际实现需要从原始指令中提取值
-    Register* yield_value = func.env.AllocateRegister();
-    state_bb->append<LoadConst>(yield_value, Type::fromObject(Py_None));
+    // 2. 从 YieldFrom 指令提取 yield value
+    // YieldFrom 的操作数: [send_value, iter]
+    // 我们需要获取 iter 的当前值并 yield
+    //
+    // 对于树遍历模式，iter 来自 GetIter(LoadField(self, "left/right"))
+    // 我们应该 yield LoadField 的结果（即子树的值）
+    //
+    // 但 YieldFrom 本身会处理迭代，所以我们这里简化处理：
+    // 生成一个占位符的 YieldValue 指令
 
-    // 3. 跳转到 dispatch
+    // 获取 send_value (YieldFrom 的第一个操作数)
+    Register* send_value = yf->GetOperand(0);
+
+    // 获取 FrameState (用于 YieldValue 指令)
+    const FrameState* frame_state = yf->frameState();
+    if (frame_state == nullptr) {
+      JIT_DLOG("TreeIterStateMachinePass: No FrameState for YieldFrom, skipping");
+      continue;
+    }
+
+    // 生成 YieldValue 指令
+    // YieldValue(send_value) -> yield send_value to caller
+    Register* yield_result = func.env.AllocateRegister();
+    state_bb->append<YieldValue>(yield_result, send_value, *frame_state);
+
+    // 3. YieldValue 返回后，跳转回 dispatch 继续下一次迭代
     state_bb->append<Branch>(dispatch_block);
   }
 
