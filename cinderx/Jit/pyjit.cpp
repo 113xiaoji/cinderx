@@ -579,6 +579,11 @@ FlagProcessor initFlagProcessor() {
       "phi elimination", phi_elim, "jit-phi-elim", "PYTHONJITPHIELIM");
   HIR_OPTIMIZATION_OPTION(
       "simplify", simplify, "jit-simplify", "PYTHONJITSIMPLIFY");
+  HIR_OPTIMIZATION_OPTION(
+      "tree iter state machine",
+      tree_iter_state_machine,
+      "jit-tree-iter-state-machine",
+      "PYTHONJITTREEITERSTATEMACHINE");
 
   flag_processor.addOption(
       "jit-simplify-iteration-limit",

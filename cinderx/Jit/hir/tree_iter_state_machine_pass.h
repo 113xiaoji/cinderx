@@ -24,6 +24,8 @@ namespace jit::hir {
 //   done -> return None
 class TreeIterStateMachinePass : public Pass {
  public:
+  TreeIterStateMachinePass() : Pass("TreeIterStateMachinePass") {}
+
   void Run(Function& func) override;
 
  private:
