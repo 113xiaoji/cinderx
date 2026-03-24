@@ -1276,6 +1276,34 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         bbb.appendInstr(Instruction::kReturn, i.GetOperand(0));
         break;
       }
+      // Phase 2: State machine instructions (placeholder implementations)
+      case Opcode::kStateSwitch: {
+        // TODO: Implement state dispatch logic
+        // For now, this is a placeholder to allow compilation
+        JIT_ABORT("StateSwitch not yet implemented in LIR generator");
+        break;
+      }
+      case Opcode::kSaveState: {
+        // TODO: Implement state save logic
+        // For now, this is a placeholder to allow compilation
+        JIT_ABORT("SaveState not yet implemented in LIR generator");
+        break;
+      }
+      case Opcode::kLoadState: {
+        // TODO: Implement state load logic
+        // For now, this is a placeholder to allow compilation
+        JIT_ABORT("LoadState not yet implemented in LIR generator");
+        break;
+      }
+      case Opcode::kYieldFromInline: {
+        // Phase 2: Treat as InlineIter for now
+        // TODO: Implement proper YieldFromInline logic
+        Instruction* instr = bbb.appendInstr(
+            i.output(), Instruction::kInlineIter, env_->asm_tstate,
+            i.GetOperand(0), i.GetOperand(1), i.GetOperand(2));
+        finishYield(bbb, instr, static_cast<const YieldFromInline*>(&i));
+        break;
+      }
       case Opcode::kSetCurrentAwaiter: {
         bbb.appendInvokeInstruction(
             JITRT_SetCurrentAwaiter, i.GetOperand(0), env_->asm_tstate);
