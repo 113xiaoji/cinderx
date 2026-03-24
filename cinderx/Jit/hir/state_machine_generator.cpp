@@ -14,21 +14,21 @@ namespace jit::hir {
 StateMachineGenerator::StateMachineGenerator(Function* func)
     : func_(func) {}
 
-std::vector<BasicBlock*> StateMachineGenerator::tryGenerateStateMachine(
+std::unique_ptr<StateMachine> StateMachineGenerator::tryGenerateStateMachine(
     Register* iter_reg) {
   // 检查深度限制
   if (!canFlatten(iter_reg, 0)) {
-    return {};
+    return nullptr;
   }
 
   // 检测模式
   auto pattern = detectPattern(iter_reg);
   if (!pattern || !pattern->is_tree_pattern) {
-    return {};
+    return nullptr;
   }
 
-  // 生成状态机
-  return generateStateMachine(*pattern);
+  // 构建状态机
+  return buildStateMachine(*pattern);
 }
 
 bool StateMachineGenerator::canFlatten(Register* iter_reg, int depth) const {
@@ -175,7 +175,7 @@ int StateMachineGenerator::countStates(Register* iter_reg) const {
 
   // 遍历函数的所有基本块
   for (BasicBlock& bb : func_->cfg.blocks) {
-    for (auto& instr : bb) {
+    for (Instr& instr : bb) {
       if (instr.opcode() == Opcode::kYieldFrom ||
           instr.opcode() == Opcode::kOptimizedYieldFrom ||
           instr.opcode() == Opcode::kInlineIter) {
@@ -194,29 +194,194 @@ int StateMachineGenerator::countStates(Register* iter_reg) const {
   return estimated_states;
 }
 
-std::vector<BasicBlock*> StateMachineGenerator::generateStateMachine(
+std::unique_ptr<StateMachine> StateMachineGenerator::buildStateMachine(
     const YieldFromPatternInfo& pattern) {
-  std::vector<BasicBlock*> blocks;
+  auto sm = std::make_unique<StateMachine>();
+  sm->func = func_;
 
-  // TODO: 实现状态机生成
-  // 1. 创建状态分发块
-  // 2. 为每个状态创建基本块
-  // 3. 添加状态转换逻辑
+  // 创建入口块
+  sm->entry_block = createEntryBlock(sm.get());
+  if (!sm->entry_block) {
+    return nullptr;
+  }
 
-  return blocks;
+  // 创建分发块
+  sm->dispatch_block = createDispatchBlock(sm.get());
+  if (!sm->dispatch_block) {
+    return nullptr;
+  }
+
+  // 创建完成块
+  sm->done_block = createDoneBlock(sm.get());
+  if (!sm->done_block) {
+    return nullptr;
+  }
+
+  // 创建状态块
+  int num_states = countStates(pattern.iter_regs[0]);
+  for (int i = 0; i < num_states; i++) {
+    BasicBlock* state_bb = createStateBlock(sm.get(), i);
+    if (!state_bb) {
+      return nullptr;
+    }
+
+    State state;
+    state.id = i;
+    state.bb = state_bb;
+    sm->states.push_back(std::move(state));
+  }
+
+  return sm;
 }
 
-BasicBlock* StateMachineGenerator::createDispatchBlock(
-    const YieldFromPatternInfo& pattern) {
-  // TODO: 实现状态分发块生成
-  return nullptr;
+BasicBlock* StateMachineGenerator::createEntryBlock(StateMachine* sm) {
+  // 创建入口块
+  BasicBlock* entry = func_->cfg.AllocateUnlinkedBlock();
+
+  // 加载当前状态
+  sm->state_reg = func_->env.AllocateRegister();
+  emitLoadState(entry, sm->state_reg);
+
+  // 检查是否未初始化（state == -1）
+  Register* uninit_const = func_->env.AllocateRegister();
+  entry->append<LoadConst>(uninit_const, Type::fromCInt(-1, TCInt32));
+
+  Register* is_uninit = func_->env.AllocateRegister();
+  entry->append<PrimitiveCompare>(
+      is_uninit,
+      PrimitiveCompareOp::kEqual,
+      sm->state_reg,
+      uninit_const);
+
+  // 创建初始化块
+  BasicBlock* init_bb = func_->cfg.AllocateUnlinkedBlock();
+  emitSaveState(init_bb, sm->state_reg, 0);  // 设置状态为 0
+  init_bb->append<Branch>(sm->dispatch_block);
+
+  // 条件跳转：如果未初始化则跳转到 init，否则跳转到 dispatch
+  entry->append<CondBranch>(is_uninit, init_bb, sm->dispatch_block);
+
+  return entry;
+}
+
+BasicBlock* StateMachineGenerator::createDispatchBlock(StateMachine* sm) {
+  // 创建分发块
+  BasicBlock* dispatch = func_->cfg.AllocateUnlinkedBlock();
+
+  // 使用 CondBranch 链实现状态分发
+  // 对于每个状态 i，检查 state == i，如果是则跳转到 states[i].bb
+
+  BasicBlock* current_bb = dispatch;
+
+  for (size_t i = 0; i < sm->states.size(); ++i) {
+    // 创建常量 i
+    Register* state_const = func_->env.AllocateRegister();
+    current_bb->append<LoadConst>(
+        state_const,
+        Type::fromCInt(sm->states[i].id, TCInt32));
+
+    // 比较 state == i
+    Register* is_state = func_->env.AllocateRegister();
+    current_bb->append<PrimitiveCompare>(
+        is_state,
+        PrimitiveCompareOp::kEqual,
+        sm->state_reg,
+        state_const);
+
+    // 确定下一个块
+    BasicBlock* next_bb = nullptr;
+    if (i + 1 < sm->states.size()) {
+      // 还有更多状态，创建一个新的检查块
+      next_bb = func_->cfg.AllocateUnlinkedBlock();
+    } else {
+      // 这是最后一个状态，如果都不匹配则跳转到 done
+      next_bb = sm->done_block;
+    }
+
+    // 条件跳转
+    current_bb->append<CondBranch>(
+        is_state,
+        sm->states[i].bb,
+        next_bb);
+
+    current_bb = next_bb;
+  }
+
+  return dispatch;
+}
+
+BasicBlock* StateMachineGenerator::createDoneBlock(StateMachine* sm) {
+  // 创建完成块
+  BasicBlock* done = func_->cfg.AllocateUnlinkedBlock();
+
+  // 创建 None 常量
+  Register* none_reg = func_->env.AllocateRegister();
+  done->append<LoadConst>(none_reg, Type::fromObject(Py_None));
+
+  // 返回 None（表示迭代完成）
+  done->append<Return>(none_reg, Type::fromObject(Py_None));
+
+  return done;
 }
 
 BasicBlock* StateMachineGenerator::createStateBlock(
-    const YieldFromPatternInfo& pattern,
+    StateMachine* sm,
     int state_id) {
-  // TODO: 实现状态基本块生成
-  return nullptr;
+  // 创建状态块
+  BasicBlock* state_bb = func_->cfg.AllocateUnlinkedBlock();
+
+  // TODO: 根据状态 ID 生成对应的逻辑
+  // 当前实现：占位符 - 暂时使用 Return 作为占位符
+
+  // 创建 None 常量
+  Register* none_reg = func_->env.AllocateRegister();
+  state_bb->append<LoadConst>(none_reg, Type::fromObject(Py_None));
+
+  // Return None (占位符)
+  state_bb->append<Return>(none_reg, Type::fromObject(Py_None));
+
+  // 保存下一个状态
+  int next_state = state_id + 1;
+  if (next_state >= static_cast<int>(sm->states.size())) {
+    // 如果是最后一个状态，跳转到 done
+    emitSaveState(state_bb, sm->state_reg, static_cast<int>(GeneratorState::kDone));
+    state_bb->append<Branch>(sm->done_block);
+  } else {
+    // 否则跳转到下一个状态
+    emitSaveState(state_bb, sm->state_reg, next_state);
+    state_bb->append<Branch>(sm->dispatch_block);
+  }
+
+  return state_bb;
+}
+
+void StateMachineGenerator::emitLoadState(
+    BasicBlock* bb,
+    Register* state_reg) {
+  // 生成 LoadState 指令
+  bb->append<LoadState>(state_reg);
+}
+
+void StateMachineGenerator::emitSaveState(
+    BasicBlock* bb,
+    Register* state_reg,
+    int new_state) {
+  // 创建常量寄存器
+  Register* const_reg = func_->env.AllocateRegister();
+  bb->append<LoadConst>(const_reg, Type::fromCInt(new_state, TCInt32));
+
+  // 生成 SaveState 指令
+  bb->append<SaveState>(const_reg);
+}
+
+void StateMachineGenerator::emitStateSwitch(
+    BasicBlock* bb,
+    Register* state_reg,
+    const std::vector<BasicBlock*>& targets) {
+  // 生成 StateSwitch 指令
+  bb->append<StateSwitch>(state_reg);
+
+  // TODO: 添加到各个目标块的边
 }
 
 }  // namespace jit::hir
