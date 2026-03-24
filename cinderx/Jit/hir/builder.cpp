@@ -880,6 +880,7 @@ struct HIRBuilder::TranslationContext {
 
   BasicBlock* block{nullptr};
   FrameState frame;
+  std::vector<HIRBuilder::ExactInstanceAttrValue> reusable_exact_instance_attrs{};
 };
 
 void HIRBuilder::addInitialYield(TranslationContext& tc) {
@@ -1355,6 +1356,11 @@ void HIRBuilder::translate(
       continue;
     }
     processed.emplace(tc.block);
+
+    if (auto it = seeded_block_attr_values_.find(tc.block);
+        it != seeded_block_attr_values_.end()) {
+      tc.reusable_exact_instance_attrs = it->second;
+    }
 
     // Translate remaining instructions into HIR
     auto& bc_block = map_get(block_map_.bc_blocks, tc.block);
@@ -3967,6 +3973,39 @@ void HIRBuilder::emitToBool(TranslationContext& tc) {
 
   Register* coerced_result = temps_.AllocateStack();
   tc.emit<PrimitiveBoxBool>(coerced_result, truthy_result);
+  if (auto it = exact_instance_attr_values_.find(operand);
+      it != exact_instance_attr_values_.end()) {
+    truthy_attr_sources_[coerced_result] = it->second;
+  } else if (auto* phi = dynamic_cast<Phi*>(operand->instr()); phi != nullptr) {
+    std::optional<ExactInstanceAttrValue> merged;
+    bool same_attr = phi->NumOperands() > 0;
+    for (std::size_t i = 0; i < phi->NumOperands(); ++i) {
+      auto in_it = exact_instance_attr_values_.find(phi->GetOperand(i));
+      if (in_it == exact_instance_attr_values_.end()) {
+        same_attr = false;
+        break;
+      }
+      if (!merged.has_value()) {
+        merged = in_it->second;
+        continue;
+      }
+      if (
+          merged->receiver != in_it->second.receiver ||
+          merged->name_idx != in_it->second.name_idx) {
+        same_attr = false;
+        break;
+      }
+    }
+    if (same_attr && merged.has_value()) {
+      ExactInstanceAttrValue phi_attr{
+          merged->receiver,
+          merged->name_idx,
+          operand,
+      };
+      exact_instance_attr_values_[operand] = phi_attr;
+      truthy_attr_sources_[coerced_result] = phi_attr;
+    }
+  }
   tc.frame.stack.push(coerced_result);
 }
 
@@ -4073,6 +4112,23 @@ void HIRBuilder::emitLoadAttr(
 #else
       false;
 #endif
+  if (!is_method) {
+    for (auto it = tc.reusable_exact_instance_attrs.begin();
+         it != tc.reusable_exact_instance_attrs.end();
+         ++it) {
+      if (it->receiver == receiver && it->name_idx == name_idx) {
+        JIT_LOG(
+            "issue63-reuse block={} name_idx={} value={}",
+            tc.block->id,
+            name_idx,
+            fmt::ptr(it->value));
+        tc.frame.stack.push(it->value);
+        exact_instance_attr_values_[it->value] = *it;
+        tc.reusable_exact_instance_attrs.erase(it);
+        return;
+      }
+    }
+  }
 
   if (getConfig().specialized_opcodes) {
     auto instance_value_min_locals = [&]() -> int {
@@ -4207,6 +4263,8 @@ void HIRBuilder::emitLoadAttr(
             result, receiver, field_name, bc_instr.cacheU16(4), TOptObject);
         CheckField* cf = tc.emit<CheckField>(result, result, name, tc.frame);
         cf->setGuiltyReg(receiver);
+        exact_instance_attr_values_[result] =
+            ExactInstanceAttrValue{receiver, name_idx, result};
         tc.frame.stack.push(result);
         return;
       }
@@ -5319,6 +5377,17 @@ void HIRBuilder::emitPopJumpIf(
       tc.emit<IsTruthy>(is_true, var, tc.frame);
     }
     tc.emit<CondBranch>(is_true, true_block, false_block);
+    if (auto it = truthy_attr_sources_.find(var);
+        it != truthy_attr_sources_.end() &&
+        true_block->in_edges().size() <= 1) {
+      JIT_LOG(
+          "issue63-seed block={} name_idx={} value={}",
+          true_block->id,
+          it->second.name_idx,
+          fmt::ptr(it->second.value));
+      seeded_block_attr_values_[true_block].push_back(it->second);
+      truthy_attr_sources_.erase(it);
+    }
   } else {
     tc.emit<CondBranch>(var, true_block, false_block);
   }

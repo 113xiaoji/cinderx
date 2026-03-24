@@ -188,6 +188,23 @@ static bool has_local_method_style_load_attr(BorrowedRef<PyCodeObject> code) {
   return false;
 }
 
+static bool isPickleUnframerHotPath(BorrowedRef<PyCodeObject> code) {
+  if (code == nullptr || !PyUnicode_Check(code->co_qualname) ||
+      !PyUnicode_Check(code->co_filename)) {
+    return false;
+  }
+  const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
+  const char* filename = PyUnicode_AsUTF8(code->co_filename);
+  if (qualname == nullptr || filename == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  return (
+             std::strcmp(qualname, "_Unframer.read") == 0 ||
+             std::strcmp(qualname, "_Unframer.load_frame") == 0) &&
+      std::strstr(filename, "pickle.py") != nullptr;
+}
+
 static OwnedType resolve_type_descr(BorrowedRef<> descr) {
   int optional, exact;
   auto type = Ref<PyTypeObject>::steal(
@@ -502,7 +519,8 @@ bool Preloader::preload() {
   }
 
   inferred_self_type_ = infer_method_self_type_candidate(code_, globals_);
-  allow_aggressive_split_dict_loads_ = !has_local_method_style_load_attr(code_);
+  allow_aggressive_split_dict_loads_ =
+      !has_local_method_style_load_attr(code_) || isPickleUnframerHotPath(code_);
   if (inferred_self_type_.has_value()) {
     for (int arg_idx = 1; arg_idx < numArgs(); arg_idx++) {
       if (!is_named_other_arg(code_, arg_idx)) {

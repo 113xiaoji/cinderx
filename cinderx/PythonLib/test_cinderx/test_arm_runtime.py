@@ -4392,6 +4392,77 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(int(lines[-1]), 19900, proc.stdout)
 
+    def test_pickle_unframer_current_frame_lookup_is_reused(self) -> None:
+        # Regression guard:
+        # pure-Python pickle hot paths should not rebuild the split-dict
+        # current_frame load chain twice in `_Unframer.read` and
+        # `_Unframer.load_frame`.
+        code = textwrap.dedent(
+            """
+            import sys
+            sys.modules.pop("pickle", None)
+            sys.modules["_pickle"] = None
+
+            import pickle
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            assert jit.force_compile(pickle._Unframer.read)
+            assert jit.force_compile(pickle._Unframer.load_frame)
+            assert jit.force_compile(pickle._Unpickler.load_frame)
+            print("compiled")
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/pickle_unframer_reuse_hir.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITDUMPFINALHIR"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            dump = proc.stdout + "\n" + proc.stderr
+
+            def extract_section(name: str) -> str:
+                marker = f"Optimized HIR for {name}:"
+                start = dump.find(marker)
+                self.assertNotEqual(start, -1, dump)
+                next_start = dump.find("Optimized HIR for ", start + len(marker))
+                if next_start == -1:
+                    return dump[start:]
+                return dump[start:next_start]
+
+            read_hir = extract_section("pickle:_Unframer.read")
+            load_frame_hir = extract_section("pickle:_Unframer.load_frame")
+
+            self.assertEqual(read_hir.count("SplitDictDeoptPatcher"), 1, read_hir)
+            self.assertEqual(read_hir.count('LoadAttr<0; "current_frame">'), 1, read_hir)
+            self.assertEqual(read_hir.count("current_frame@24"), 1, read_hir)
+
+            self.assertEqual(
+                load_frame_hir.count("SplitDictDeoptPatcher"), 1, load_frame_hir
+            )
+            self.assertEqual(
+                load_frame_hir.count('LoadAttr<0; "current_frame">'), 1, load_frame_hir
+            )
+            self.assertEqual(load_frame_hir.count("current_frame@24"), 1, load_frame_hir)
+
 
 if __name__ == "__main__":
     # Keep incidental unittest/traceback paths interpreted unless a test

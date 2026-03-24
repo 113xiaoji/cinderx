@@ -611,6 +611,12 @@ class HIRBuilder {
     uint32_t keys_version{0};
   };
 
+  struct ExactInstanceAttrValue {
+    Register* receiver{nullptr};
+    int name_idx{-1};
+    Register* value{nullptr};
+  };
+
   TempAllocator temps_{nullptr};
 
   // Tracks the function for compilations that require it.
@@ -627,6 +633,10 @@ class HIRBuilder {
   BasicBlock* inline_genexpr_exit_{nullptr};
   std::vector<std::unique_ptr<FrameState>> inline_genexpr_parent_frames_;
   std::optional<PendingMethodWithValuesCall> pending_method_with_values_call_;
+  std::unordered_map<Register*, ExactInstanceAttrValue> exact_instance_attr_values_;
+  std::unordered_map<Register*, ExactInstanceAttrValue> truthy_attr_sources_;
+  std::unordered_map<BasicBlock*, std::vector<ExactInstanceAttrValue>>
+      seeded_block_attr_values_;
   bool stop_block_translation_{false};
 };
 

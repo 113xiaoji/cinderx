@@ -90,6 +90,32 @@ bool armMdpPriorityCompareAddEnabled() {
   return env == nullptr || (env[0] != '\0' && std::strcmp(env, "0") != 0);
 }
 
+BorrowedRef<PyTypeObject> getKnownIoBytesIOType() {
+  static Ref<PyTypeObject> bytesio_type;
+  if (bytesio_type != nullptr) {
+    return bytesio_type;
+  }
+
+  Ref<> io_mod = Ref<>::steal(PyImport_ImportModule("io"));
+  if (io_mod == nullptr) {
+    PyErr_Clear();
+    return nullptr;
+  }
+  Ref<> bytesio = Ref<>::steal(PyObject_GetAttrString(io_mod, "BytesIO"));
+  if (bytesio == nullptr || !PyType_Check(bytesio)) {
+    PyErr_Clear();
+    return nullptr;
+  }
+  bytesio_type = Ref<PyTypeObject>::create(
+      reinterpret_cast<PyTypeObject*>(bytesio.release()));
+  return bytesio_type;
+}
+
+bool isPickleUnframerHotPath(const Function& func) {
+  return func.fullname == "pickle:_Unframer.read" ||
+      func.fullname == "pickle:_Unframer.load_frame";
+}
+
 bool isMdpApplyHPChangeCode(BorrowedRef<PyCodeObject> code) {
   if (code == nullptr || !PyUnicode_Check(code->co_qualname) ||
       !PyUnicode_Check(code->co_filename)) {
@@ -1650,6 +1676,98 @@ Register* simplifyLoadAttrSplitDict(
       });
 }
 
+std::optional<Register*> findDominatingTruthyExactAttr(
+    Env& env,
+    Register* receiver,
+    BorrowedRef<PyUnicodeObject> attr_name) {
+  if (env.block == nullptr || env.block->in_edges().size() != 1) {
+    return std::nullopt;
+  }
+
+  const BasicBlock* pred = (*env.block->in_edges().begin())->from();
+  if (pred == nullptr || pred->GetTerminator() == nullptr ||
+      !pred->GetTerminator()->IsCondBranch()) {
+    return std::nullopt;
+  }
+  if (pred->GetTerminator()->successor(0) != env.block) {
+    return std::nullopt;
+  }
+
+  Register* cond = pred->GetTerminator()->GetOperand(0);
+  if (cond == nullptr || !cond->instr()->IsIsTruthy()) {
+    return std::nullopt;
+  }
+
+  Register* attr = chaseAssignOperand(cond->instr()->GetOperand(0));
+  if (attr == nullptr || !attr->instr()->IsCheckField()) {
+    return std::nullopt;
+  }
+
+  auto* check = static_cast<const CheckField*>(attr->instr());
+  int same_name = PyObject_RichCompareBool(
+      check->name(), attr_name, Py_EQ);
+  if (same_name != 1) {
+    PyErr_Clear();
+    return std::nullopt;
+  }
+
+  Register* maybe_attr = check->GetOperand(0);
+  if (maybe_attr == nullptr || !maybe_attr->instr()->IsLoadField()) {
+    return std::nullopt;
+  }
+
+  auto* load = static_cast<const LoadField*>(maybe_attr->instr());
+  if (chaseAssignOperand(load->receiver()) != chaseAssignOperand(receiver)) {
+    return std::nullopt;
+  }
+  return attr;
+}
+
+template <typename LoadAttrT>
+Register* simplifyPickleUnframerBytesIOReuse(
+    Env& env,
+    const LoadAttrT* load_attr,
+    Register* receiver,
+    BorrowedRef<PyUnicodeObject> attr_name) {
+  if (!isPickleUnframerHotPath(env.func)) {
+    return nullptr;
+  }
+  int same_name =
+      PyUnicode_CompareWithASCIIString(attr_name, "current_frame");
+  if (same_name != 0) {
+    PyErr_Clear();
+    return nullptr;
+  }
+
+  auto dominating_attr = findDominatingTruthyExactAttr(env, receiver, attr_name);
+  if (!dominating_attr.has_value()) {
+    return nullptr;
+  }
+
+  BorrowedRef<PyTypeObject> bytesio_type = getKnownIoBytesIOType();
+  if (bytesio_type == nullptr) {
+    return nullptr;
+  }
+  Type bytesio_exact = Type::fromTypeExact(bytesio_type);
+
+  return env.emitCond(
+      [&](BasicBlock* fast_path, BasicBlock* slow_path) {
+        env.emit<CondBranchCheckType>(
+            *dominating_attr, bytesio_exact, fast_path, slow_path);
+      },
+      [&] {
+        env.emit<UseType>(receiver, receiver->type());
+        return env.emit<RefineType>(bytesio_exact, *dominating_attr);
+      },
+      [&] {
+        return env.emit<LoadAttr>(
+            receiver,
+            load_attr->name_idx(),
+            *load_attr->frameState(),
+            /* already_optimized= */ true);
+      });
+}
+
 #else
 
 // Attempt to simplify the given LoadAttr to a split dict load. Assumes various
@@ -1934,6 +2052,17 @@ Register* simplifyLoadAttrInstanceReceiver(
   BorrowedRef<PyUnicodeObject> attr_name{load_attr->name()};
   if (!PyUnicode_CheckExact(attr_name)) {
     return nullptr;
+  }
+
+  if (Register* reg = simplifyPickleUnframerBytesIOReuse(
+          env, load_attr, receiver, attr_name)) {
+    return reg;
+  }
+
+  if (auto attr = findDominatingTruthyExactAttr(env, receiver, attr_name);
+      attr.has_value()) {
+    env.emit<UseType>(receiver, receiver->type());
+    return *attr;
   }
 
   BorrowedRef<> descr{typeLookupSafe(py_type, attr_name)};
