@@ -3939,7 +3939,6 @@ Conclusion:
   worker-startup verification problem (`jit was not enabled in the worker`)
   after the targeted tests and benchmark commands have already completed.
 
-<<<<<<< HEAD
 ## 2026-03-19 Issue 48: tomli_loads handled-subscript deopt loop
 
 ### Scope
@@ -4211,3 +4210,234 @@ Conclusion:
 - Performance evidence is acceptable for the main `deepcopy` case and the broad
   subset, with one residual `comprehensions` signal and one `deepcopy_memo`
   sub-benchmark signal recorded for follow-up.
+
+### 2026-03-24 Round 1: guarded-aggressive builtin id path
+
+- Additional functional files in this round:
+  - `CMakeLists.txt`
+  - `cinderx/Common/audit.cpp`
+  - `cinderx/Common/audit.h`
+  - `cinderx/Jit/hir/simplify.cpp`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+  - `cinderx/StaticPython/_static.c`
+  - `cinderx/module_state.h`
+- New final shape:
+  - internal audit hooks that never observe `builtins.id` are registered as
+    ignorable
+  - when only ignorable hooks are installed, simplify guarded builtin `id()` to:
+    - `CallStatic(canBypassBuiltinIdAudit)`
+    - `Snapshot`
+    - `Guard`
+    - `LoadFieldAddress`
+    - `IntConvert(TCInt64)`
+    - `PrimitiveBox`
+  - `sys.addaudithook` is patched so future calls invalidate compiled
+    functions and recompile to the slow path once a real user hook exists
+- Important debugging notes from this round:
+  - preserving stale `scratch/` objects could hide new audit symbols; a clean
+    scratch rebuild was required to validate the link/runtime path
+  - simplifier-inserted `Guard` needed a dominating `Snapshot`; omitting it
+    crashed during `RefcountInsertion.bindGuards()`
+  - the initial compile-time hook check incorrectly treated CinderX's own
+    internal audit hooks as blockers, so the aggressive path never fired until
+    ignorable-hook registration was added
+
+### Round 1 targeted verification
+
+- Standard remote entrypoint:
+  - `scripts/arm/remote_update_build_test.sh`
+- Parameters:
+  - `BENCH=deepcopy`
+  - `AUTOJIT=2`
+  - `ARM_RUNTIME_SKIP_TESTS=ArmRuntimeTests`
+  - targeted `EXTRA_TEST_CMD` for:
+    - `ArmRuntimeTests.test_builtin_id_eliminates_vectorcall`
+    - `ArmRuntimeTests.test_builtin_id_addaudithook_deopts_active_frame`
+    - `ArmRuntimeTests.test_deepcopy_keyerror_helpers_avoid_unhandledexception_deopts`
+- Result:
+  - all three targeted regressions: `OK`
+
+### Round 1 deepcopy benchmark
+
+- Current aggressive artifacts:
+  - `/root/work/arm-sync/deepcopy_jitlist_20260324_140239.json`
+  - `/root/work/arm-sync/deepcopy_autojit2_20260324_140239.json`
+  - `/root/work/arm-sync/deepcopy_autojit2_20260324_140239_compile_summary.json`
+- Current aggressive vs base:
+  - `deepcopy`
+    - jitlist:
+      - current `0.0006543209783558268 s`
+      - base `0.0006558750101248734 s`
+      - delta about `-0.24%`
+    - autojit2:
+      - current `0.0006650089962931816 s`
+      - base `0.0006610549971810542 s`
+      - delta about `+0.60%`
+  - `deepcopy_reduce`
+    - jitlist:
+      - current `0.0010142869978153612 s`
+      - base `0.0010282009970978834 s`
+      - delta about `-1.35%`
+    - autojit2:
+      - current `0.0009986269978981 s`
+      - base `0.0010072500008391216 s`
+      - delta about `-0.86%`
+  - `deepcopy_memo`
+    - jitlist:
+      - current `8.086299931164831e-05 s`
+      - base `8.90259980224073e-05 s`
+      - delta about `-9.17%`
+    - autojit2:
+      - current `8.020400127861649e-05 s`
+      - base `8.31259967526421e-05 s`
+      - delta about `-3.52%`
+- Autojit compile summary:
+  - `main_compile_count = 2`
+  - `total_compile_count = 2`
+  - `other_compile_count = 0`
+
+### Round 1 regression subset
+
+- Current aggressive subset artifact:
+  - `/root/work/arm-sync/issue62_regress_subset_round1_current.json`
+- Compare artifact:
+  - `/root/work/arm-sync/issue62_regress_compare_round1.json`
+- Compared leaves:
+  - only >5% regression signal:
+    - `coverage`: `+7.69%`
+  - all other comparable leaves stayed within `5%`
+- Note:
+  - a focused single-benchmark follow-up attempt wrote an empty
+    `/root/work/arm-sync/issue62_coverage_current5.json`, so the `coverage`
+    signal is still unresolved rather than cleared
+
+### Coverage focused follow-up
+
+- Focused current/base artifacts using the same current subset harness:
+  - current:
+    - `/root/work/arm-sync/issue62_covcoro_current5.json`
+    - `/root/work/arm-sync/issue62_covcoro_current5_rerun.json`
+  - base:
+    - `/root/work/arm-sync/issue62_covcoro_base5_harnessfixed.json`
+- Focused medians:
+  - `coverage`
+    - current run 1:
+      - `0.12437327799852937 s`
+    - current run 2:
+      - `0.12515388199972222 s`
+    - base:
+      - `0.11694090899982257 s`
+    - delta:
+      - about `+6.36%` to `+7.02%`
+  - `coroutines`
+    - current run 1:
+      - `0.04678903400053969 s`
+    - current run 2:
+      - `0.04687549200025387 s`
+    - base:
+      - `0.04719091700098943 s`
+- Standard-entry `BENCH=coverage` main-gate artifacts:
+  - current:
+    - `/root/work/arm-sync/coverage_jitlist_20260324_145708.json`
+    - `/root/work/arm-sync/coverage_autojit2_20260324_145708.json`
+    - `/root/work/arm-sync/coverage_autojit2_20260324_145708_compile_summary.json`
+  - base:
+    - `/root/work/arm-sync/coverage_jitlist_20260324_150309.json`
+    - `/root/work/arm-sync/coverage_autojit2_20260324_150309.json`
+    - `/root/work/arm-sync/coverage_autojit2_20260324_150309_compile_summary.json`
+- Standard-entry `coverage` main-gate values stayed near parity:
+  - current:
+    - jitlist `0.011404810000385623 s`
+    - autojit2 `0.011399618997529615 s`
+  - base:
+    - jitlist `0.011335966999467928 s`
+    - autojit2 `0.011404590000893222 s`
+- Additional diagnosis:
+  - current/base standard `coverage` autojit logs compiled the same four
+    `__main__` functions:
+    - `__annotate__`
+    - `__annotate__`
+    - `bench_coverage`
+    - `fibonacci`
+  - compile times and code sizes were effectively the same
+  - HIR opcode counts for `bench_coverage` and `fibonacci` were identical on
+    current and base
+  - the benchmark source itself does not call `id()`, but the installed
+    `coverage` package contains many `id()` call sites in broader tracing/debug
+    internals
+
+### Updated assessment
+
+- The issue62 patch is functionally correct and the target `deepcopy` family is
+  no worse than base in the standard current/base gate.
+- One residual slowdown remains in the broader no-jitlist subset methodology:
+  - `coverage` about `+6%` to `+7%`
+- Because standard `BENCH=coverage` current/base is near parity and the
+  benchmark's compiled `__main__` functions are identical, the remaining signal
+  is more likely in broader autojitted coverage internals than in the direct
+  target shape for issue62.
+
+### Nohit and short-path follow-up
+
+- Additional nojit artifacts:
+  - current long-path:
+    - `/root/work/arm-sync/issue62_covcoro_current_nojit3.json`
+  - base:
+    - `/root/work/arm-sync/issue62_covcoro_base_nojit3.json`
+  - current short-path:
+    - `/root/work/arm-sync/issue62_covcoro_current_nojit3_shortpath.json`
+- Nohit medians:
+  - `coverage`
+    - current long-path:
+      - `0.12099459899764042 s`
+    - current short-path:
+      - `0.11752671499925782 s`
+    - base:
+      - `0.1147898629969859 s`
+  - `coroutines`
+    - current long-path:
+      - `0.03942092400029651 s`
+    - current short-path:
+      - `0.039379010999255115 s`
+    - base:
+      - `0.03953267800170579 s`
+- Nohit interpretation:
+  - the `coverage` slowdown reproduces even when benchmark workers run with
+    `PYTHONJITDISABLE=1`
+  - shortening the current workdir path cuts the `coverage` delta from about
+    `+5.41%` to about `+2.38%`
+  - `coroutines` remains near parity across the same runs
+- Standard no-jitlist autojit follow-up:
+  - current no-jitlist standard gate:
+    - `/root/work/arm-sync/coverage_autojit2_20260324_153827.json`
+    - `0.12347048399897176 s`
+    - compile summary:
+      - `main_compile_count = 0`
+      - `total_compile_count = 0`
+  - base no-jitlist standard gate:
+    - `/root/work/arm-sync/coverage_autojit2_20260324_154441.json`
+    - `0.11728518700329005 s`
+    - compile summary:
+      - `main_compile_count = 0`
+      - `total_compile_count = 0`
+- Combined conclusion:
+  - the residual `coverage` slowdown reproduces in:
+    - broader autojit mode with zero compilations
+    - explicit nojit mode
+  - and it shrinks materially when the current workdir path is shortened
+  - this makes it much less likely that issue62's builtin-`id()` lowering is
+    the real cause
+- Final round assessment:
+  - the residual `coverage` signal is unlikely to be caused by the issue62
+    builtin-`id()` fast path itself
+  - the evidence now points more strongly to a coverage/path-environment effect
+    on this host than to a real deepcopy/id regression
+
+### Round 1 assessment
+
+- The guarded-aggressive round now compiles to the intended HIR shape and keeps
+  same-frame `sys.addaudithook()` semantics correct on ARM.
+- The main `deepcopy` family is at or better than base for this round.
+- `coverage` remains the only unresolved regression signal before calling the
+  round fully clean.

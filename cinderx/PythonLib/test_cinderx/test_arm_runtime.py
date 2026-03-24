@@ -3113,6 +3113,9 @@ class ArmRuntimeTests(unittest.TestCase):
 
             print(counts.get("VectorCall", 0))
             print(counts.get("CallStatic", 0))
+            print(counts.get("Guard", 0))
+            print(counts.get("LoadFieldAddress", 0))
+            print(counts.get("IntConvert", 0))
             print(counts.get("PrimitiveBox", 0))
             print(builtin_id(obj) == id(obj))
             """
@@ -3136,11 +3139,71 @@ class ArmRuntimeTests(unittest.TestCase):
                 f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
             )
             lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-            self.assertGreaterEqual(len(lines), 4, proc.stdout)
-            self.assertEqual(int(lines[-4]), 0, proc.stdout)
+            self.assertGreaterEqual(len(lines), 7, proc.stdout)
+            self.assertEqual(int(lines[-7]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-6]), 1, proc.stdout)
+            self.assertGreaterEqual(int(lines[-5]), 1, proc.stdout)
+            self.assertGreaterEqual(int(lines[-4]), 1, proc.stdout)
             self.assertGreaterEqual(int(lines[-3]), 1, proc.stdout)
             self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(lines[-1], "True", proc.stdout)
+
+    def test_builtin_id_addaudithook_deopts_active_frame(self) -> None:
+        code = textwrap.dedent(
+            """
+            import sys
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Box:
+                pass
+
+            obj = Box()
+            events = []
+
+            def hook(name, args):
+                if name == "builtins.id":
+                    events.append(name)
+
+            def add_hook_then_id(x):
+                sys.addaudithook(hook)
+                return id(x)
+
+            assert jit.force_compile(add_hook_then_id)
+            counts = cinderjit.get_function_hir_opcode_counts(add_hook_then_id)
+
+            print(counts.get("Guard", 0))
+            print(add_hook_then_id(obj) == id(obj))
+            print(len(events))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/builtin_id_addaudithook.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertGreaterEqual(int(lines[-3]), 1, proc.stdout)
+            self.assertEqual(lines[-2], "True", proc.stdout)
+            self.assertGreaterEqual(int(lines[-1]), 1, proc.stdout)
 
     def test_slot_type_version_guards_are_deduplicated(self) -> None:
         # Regression guard:

@@ -8,9 +8,16 @@
 #include "internal/pycore_audit.h"
 #endif
 
+#include <vector>
+
 extern "C" {
 
 namespace {
+
+struct IgnorableAuditHook {
+  Py_AuditHookFunction func;
+  void* userData;
+};
 
 _Py_AuditHookEntry* auditHookHead() {
   _PyRuntimeState* runtime = &_PyRuntime;
@@ -26,6 +33,20 @@ _Py_AuditHookEntry* auditHookHead() {
 #else
   return runtime->audit_hooks.head;
 #endif
+}
+
+std::vector<IgnorableAuditHook>& builtinIdIgnorableHooks() {
+  static auto* hooks = new std::vector<IgnorableAuditHook>();
+  return *hooks;
+}
+
+bool isBuiltinIdIgnorableHook(_Py_AuditHookEntry* entry) {
+  for (const auto& hook : builtinIdIgnorableHooks()) {
+    if (entry->hookCFunction == hook.func && entry->userData == hook.userData) {
+      return true;
+    }
+  }
+  return false;
 }
 
 } // namespace
@@ -50,12 +71,29 @@ bool installAuditHook(Py_AuditHookFunction func, void* userData) {
   return false;
 }
 
+void registerBuiltinIdIgnorableAuditHook(
+    Py_AuditHookFunction func,
+    void* userData) {
+  auto& hooks = builtinIdIgnorableHooks();
+  for (const auto& hook : hooks) {
+    if (hook.func == func && hook.userData == userData) {
+      return;
+    }
+  }
+  hooks.push_back({func, userData});
+}
+
 int canBypassBuiltinIdAudit(void) {
   _Py_AuditHookEntry* audit_hook_head = auditHookHead();
   if (audit_hook_head == reinterpret_cast<_Py_AuditHookEntry*>(-1)) {
     return 0;
   }
-  return audit_hook_head == nullptr ? 1 : 0;
+  for (_Py_AuditHookEntry* e = audit_hook_head; e != nullptr; e = e->next) {
+    if (!isBuiltinIdIgnorableHook(e)) {
+      return 0;
+    }
+  }
+  return 1;
 }
 
 int64_t builtinIdAsInt64(PyObject* obj) {

@@ -74,7 +74,7 @@ Remote hosts:
 - [x] Validate remotely through the standard ARM entrypoint under scheduler lease
 
 ## Current phase
-- [completed] Round 0 verification complete
+- [in_progress] Round 1 guarded-aggressive follow-up
 
 ## Round 0 findings
 - likely control point:
@@ -130,3 +130,37 @@ Remote hosts:
   - primary `deepcopy` timing does not show a material regression vs base
   - one residual `comprehensions` signal and one `deepcopy_memo` sub-benchmark
     signal are recorded for follow-up
+
+## Round 1 hypothesis
+- User-provided external numbers show the helper-backed round is still slower:
+  - `deepcopy`: about `1.02x` slower
+  - `deepcopy_reduce`: about `1.03x` slower
+  - `deepcopy_memo`: about `1.02x` slower
+- New target shape:
+  - keep the pure HIR object-pointer path when the compile-time audit state is
+    empty
+  - add a tiny runtime `Guard(canBypassBuiltinIdAudit())` ahead of the HIR path
+    so active compiled frames deopt correctly if `sys.addaudithook()` appears
+  - keep `sys.addaudithook` invalidation so future calls recompile to the slow
+    path instead of repeatedly deopting
+
+## Round 1 checklist
+- [x] Re-read the aggressive diff and self-review the audit correctness story
+- [x] Identify the active-frame correctness hole in watcher-only invalidation
+- [x] Convert the pure HIR path to a guarded fast path
+- [x] Add a same-frame `sys.addaudithook()` regression test
+- [x] Re-run targeted ARM validation through the standard remote entrypoint
+- [x] Re-run `deepcopy` current-vs-base through the standard remote entrypoint
+- [x] Update `findings.md` with the Round 1 evidence and decision
+- [x] Resolve the residual `coverage` regression signal with a cleaner focused compare if needed
+- [x] Decide whether to accept the remaining no-jitlist `coverage` slowdown as out-of-scope for issue62 or continue debugging broader autojit coverage internals
+
+## Round 1 closure note
+- The remaining `coverage` signal reproduces in nojit mode and shrinks
+  substantially when the current workdir path is shortened on ARM.
+- Current judgement:
+  - this is more likely an environment or path-length effect in the
+    `coverage` benchmark than an issue62 regression in the JIT fast path
+- Follow-up status:
+  - the remaining `coverage` work is now better treated as a separate
+    environment/benchmark-investigation thread rather than a blocker on issue62

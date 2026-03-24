@@ -2764,15 +2764,33 @@ static Register* simplifyVectorCallBuiltinId(
   }
 
   env.emit<UseType>(target, target->type());
-  auto* id_call = env.emitRawInstr<CallStatic>(
+
+  if (canBypassBuiltinIdAudit()) {
+    auto* audit_ok_call = env.emitRawInstr<CallStatic>(
+        0,
+        env.func.env.AllocateRegister(),
+        reinterpret_cast<void*>(canBypassBuiltinIdAudit),
+        TCInt32);
+    env.emit<Snapshot>(*instr->frameState());
+    auto* audit_guard = env.emitInstr<Guard>(audit_ok_call->output());
+    audit_guard->setGuiltyReg(arg);
+    audit_guard->setDescr("builtin id audit bypass");
+
+    Register* zero = env.emit<LoadConst>(Type::fromCInt(0, TCInt64));
+    Register* obj_ptr = env.emit<LoadFieldAddress>(arg, zero);
+    Register* id_i64 = env.emit<IntConvert>(obj_ptr, TCInt64);
+    return env.emit<PrimitiveBox>(id_i64, TCInt64, *instr->frameState());
+  }
+
+  auto* slow_call = env.emitRawInstr<CallStatic>(
       1,
       env.func.env.AllocateRegister(),
       reinterpret_cast<void*>(builtinIdAsInt64),
       TCInt64);
-  id_call->SetOperand(0, arg);
-  Register* id_i64 = id_call->output();
-  env.emit<CheckNeg>(id_i64, *instr->frameState());
-  return env.emit<PrimitiveBox>(id_i64, TCInt64, *instr->frameState());
+  slow_call->SetOperand(0, arg);
+  Register* slow_i64 = slow_call->output();
+  env.emit<CheckNeg>(slow_i64, *instr->frameState());
+  return env.emit<PrimitiveBox>(slow_i64, TCInt64, *instr->frameState());
 }
 
 static Register* emitGenericVectorCallClone(
