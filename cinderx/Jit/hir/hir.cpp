@@ -534,6 +534,7 @@ bool Instr::isReplayable() const {
     case Opcode::kYieldFrom:
     case Opcode::kOptimizedYieldFrom:
     case Opcode::kInlineIter:
+    case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
     case Opcode::kXDecref:
@@ -699,6 +700,7 @@ bool isPassthrough(const Instr& instr) {
     case Opcode::kGuardType:
     case Opcode::kRefineType:
     case Opcode::kUseType:
+    case Opcode::kLoadState:  // Phase 2: 加载状态是透传指令
       return true;
 
     // Cast is pass-through except when we are casting to float, in which case
@@ -840,6 +842,7 @@ bool isPassthrough(const Instr& instr) {
     case Opcode::kYieldFrom:
     case Opcode::kOptimizedYieldFrom:
     case Opcode::kInlineIter:
+    case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return false;
@@ -867,9 +870,11 @@ bool isPassthrough(const Instr& instr) {
     case Opcode::kRaiseAwaitableError:
     case Opcode::kRaiseStatic:
     case Opcode::kReturn:
+    case Opcode::kSaveState:  // Phase 2: 保存状态无输出
     case Opcode::kSetCellItem:
     case Opcode::kSetFunctionAttr:
     case Opcode::kSnapshot:
+    case Opcode::kStateSwitch:  // Phase 2: 状态分发无输出
     case Opcode::kStoreField:
     case Opcode::kUpdatePrevInstr:
     case Opcode::kUnreachable:

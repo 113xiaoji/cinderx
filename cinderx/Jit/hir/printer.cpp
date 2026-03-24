@@ -314,8 +314,27 @@ static std::string format_immediates(const Function* func, const Instr& instr) {
     case Opcode::kUnicodeRepeat:
     case Opcode::kUnicodeSubscr:
     case Opcode::kUnreachable:
-    case Opcode::kYieldValue: {
+    case Opcode::kYieldValue:
+    case Opcode::kLoadState:  // Phase 2: 无额外信息需要格式化
       return "";
+    case Opcode::kStateSwitch: {
+      // Phase 2: 状态分发指令
+      const auto& sw = static_cast<const StateSwitch&>(instr);
+      return fmt::format("state_var={}", sw.GetOperand(0)->id());
+    }
+    case Opcode::kSaveState: {
+      // Phase 2: 状态保存指令
+      const auto& save = static_cast<const SaveState&>(instr);
+      return fmt::format("new_state={}", save.GetOperand(0)->id());
+    }
+    case Opcode::kYieldFromInline: {
+      // Phase 2: 内联 yield from 指令
+      const auto& yfi = static_cast<const YieldFromInline&>(instr);
+      return fmt::format(
+          "receiver={}, field_idx={}, next_state={}",
+          yfi.GetOperand(0)->id(),
+          yfi.GetOperand(1)->id(),
+          yfi.GetOperand(2)->id());
     }
     case Opcode::kBeginInlinedFunction:
       return static_cast<const BeginInlinedFunction&>(instr).fullname();

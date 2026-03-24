@@ -3750,6 +3750,45 @@ DEFINE_SIMPLE_INSTR(
     Operands<3>,
     DeoptBase);
 
+// Phase 2: 状态机生成相关指令
+
+// StateSwitch: 状态分发指令
+// 根据当前状态跳转到对应的基本块
+// 操作数: state_var (状态变量，TCInt32类型)
+// 这是一个终结器指令（Terminator）
+DEFINE_SIMPLE_INSTR(
+    StateSwitch,
+    (TCInt32),
+    Operands<1>);
+
+// SaveState: 状态保存指令
+// 将状态值保存到 GenDataFooter.currentState
+// 操作数: new_state (新状态值，TCInt32类型)
+DEFINE_SIMPLE_INSTR(
+    SaveState,
+    (TCInt32),
+    Operands<1>);
+
+// LoadState: 状态加载指令
+// 从 GenDataFooter.currentState 加载当前状态
+// 输出: 当前状态值（TCInt32类型）
+DEFINE_SIMPLE_INSTR(
+    LoadState,
+    (),
+    HasOutput,
+    Operands<0>);
+
+// YieldFromInline: 内联 yield from 指令（叶子节点）
+// 对于嵌套的生成器，如果可以完全内联则使用此指令
+// 操作数: receiver, field_name_idx, next_state
+// 输出: yield 的值
+DEFINE_SIMPLE_INSTR(
+    YieldFromInline,
+    (TObject, TOptObject),
+    HasOutput,
+    Operands<3>,
+    DeoptBase);
+
 // A more compact (in terms of emitted code) equivalent to YieldValue followed
 // by YieldFrom.
 DEFINE_SIMPLE_INSTR(
