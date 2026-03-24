@@ -7,6 +7,7 @@
 #include "cinderx/Common/dict.h"
 #include "cinderx/Common/log.h"
 #include "cinderx/Common/property.h"
+#include "cinderx/Common/audit.h"
 #include "cinderx/Common/py-portability.h"
 #include "cinderx/Common/code.h"
 #include "cinderx/Common/type.h"
@@ -2738,6 +2739,42 @@ static Register* simplifyVectorCallBuiltinAbs(
   return env.emit<PrimitiveBox>(result, TCDouble, *instr->frameState());
 }
 
+static Register* simplifyVectorCallBuiltinId(
+    Env& env,
+    const VectorCall* instr) {
+  if (instr->numArgs() != 1) {
+    return nullptr;
+  }
+
+  Register* target = modelReg(instr->func());
+  bool is_id = false;
+  if (target->instr()->IsGuardIs()) {
+    auto* guard = static_cast<const GuardIs*>(target->instr());
+    is_id = isBuiltin(guard->target(), "id");
+  } else {
+    is_id = isBuiltin(target, "id");
+  }
+  if (!is_id) {
+    return nullptr;
+  }
+
+  Register* arg = instr->arg(0);
+  if (!arg->type().couldBe(TObject)) {
+    return nullptr;
+  }
+
+  env.emit<UseType>(target, target->type());
+  auto* id_call = env.emitRawInstr<CallStatic>(
+      1,
+      env.func.env.AllocateRegister(),
+      reinterpret_cast<void*>(builtinIdAsInt64),
+      TCInt64);
+  id_call->SetOperand(0, arg);
+  Register* id_i64 = id_call->output();
+  env.emit<CheckNeg>(id_i64, *instr->frameState());
+  return env.emit<PrimitiveBox>(id_i64, TCInt64, *instr->frameState());
+}
+
 static Register* emitGenericVectorCallClone(
     Env& env,
     const VectorCall* instr) {
@@ -3247,6 +3284,9 @@ Register* simplifyVectorCall(Env& env, const VectorCall* instr) {
   }
   if (instr->flags() & CallFlags::KwArgs) {
     return nullptr;
+  }
+  if (Register* result = simplifyVectorCallBuiltinId(env, instr)) {
+    return result;
   }
   if (Register* result = simplifyVectorCallBuiltinAbs(env, instr)) {
     return result;

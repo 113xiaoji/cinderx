@@ -3084,6 +3084,64 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(float(lines[-2]), 1.0, proc.stdout)
             self.assertEqual(float(lines[-1]), 2.5, proc.stdout)
 
+    def test_builtin_id_eliminates_vectorcall(self) -> None:
+        # Regression guard:
+        # guarded builtin id() should lower to a pointer/int fast path instead
+        # of staying on the generic VectorCall builtin dispatch.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Box:
+                pass
+
+            obj = Box()
+
+            def builtin_id(x):
+                return id(x)
+
+            for _ in range(10000):
+                builtin_id(obj)
+
+            assert jit.force_compile(builtin_id)
+            counts = cinderjit.get_function_hir_opcode_counts(builtin_id)
+
+            print(counts.get("VectorCall", 0))
+            print(counts.get("CallStatic", 0))
+            print(counts.get("PrimitiveBox", 0))
+            print(builtin_id(obj) == id(obj))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/builtin_id_fastpath.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertEqual(int(lines[-4]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-3]), 1, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(lines[-1], "True", proc.stdout)
+
     def test_slot_type_version_guards_are_deduplicated(self) -> None:
         # Regression guard:
         # repeated LOAD_ATTR_SLOT / STORE_ATTR_SLOT operations on the same SSA

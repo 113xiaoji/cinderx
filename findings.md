@@ -4081,3 +4081,133 @@ Conclusion:
     - `test_polymorphic_virtual_method_avoids_method_with_values_guard_deopts`
     - `test_polymorphic_method_load_avoids_method_with_values_deopts`
     - `test_polymorphic_loop_local_method_load_avoids_method_with_values_deopts`
+
+## 2026-03-23 Issue 62: deepcopy builtin id fast path
+
+### Scope
+
+- Issue:
+  - `#62`
+- Primary case:
+  - `deepcopy`
+- Retained implementation:
+  - helper-backed builtin `id()` fast path
+  - remove guarded builtin `VectorCall`
+  - keep audit semantics in a small runtime helper
+
+### Code changes
+
+- Functional files:
+  - `cinderx/Common/audit.cpp`
+  - `cinderx/Common/audit.h`
+  - `cinderx/Jit/hir/simplify.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+- Validation-only remote-entry support used during this round:
+  - `scripts/arm/remote_update_build_test.sh`
+  - `scripts/arm/run_pyperf_subset.sh`
+
+### Targeted verification
+
+- Standard remote entrypoint:
+  - `scripts/arm/remote_update_build_test.sh`
+- ARM host:
+  - `124.70.162.35`
+- Targeted checks:
+  - `ArmRuntimeTests.test_builtin_id_eliminates_vectorcall`: `OK`
+  - `ArmRuntimeTests.test_deepcopy_keyerror_helpers_avoid_unhandledexception_deopts`: `OK`
+- Direct audit verification through the same entrypoint:
+  - output included:
+    - `builtins.id (<__main__.Box object at ...>,)`
+    - final truth line:
+      - `True`
+
+### Deepcopy benchmark
+
+- Current branch artifacts:
+  - `/root/work/arm-sync/deepcopy_jitlist_20260324_015651.json`
+  - `/root/work/arm-sync/deepcopy_autojit2_20260324_015651.json`
+  - `/root/work/arm-sync/deepcopy_autojit2_20260324_015651_compile_summary.json`
+- Base branch artifacts:
+  - `/root/work/arm-sync/deepcopy_jitlist_20260324_020918.json`
+  - `/root/work/arm-sync/deepcopy_autojit2_20260324_020918.json`
+  - `/root/work/arm-sync/deepcopy_autojit2_20260324_020918_compile_summary.json`
+- Current vs base:
+  - `deepcopy`
+    - jitlist:
+      - current `0.0006456110131694004 s`
+      - base `0.0006558750101248734 s`
+      - delta about `-1.56%`
+    - autojit2:
+      - current `0.0006735479910275899 s`
+      - base `0.0006610549971810542 s`
+      - delta about `+1.89%`
+  - `deepcopy_reduce`
+    - jitlist:
+      - current `0.0010173909977311268 s`
+      - base `0.0010282009970978834 s`
+      - delta about `-1.05%`
+    - autojit2:
+      - current `0.0010271520004607737 s`
+      - base `0.0010072500008391216 s`
+      - delta about `+1.98%`
+  - `deepcopy_memo`
+    - jitlist:
+      - current `0.00010101800580741838 s`
+      - base `8.90259980224073e-05 s`
+      - delta about `+13.47%`
+    - autojit2:
+      - current `8.409600559389219e-05 s`
+      - base `8.31259967526421e-05 s`
+      - delta about `+1.17%`
+- Compile summary on both current and base:
+  - `main_compile_count = 2`
+  - `total_compile_count = 2`
+  - `other_compile_count = 0`
+
+### Requested regression subset
+
+- Current:
+  - `/root/work/arm-sync/issue62_regress_subset.json`
+- Base:
+  - `/root/work/arm-sync/issue62_regress_subset_base.json`
+- Compare:
+  - `/root/work/arm-sync/issue62_regress_compare.json`
+- pyperformance 1.14 name mismatch warnings:
+  - no leaf benchmark named:
+    - `scimark_fft`
+    - `scimark_lu`
+    - `scimark_monte_carlo`
+    - `scimark_sor`
+    - `scimark_sparse_mat_mult`
+    - `logging_format`
+    - `logging_silent`
+    - `logging_simple`
+- Compared leaves that did run:
+  - `comprehensions`: `+8.70%`
+  - `coroutines`: `-1.88%`
+  - `generators`: `-3.32%`
+  - `richards`: `+1.54%`
+  - `richards_super`: `+1.59%`
+  - `float`: `+0.44%`
+  - `go`: `-1.14%`
+  - `deltablue`: `-2.02%`
+  - `raytrace`: `+0.06%`
+  - `nqueens`: `+3.19%`
+  - `nbody`: `+0.29%`
+  - `unpack_sequence`: `+2.57%`
+  - `fannkuch`: `-0.45%`
+  - `coverage`: `+0.48%`
+  - `spectral_norm`: `-0.54%`
+  - `chaos`: `+2.16%`
+- Assessment:
+  - the subset does not show a broad multi-benchmark regression pattern
+  - only `comprehensions` exceeded `5%` in this 2-sample pass
+
+### Current decision
+
+- The helper-backed `id()` fast path is functionally valid on ARM.
+- It removes the guarded builtin `VectorCall` path and preserves audit-hook
+  behavior in the direct remote verification.
+- Performance evidence is acceptable for the main `deepcopy` case and the broad
+  subset, with one residual `comprehensions` signal and one `deepcopy_memo`
+  sub-benchmark signal recorded for follow-up.
