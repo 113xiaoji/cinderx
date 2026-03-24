@@ -198,6 +198,24 @@ std::unique_ptr<StateMachine> StateMachineGenerator::buildStateMachine(
     const YieldFromPatternInfo& pattern) {
   auto sm = std::make_unique<StateMachine>();
   sm->func = func_;
+  sm->pattern = &pattern;
+
+  // 查找 self 参数（arg 0）
+  // 遍历所有寄存器，找到 LoadArg(0) 指令
+  for (auto& [id, reg] : func_->env.GetRegisters()) {
+    if (reg && reg->instr() && reg->instr()->IsLoadArg()) {
+      auto* load_arg = static_cast<const LoadArg*>(reg->instr());
+      if (load_arg->arg_idx() == 0) {
+        sm->self_reg = reg.get();
+        break;
+      }
+    }
+  }
+
+  if (!sm->self_reg) {
+    JIT_DLOG("Cannot find self argument (arg 0)");
+    return nullptr;
+  }
 
   // 创建入口块
   sm->entry_block = createEntryBlock(sm.get());
@@ -331,26 +349,23 @@ BasicBlock* StateMachineGenerator::createStateBlock(
   BasicBlock* state_bb = func_->cfg.AllocateUnlinkedBlock();
 
   // TODO: 根据状态 ID 生成对应的逻辑
-  // 当前实现：占位符 - 暂时使用 Return 作为占位符
+  // 当前实现：简化版本 - 返回 None（占位符）
+  //
+  // 完整实现需要：
+  // 1. 从 pattern 中提取字段访问信息（字段名、偏移量）
+  // 2. 根据状态 ID 决定访问哪个字段
+  // 3. 生成 LoadField 指令
+  // 4. 生成 YieldValue 指令（需要 FrameState）
+  // 5. 保存下一个状态
+  // 6. 跳转回 dispatch 块
 
   // 创建 None 常量
   Register* none_reg = func_->env.AllocateRegister();
   state_bb->append<LoadConst>(none_reg, Type::fromObject(Py_None));
 
-  // Return None (占位符)
+  // 返回 None（占位符）
+  // 注意：实际实现应该使用 YieldValue，但需要 FrameState 参数
   state_bb->append<Return>(none_reg, Type::fromObject(Py_None));
-
-  // 保存下一个状态
-  int next_state = state_id + 1;
-  if (next_state >= static_cast<int>(sm->states.size())) {
-    // 如果是最后一个状态，跳转到 done
-    emitSaveState(state_bb, sm->state_reg, static_cast<int>(GeneratorState::kDone));
-    state_bb->append<Branch>(sm->done_block);
-  } else {
-    // 否则跳转到下一个状态
-    emitSaveState(state_bb, sm->state_reg, next_state);
-    state_bb->append<Branch>(sm->dispatch_block);
-  }
 
   return state_bb;
 }

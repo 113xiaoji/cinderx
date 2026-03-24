@@ -74,6 +74,10 @@ struct StateMachine {
   BasicBlock* done_block;  // 完成块
   std::vector<State> states;  // 状态列表
   Register* state_reg;  // 状态寄存器
+  Register* self_reg;  // self 参数寄存器（arg 0）
+
+  // Pattern 信息（用于状态块生成）
+  const YieldFromPatternInfo* pattern;  // 模式信息
 
   // 字段访问信息
   struct FieldAccess {
