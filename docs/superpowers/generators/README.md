@@ -2,11 +2,15 @@
 
 **目标**: 消除 CinderX JIT 编译递归生成器（Tree.__iter__ 模式）中的性能回退
 
-**当前状态**: Phase 2 Week 1 完成 ✅ | Week 2 进行中 🚧
+**当前状态**: Phase 2 Week 2 Day 1 进行中 🚧
 
 **最新进展**:
 - ✅ Week 1: 完成 4个新HIR指令 + GenDataFooter扩展 (2026-03-24)
-- 🚧 Week 2: 状态机生成器实施中（5个任务，~7天）
+- 🚧 Week 2: T2.1 完成 (模式识别), T2.2 进行中 (状态机构建器) ⭐
+
+- **最新提交**: 5c7f1ce9 (Phase 2 T2.2: 实现状态机构建器基础)
+
+---
 
 ---
 
@@ -84,6 +88,8 @@ generators/
 - [Phase 2-C 最终结果](./diagnostics/2026-03-19-generators-phase2c-final-results.md)
 - [InlineIter Phase 1 总结](./diagnostics/2026-03-23-generators-inline-iter-phase1-summary.md) ⭐ **最新**
 - [Task 2 完成报告](./diagnostics/2026-03-18-generators-task2-completion-report.md)
+- [Week 1 完成报告](./diagnostics/2026-03-24-generators-phase2-week1-completion-report.md) ⭐ **新增**
+- [T2.2 完成报告](./diagnostics/2026-03-24-generators-phase2-week2-day1-t2.2-completion-report.md) ⭐ **最新**
 
 ### 📈 基线和日志数据
 - [递归生成器 HIR 基线](./diagnostics/2026-03-17-generators-hir-baseline-recursive.txt) - Node.__iter__ HIR dump
