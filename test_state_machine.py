@@ -5,7 +5,7 @@ Phase 2 State Machine Integration Tests
 Tests for state machine generation in tree traversal generators.
 """
 
-import cinderx
+from cinderx import jit
 import unittest
 
 class TestStateMachine(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestStateMachine(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """启用 JIT"""
-        cinderx.jit.auto()
+        jit.auto()
 
     def test_basic_tree_traversal(self):
         """基本树遍历（depth=1）"""
@@ -139,21 +139,25 @@ class TestStateMachine(unittest.TestCase):
                 if self.right:
                     yield from self.right
 
-        def build_tree(depth):
+        def build_tree(depth, start_value=1):
+            """构建一个二叉搜索树用于测试"""
             if depth == 0:
-                return None
-            return Node(depth,
-                       build_tree(depth - 1),
-                       build_tree(depth - 1))
+                return None, start_value
+            left, next_value = build_tree(depth - 1, start_value)
+            root = Node(next_value)
+            right, final_value = build_tree(depth - 1, next_value + 1)
+            root.left = left
+            root.right = right
+            return root, final_value
 
-        tree = build_tree(5)
+        tree, _ = build_tree(5)
         result = list(tree)
 
         # 验证节点数
         expected_count = 2 ** 5 - 1  # 31 nodes
         self.assertEqual(len(result), expected_count)
 
-        # 验证是有序的
+        # 验证是有序的（因为是二叉搜索树的中序遍历）
         self.assertEqual(result, sorted(result))
 
     def test_for_loop_consumption(self):
