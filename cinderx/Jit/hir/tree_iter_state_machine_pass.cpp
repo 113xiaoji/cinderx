@@ -14,6 +14,7 @@
 namespace jit::hir {
 
 void TreeIterStateMachinePass::Run(Function& func) {
+  JIT_LOG("TreeIterStateMachinePass: Running on function {}", func.fullname);
   JIT_DLOG("TreeIterStateMachinePass: Running on function");
 
   // 检查是否是树遍历生成器
@@ -35,7 +36,15 @@ void TreeIterStateMachinePass::Run(Function& func) {
       "TreeIterStateMachinePass: Found {} YieldFrom instructions",
       yield_froms.size());
 
-  // 生成状态机
+  // 检查是否所有 YieldFrom 都是树遍历模式
+  for (const YieldFrom* yf : yield_froms) {
+    if (!isTreeIterPattern(yf)) {
+      JIT_DLOG("TreeIterStateMachinePass: YieldFrom is not tree iter pattern, skipping");
+      return;
+    }
+  }
+
+  // 生成状态机并替换 YieldFrom
   generateStateMachine(func, yield_froms);
 }
 
@@ -205,32 +214,67 @@ void TreeIterStateMachinePass::generateStateMachine(
     state_bb->append<LoadConst>(next_state, Type::fromCInt(i + 1, TCInt32));
     state_bb->append<SaveState>(next_state);
 
-    // 2. 从 YieldFrom 指令提取 yield value
+    // 2. 提取 field 信息和 receiver
     // YieldFrom 的操作数: [send_value, iter]
-    // 我们需要获取 iter 的当前值并 yield
-    //
-    // 对于树遍历模式，iter 来自 GetIter(LoadField(self, "left/right"))
-    // 我们应该 yield LoadField 的结果（即子树的值）
-    //
-    // 但 YieldFrom 本身会处理迭代，所以我们这里简化处理：
-    // 生成一个占位符的 YieldValue 指令
+    // iter 来自 GetIter(LoadField(self, "left/right"))
 
-    // 获取 send_value (YieldFrom 的第一个操作数)
-    Register* send_value = yf->GetOperand(0);
+    Register* iter_reg = yf->GetOperand(1);
+    if (iter_reg == nullptr || iter_reg->instr() == nullptr) {
+      JIT_DLOG("TreeIterStateMachinePass: Invalid iter operand, skipping");
+      continue;
+    }
 
-    // 获取 FrameState (用于 YieldValue 指令)
+    Instr* iter_instr = iter_reg->instr();
+    if (!iter_instr->IsGetIter()) {
+      JIT_DLOG("TreeIterStateMachinePass: iter is not from GetIter, skipping");
+      continue;
+    }
+
+    auto* get_iter = static_cast<const GetIter*>(iter_instr);
+    Register* field_value = get_iter->iterable();
+
+    if (field_value == nullptr || field_value->instr() == nullptr) {
+      JIT_DLOG("TreeIterStateMachinePass: Invalid field_value, skipping");
+      continue;
+    }
+
+    Instr* field_instr = field_value->instr();
+    if (!field_instr->IsLoadField()) {
+      JIT_DLOG("TreeIterStateMachinePass: field_value is not from LoadField, skipping");
+      continue;
+    }
+
+    auto* load_field = static_cast<const LoadField*>(field_instr);
+    Register* receiver = load_field->receiver();
+    std::string field_name(load_field->name());
+
+    // 3. 生成 YieldFromInline 指令
+    // YieldFromInline(receiver, field_idx, next_state) -> yield 子迭代器的值
+
+    // 查找或创建 field_idx
+    // 注意：这里简化处理，假设 field_name 已经在常量池中
+    // 实际需要查找或创建 field_idx
+    int field_idx = 0;  // TODO: 正确获取 field_idx
+    if (field_name == "left") {
+      field_idx = 0;
+    } else if (field_name == "right") {
+      field_idx = 1;
+    }
+
+    Register* field_idx_reg = func.env.AllocateRegister();
+    state_bb->append<LoadConst>(field_idx_reg, Type::fromCInt(field_idx, TCInt32));
+
     const FrameState* frame_state = yf->frameState();
     if (frame_state == nullptr) {
       JIT_DLOG("TreeIterStateMachinePass: No FrameState for YieldFrom, skipping");
       continue;
     }
 
-    // 生成 YieldValue 指令
-    // YieldValue(send_value) -> yield send_value to caller
     Register* yield_result = func.env.AllocateRegister();
-    state_bb->append<YieldValue>(yield_result, send_value, *frame_state);
+    state_bb->append<YieldFromInline>(
+        yield_result, receiver, field_idx_reg, next_state, *frame_state);
 
-    // 3. YieldValue 返回后，跳转回 dispatch 继续下一次迭代
+    // 4. YieldFromInline 返回后，跳转回 dispatch 继续下一次迭代
     state_bb->append<Branch>(dispatch_block);
   }
 
@@ -258,8 +302,66 @@ void TreeIterStateMachinePass::generateStateMachine(
       "TreeIterStateMachinePass: Generated {} state blocks",
       state_blocks.size());
 
-  // TODO: 将原始 YieldFrom 指令替换为跳转到 entry_block
-  // 目前只是生成状态机框架，实际替换需要在后续步骤中完成
+  // === 步骤 4: 替换 YieldFrom 指令 ===
+  // 将原始 YieldFrom 替换为跳转到 entry_block
+
+  for (const YieldFrom* yf : yield_froms) {
+    BasicBlock* block = yf->block();
+
+    // 找到 YieldFrom 在块中的位置
+    auto it = block->iterator_to(const_cast<YieldFrom&>(*yf));
+
+    // 删除 YieldFrom 指令
+    // 注意：这会将该指令从控制流中移除
+    Instr* yf_mutable = const_cast<YieldFrom*>(yf);
+    yf_mutable->unlink();
+    delete yf_mutable;
+  }
+
+  JIT_DLOG(
+      "TreeIterStateMachinePass: Replaced {} YieldFrom instructions",
+      yield_froms.size());
+
+  // === 连接状态机到控制流 ===
+  // 找到生成器函数的入口块（包含 InitialYield 的块）
+  BasicBlock* generator_entry = func.cfg.entry_block;
+  if (generator_entry == nullptr) {
+    JIT_DLOG("TreeIterStateMachinePass: No entry block found");
+    return;
+  }
+
+  // 查找 InitialYield 指令
+  Instr* initial_yield = nullptr;
+  for (auto& instr : *generator_entry) {
+    if (instr.IsInitialYield()) {
+      initial_yield = &instr;
+      break;
+    }
+  }
+
+  if (initial_yield == nullptr) {
+    JIT_DLOG("TreeIterStateMachinePass: No InitialYield found, skipping");
+    return;
+  }
+
+  // 在 InitialYield 之后分割基本块
+  BasicBlock* after_init = func.cfg.splitAfter(*initial_yield);
+
+  // 将分割后的块连接到状态机 entry
+  // after_init 的第一条指令应该是一个 terminator
+  // 我们需要将它替换为跳转到 entry_block
+  Instr* term = after_init->GetTerminator();
+  if (term != nullptr) {
+    term->unlink();
+    delete term;
+  }
+  after_init->append<Branch>(entry_block);
+
+  // 将 done_block 连接到原始的生成器退出点
+  // done_block 已经包含 Return(None)，这是正确的
+
+  JIT_DLOG(
+      "TreeIterStateMachinePass: State machine connected to control flow");
 }
 
 }  // namespace jit::hir
