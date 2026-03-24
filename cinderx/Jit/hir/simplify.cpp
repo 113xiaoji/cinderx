@@ -1689,11 +1689,12 @@ std::optional<Register*> findDominatingTruthyExactAttr(
       !pred->GetTerminator()->IsCondBranch()) {
     return std::nullopt;
   }
-  if (pred->GetTerminator()->successor(0) != env.block) {
+  auto* branch = static_cast<const CondBranch*>(pred->GetTerminator());
+  if (branch->true_bb() != env.block) {
     return std::nullopt;
   }
 
-  Register* cond = pred->GetTerminator()->GetOperand(0);
+  Register* cond = branch->GetOperand(0);
   if (cond == nullptr || !cond->instr()->IsIsTruthy()) {
     return std::nullopt;
   }
