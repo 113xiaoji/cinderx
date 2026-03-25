@@ -8,7 +8,12 @@ These tests verify:
 3. Performance improvements
 """
 
+# ⚠️ 环境变量必须在导入 cinderx 之前设置
 import os
+os.environ['PYTHONJITHUGEPAGES'] = '0'
+os.environ['PYTHONJIT'] = '1'
+os.environ['PYTHONJITTREEITERSTATEMACHINE'] = '1'
+
 import sys
 import time
 import unittest
@@ -21,11 +26,6 @@ class TestYieldFromInlineHIR(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """启用 JIT 和状态机优化"""
-        # 设置环境变量
-        os.environ['PYTHONJITHUGEPAGES'] = '0'
-        os.environ['PYTHONJIT'] = '1'
-        os.environ['PYTHONJITTREEITERSTATEMACHINE'] = '1'
-
         jit.auto()
 
     def test_yield_from_inline_generated(self):
