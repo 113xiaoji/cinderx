@@ -183,48 +183,45 @@ PyObject* JITRT_LoadGlobalsDict(PyThreadState* tstate);
 PyObject* JITRT_ListSlice(PyObject* list, PyObject* start, PyObject* stop);
 
 /*
- * Fast path for `list[:k+1] = list[k::-1]` on exact lists.
+ * Concatenate two slice-like values. When both operands are exact lists, use a
+ * direct exact-list concat path. Otherwise fall back to generic `+` semantics.
+ */
+PyObject* JITRT_ListConcat(PyObject* left, PyObject* right);
+
+/*
+ * Narrow helper for bm_raytrace.addColours(a, scale, b).
  *
- * Falls back to generic Python slicing semantics when operand types are not
- * exact fast-path shapes. Returns 0 on success and -1 on error.
+ * Fast-path exact 3-tuples of exact ints/floats with an exact float scale.
+ * Fall back to generic Python semantics for other shapes.
  */
-int JITRT_ListPrefixReverseAssign(PyObject* list, PyObject* index);
+PyObject* JITRT_RaytraceAddColoursTupleFloatHelper(
+    PyObject* left,
+    PyObject* scale,
+    PyObject* right);
 
-#if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
 /*
- * Exact-dict item lookup for try/except KeyError lowering.
+ * Narrow helper for bm_comprehensions.WidgetTray._is_big_spinny(widget).
  *
- * Returns a new reference to the found value on hit, a private sentinel on
- * miss without setting an exception, and NULL on real error.
+ * `big_kind` must be the module's `WidgetKind.BIG` singleton.
  */
-PyObject* JITRT_GetDictItemOrSentinel(PyObject* dict, PyObject* key);
+PyObject* JITRT_ComprehensionsIsBigSpinnyHelper(
+    PyObject* widget,
+    PyObject* big_kind);
 
 /*
- * Return the private sentinel object used by JITRT_GetDictItemOrSentinel().
- * The returned object is borrowed and must only be used for identity checks.
+ * Narrow helper for bm_comprehensions.WidgetTray._any_knobby(widgets).
  */
-PyObject* JITRT_GetDictItemMissSentinel(void);
+PyObject* JITRT_ComprehensionsAnyKnobbyHelper(PyObject* widgets);
 
 /*
- * Finish the miss path of copy._deepcopy_tuple() without raising KeyError.
- *
- * Returns either a new reference to `x` or a new tuple built from `y`.
+ * Narrow helper for bm_comprehensions id_to_widget.get(key).
  */
-PyObject* JITRT_DeepcopyTuplePostMiss(PyObject* x, PyObject* y);
+PyObject* JITRT_ComprehensionsDictGetHelper(PyObject* dict, PyObject* key);
 
 /*
- * Narrow helper for the stdlib pickle._Unpickler.load() stop path.
- *
- * Returns self.stack.pop() while preserving normal Python exceptions.
+ * Narrow helper for bm_comprehensions sortable_widgets.sort().
  */
-PyObject* JITRT_PickleUnpicklerPopStack(PyObject* self);
-
-/*
- * Return 1 when key is the stdlib pickle STOP opcode byte string, else 0.
- * This helper never sets a Python exception.
- */
-int JITRT_PickleIsStopKey(PyObject* key);
-#endif
+PyObject* JITRT_ComprehensionsListSortHelper(PyObject* list_obj);
 
 /*
  * Helper to perform a Python call with dynamically determined arguments.
@@ -263,16 +260,6 @@ PyObject* JITRT_Call(
     PyObject* kwnames);
 
 /*
- * Perform a method-shaped call where args[0] is the self-or-null value coming
- * from a LoadMethod result.
- */
-PyObject* JITRT_CallMethod(
-    PyObject* callable,
-    PyObject* const* args,
-    size_t nargsf,
-    PyObject* kwnames);
-
-/*
  * Performs a function call with a vectorcall. Will check and handle any
  * eval breaker events after the call.
  */
@@ -281,25 +268,6 @@ PyObject* JITRT_Vectorcall(
     PyObject* const* args,
     size_t nargsf,
     PyObject* kwnames);
-
-/*
- * Performs a function call with a vectorcall when the callable is known to be
- * an exact Python function object.
- */
-PyObject* JITRT_VectorcallExactPyFunc(
-    PyObject* callable,
-    PyObject* const* args,
-    size_t nargsf,
-    PyObject* kwnames);
-
-/*
- * Call an exact method descriptor with METH_FASTCALL and a single explicit
- * argument, then handle periodic activities like JITRT_Vectorcall().
- */
-PyObject* JITRT_CallMethodDescrFast1(
-    PyObject* callable,
-    PyObject* self,
-    PyObject* arg0);
 
 /*
  * Perform a method lookup on an object.
@@ -550,6 +518,28 @@ JITRT_GenSendRes JITRT_GenSendHandleStopAsyncIteration(
 #endif
 );
 
+// JITRT_GetGenResumeEntry - 获取子生成器的 JIT resume 入口点并直接调用。
+// 用于 OptimizedYieldFrom 尾调用优化，跳过 PyIter_Send 调用链。
+// 返回值: 子生成器的 yield 值，或 nullptr（子生成器结束或未 JIT 编译）。
+// 注意: 如果返回值是 nullptr 且发生了异常，返回 nullptr 让调用者处理异常；
+// 如果返回值是 nullptr 但无异常，表示子生成器正常结束（StopIteration）。
+extern PyObject* JITRT_GetGenResumeEntry(
+    PyObject* gen,
+    PyObject* send_value,
+    uint64_t finish_yield_from);
+
+// JITRT_YieldFromInlineHelper - 内联 yield from 辅助函数（树遍历状态机）
+// 用于 YieldFromInline 指令，直接调用迭代器的 next() 并更新状态。
+// 参数:
+//   - iter: 子迭代器
+//   - next_state: 状态机的下一个状态值
+// 返回值:
+//   - 非 nullptr: yield 的值
+//   - nullptr: 迭代完成或异常
+extern PyObject* JITRT_YieldFromInlineHelper(
+    PyObject* iter,
+    int32_t next_state);
+
 /* Unpack a sequence as in unpack_iterable(), and save the
  * results in a tuple.
  */
@@ -700,13 +690,6 @@ PyObject* JITRT_SwapCellItem(PyCellObject* cell, PyObject* new_value);
  * normally. This must never escape into managed code.
  */
 extern PyObject JITRT_IterDoneSentinel;
-
-// OptimizedYieldFrom: 直接获取 JIT 编译的生成器恢复入口点
-// 用于绕过 PyIter_Send 的帧切换开销
-PyObject* JITRT_GetGenResumeEntry(
-    PyObject* gen,
-    PyObject* send_value,
-    uint64_t finish_yield_from);
 
 /*
  * Invoke __next__ on iterator.

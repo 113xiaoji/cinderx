@@ -3778,15 +3778,15 @@ DEFINE_SIMPLE_INSTR(
     HasOutput,
     Operands<0>);
 
-// YieldFromInline: 内联 yield from 指令（叶子节点）
-// 对于嵌套的生成器，如果可以完全内联则使用此指令
-// 操作数: receiver, field_name_idx, next_state
+// YieldFromInline: 内联 yield from 指令（树遍历状态机）
+// 直接使用已加载的迭代器，避免运行时字段访问
+// 操作数: iter, next_state
 // 输出: yield 的值
 DEFINE_SIMPLE_INSTR(
     YieldFromInline,
-    (TObject, TOptObject),
+    (TObject, TCInt32),
     HasOutput,
-    Operands<3>,
+    Operands<2>,
     DeoptBase);
 
 // A more compact (in terms of emitted code) equivalent to YieldValue followed

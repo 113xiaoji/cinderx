@@ -2096,6 +2096,38 @@ PyObject* JITRT_GetGenResumeEntry(
   return result;
 }
 
+PyObject* JITRT_YieldFromInlineHelper(
+    PyObject* iter,
+    int32_t next_state) {
+  if (iter == nullptr) {
+    return nullptr;
+  }
+
+  PyThreadState* tstate = PyThreadState_Get();
+
+  // 调用 next(iter)
+  PyObject* value = PyIter_Next(iter);
+
+  if (value == nullptr) {
+    // 迭代完成或异常
+    if (_PyErr_Occurred(tstate)) {
+      // 有异常，传播
+      return nullptr;
+    } else {
+      // 正常完成，设置 StopIteration
+      _PyErr_SetNone(tstate, PyExc_StopIteration);
+      return nullptr;
+    }
+  }
+
+  // TODO: 保存下一个状态到 GenDataFooter->currentState
+  // 这需要从当前线程状态获取生成器对象，然后获取 GenDataFooter
+  // 暂时跳过状态保存，因为状态机框架还未完全实现
+
+  // 返回 yield 值
+  return value;
+}
+
 PyObject* JITRT_FormatValue(
     PyThreadState* tstate,
     PyObject* fmt_spec,

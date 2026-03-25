@@ -1354,63 +1354,61 @@ void translateOptimizedYieldFrom(Environ* env, const Instruction* instr) {
 
 void translateYieldFromInline(Environ* env, const Instruction* instr) {
   // YieldFromInline: 内联的 yield-from，用于树遍历状态机
-  // 操作数: [receiver, field_idx, next_state]
+  // 操作数: [iter, next_state]
   // 输出: yield 的值
   //
   // 语义:
-  //   field_value = receiver.fields[field_idx]
-  //   if field_value is None:
-  //     // 子树为空，跳过
-  //     return None
-  //   else:
-  //     // yield from field_value
-  //     iter = iter(field_value)
-  //     value = next(iter)
-  //     state = next_state
-  //     yield value
+  //   value = next(iter)
+  //   state = next_state
+  //   yield value
 
 #if defined(CINDER_X86_64)
   arch::Builder* as = env->as;
 
-  // TODO: 实现 x86_64 代码生成
-  // 当前简化版本：调用运行时辅助函数
+  // 1. 加载 iter (迭代器)
+  const OperandBase* iter_op = instr->getInput(1);
+  if (iter_op->isReg()) {
+    PhyLocation iter_loc = iter_op->getStackSlot();
+    as->mov(x86::rdi, x86::qword_ptr(x86::rbp, iter_loc.loc));
+  } else {
+    as->mov(x86::rdi, x86::qword_ptr(x86::rbp, iter_op->getStackSlot().loc));
+  }
 
-  // 1. 加载 receiver (self)
-  PhyLocation receiver_loc = instr->getInput(0)->getStackSlot();
-  as->mov(x86::rdi, x86::qword_ptr(x86::rbp, receiver_loc.loc));
+  // 2. 加载 next_state
+  const OperandBase* next_state_op = instr->getInput(2);
+  if (next_state_op->isReg()) {
+    PhyLocation next_state_loc = next_state_op->getStackSlot();
+    as->mov(x86::rsi, x86::qword_ptr(x86::rbp, next_state_loc.loc));
+  } else {
+    as->mov(x86::rsi, x86::qword_ptr(x86::rbp, next_state_op->getStackSlot().loc));
+  }
 
-  // 2. 加载 field_idx
-  PhyLocation field_idx_loc = instr->getInput(1)->getStackSlot();
-  as->mov(x86::rsi, x86::qword_ptr(x86::rbp, field_idx_loc.loc));
-
-  // 3. 加载 next_state
-  PhyLocation next_state_loc = instr->getInput(2)->getStackSlot();
-  as->mov(x86::rdx, x86::qword_ptr(x86::rbp, next_state_loc.loc));
-
-  // 4. 调用运行时辅助函数 JITRT_YieldFromInlineHelper
-  // TODO: 需要实现这个辅助函数
-  // uint64_t func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
-  // emitCall(*env, func, instr);
-
-  // 临时：输出调试信息并返回 None
-  as->mov(x86::rax, reinterpret_cast<uint64_t>(Py_None));
-  as->inc(qword_ptr(reinterpret_cast<uint64_t>(&Py_None->ob_refcnt)));
+  // 3. 调用运行时辅助函数 JITRT_YieldFromInlineHelper
+  // JITRT_YieldFromInlineHelper(iter, next_state, gen_data_footer)
+  // 返回 yield 的值或 nullptr
+  uint64_t helper_func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
+  emitCall(*env, helper_func, instr);
+  // 结果在 RAX
 
 #elif defined(CINDER_AARCH64)
   arch::Builder* as = env->as;
 
-  // TODO: 实现 ARM64 代码生成
-  // 当前简化版本：返回 None
+  // 1. 加载 iter
+  const OperandBase* iter_op = instr->getInput(1);
+  as->ldr(
+      a64::x0,
+      arch::ptr_resolve(as, arch::fp, iter_op->getStackSlot().loc, arch::reg_scratch_0));
 
-  // 临时：返回 None
-  as->mov(a64::x0, reinterpret_cast<uint64_t>(Py_None));
+  // 2. 加载 next_state
+  const OperandBase* next_state_op = instr->getInput(2);
   as->ldr(
       a64::x1,
-      arch::ptr_resolve(as, a64::x0, 0, arch::reg_scratch_0));  // ob_refcnt
-  as->add(a64::x1, a64::x1, 1);
-  as->str(
-      a64::x1,
-      arch::ptr_resolve(as, a64::x0, 0, arch::reg_scratch_0));  // ob_refcnt++
+      arch::ptr_resolve(as, arch::fp, next_state_op->getStackSlot().loc, arch::reg_scratch_0));
+
+  // 3. 调用运行时辅助函数
+  uint64_t helper_func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
+  emitCall(*env, helper_func, instr);
+  // 结果在 X0
 
 #else
   CINDER_UNSUPPORTED
