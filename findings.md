@@ -3610,3 +3610,439 @@ Conclusion:
 
 - This `len()` truthiness cleanup is a viable positive optimization.
 - It is much smaller and lower-risk than the rejected classmethod-wrapper experiment above.
+
+## 2026-03-19 PyTorch first graph compile vs CinderX JIT
+
+### Remote setup
+
+- Entrypoint: `scripts/arm/remote_update_build_test.sh`
+- Host: `root@124.70.162.35`
+- Fresh benchmark venv: `/root/venv-cinderx314-torchgraph`
+- PyTorch install used for the benchmark: `torch 2.10.0+cpu`
+
+### Verification status
+
+- New benchmark helper tests passed remotely:
+  - `tests.test_bench_torch_first_graph_compile`
+- Fresh-vend JIT smoke passed through the same remote entrypoint:
+  - `jit-effective-ok compiled_size 984 interp_calls 10`
+- The current tree still segfaulted in the full ARM runtime suite, so the PyTorch-focused reruns used the same remote entrypoint with:
+  - `SKIP_ARM_RUNTIME_TESTS=1`
+
+### Direct `inductor` path blocker
+
+- Attempting `torch.compile(..., backend="inductor")` did not reach a usable JIT-vs-no-JIT comparison.
+- Even the `nojit` baseline failed on this host because PyTorch Inductor's generated C++ hit a host `g++` internal compiler error while compiling SVE/BF16 code.
+- Conclusion for this path:
+  - no trustworthy first-compile speedup claim can be made for `inductor` until the host compiler ICE is resolved.
+
+### Fallback `aot_eager` results
+
+- To isolate Python-side graph capture / compile overhead, a fallback measurement used `backend="aot_eager"`.
+- `nojit` cold-first artifacts (`n=3`):
+  - `/root/work/arm-sync/torch_aot_eager_nojit_20260319_175823_1.json`
+  - `/root/work/arm-sync/torch_aot_eager_nojit_20260319_175823_2.json`
+  - `/root/work/arm-sync/torch_aot_eager_nojit_20260319_175823_3.json`
+- `autojit50` artifact:
+  - `/root/work/arm-sync/torch_aot_eager_autojit50_20260319_175823.json`
+- `autojit0` crash marker:
+  - `/root/work/arm-sync/torch_aot_eager_autojit0_20260319_175823.rc`
+
+Measured cold-first times:
+
+- `nojit` median:
+  - `first_total_sec = 1.020317594`
+  - `wrapper_sec = 0.247131002`
+  - `first_call_sec = 0.773186592`
+  - `second_call_sec = 0.001842429`
+- `autojit50`:
+  - `first_total_sec = 3.925576926`
+  - `wrapper_sec = 0.694246201`
+  - `first_call_sec = 3.231330725`
+  - `second_call_sec = 0.001819498`
+  - delta vs `nojit` median: `+284.74068751578%` slower
+- `autojit50` JIT engagement signal:
+  - compiled torch functions before measurement: `129`
+  - compiled torch functions after measurement: `1110`
+- `autojit0`:
+  - exit code `139`
+  - process segfaulted before producing a JSON payload
+
+### Conclusion
+
+- On this host/tree, there is no evidence that CinderX JIT improves PyTorch first graph compilation.
+- On the usable fallback path, default-like `autojit50` materially hurts first-compile latency.
+- More aggressive `autojit0` is unstable for this workload here.
+
+## 2026-03-20 TorchBench first graph compile on ARM
+
+### Scope and setup
+
+- Selected models:
+  - `resnet50`
+  - `timm_vision_transformer`
+  - `hf_Bert`
+  - `dlrm`
+  - `pytorch_unet`
+- Remote entrypoint:
+  - `scripts/arm/remote_update_build_test.sh`
+- Host:
+  - `root@124.70.162.35`
+- Driver venv:
+  - `/root/venv-cinderx314-torchbench`
+- Batch artifact directory:
+  - `/root/work/arm-sync/torchbench_first_compile/20260320_121858`
+
+### Backend choice
+
+- `inductor` was not used for the 5-model batch because it was already blocked on this host by a GCC internal compiler error while compiling PyTorch-generated code.
+- The 5-model comparison therefore used `backend="aot_eager"` to isolate Python-side first graph compile behavior.
+
+### Result matrix
+
+- `resnet50`
+  - `nojit`: pass
+  - `autojit50`: `rc=139`
+- `timm_vision_transformer`
+  - `nojit`: fail
+  - `autojit50`: `rc=139`
+- `hf_Bert`
+  - `nojit`: fail
+  - `autojit50`: `rc=139`
+- `dlrm`
+  - `nojit`: pass
+  - `autojit50`: `rc=139`
+- `pytorch_unet`
+  - `nojit`: pass
+  - `autojit50`: `rc=139`
+
+### Runnable `nojit` baselines
+
+- `resnet50`
+  - `first_total_sec = 28.295339091999722`
+  - `wrapper_sec = 0.21072396199997456`
+  - `first_call_sec = 28.084615129999747`
+  - `second_call_sec = 3.405904551000276`
+- `dlrm`
+  - `first_total_sec = 6.843976243999805`
+  - `wrapper_sec = 0.27019715400001587`
+  - `first_call_sec = 6.573779089999789`
+  - `second_call_sec = 0.14421791499989922`
+- `pytorch_unet`
+  - `first_total_sec = 24.438342152000132`
+  - `wrapper_sec = 0.2695123150001564`
+  - `first_call_sec = 24.168829836999976`
+  - `second_call_sec = 8.41906150099976`
+
+### Baseline blockers unrelated to CinderX
+
+- `timm_vision_transformer`:
+  - failed while trying to fetch pretrained weights from the timm/HuggingFace side
+  - stderr included network failure reaching `huggingface.co`
+- `hf_Bert`:
+  - failed in TorchBench/HuggingFace setup with:
+    - `NameError: name 'BertConfig' is not defined`
+
+### Hotspot shape in the runnable baselines
+
+- On the runnable cases, first-compile hotspots were primarily in:
+  - `torch.nn.modules.module._wrapped_call_impl`
+  - `torch.nn.modules.module._call_impl`
+  - `torch._dynamo.eval_frame.compile_wrapper`
+  - `torch._dynamo.symbolic_convert.*`
+  - `torch._dynamo.convert_frame.*`
+- This indicates the first-graph-compile cost is dominated by PyTorch Dynamo tracing / symbolic conversion, not by user model Python code.
+
+### Did CinderX JIT the real hotspots?
+
+- `resnet50`:
+  - no
+  - the `autojit50` debug log did not show `torch._dynamo`, `torch.nn`, or `torchbenchmark` hotspot compilation before the crash
+  - it mostly compiled importlib/sympy setup code first
+- `dlrm`:
+  - no
+  - same pattern as `resnet50`: crash before model-hotspot compilation showed up in the JIT log
+- `pytorch_unet`:
+  - partially, but still not the dominant hotspot set
+  - the `autojit50` debug log showed some `torch._dynamo.*` helpers and a small TorchBench helper being compiled
+  - however the dominant `torch.nn` wrapper hotspots and model-forward hotspots were still not reached before the crash
+- `timm_vision_transformer` and `hf_Bert`:
+  - baseline setup failed first, so there is no trustworthy hotspot/JIT conclusion for them yet
+
+### Conclusion
+
+- Across these TorchBench cases on ARM, CinderX currently shows no usable first-graph-compile optimization.
+- The dominant first-compile hotspot path is PyTorch Dynamo.
+- In practice, the JIT path is blocked by stability: it crashes before it can cleanly optimize the dominant hotspot set.
+
+### Crash localization update
+
+- Minimal repro:
+  - `resnet50 + backend="aot_eager" + autojit50`
+- Remote batch gdb artifact:
+  - `/root/work/arm-sync/resnet50_gdb_bt_20260320_140528.txt`
+- Crash lands in:
+  - `JITRT_Vectorcall()` at `cinderx/Jit/jit_rt.cpp:1109`
+- Runtime arguments at the crash site:
+  - `callable = 0x0`
+  - `args = 0xffffffffc6b8`
+  - `nargsf = 9223372036854775810`
+  - `kwnames = 0x0`
+- Interpretation:
+  - the helper itself is being called with corrupted vectorcall inputs
+  - this points to an ARM vectorcall-lowering / call-ABI corruption bug at the JIT/runtime boundary rather than a model-level Python bug
+
+### Postalloc optimization confirmation
+
+- A temporary debug patch disabled the arg-register move fold in [postalloc.cpp](/c:/work/code/issue14/cinderx/Jit/lir/postalloc.cpp).
+- With that patch:
+  - `resnet50 + aot_eager + autojit50` no longer crashed
+  - artifact: `/root/work/arm-sync/resnet50_postalloc_probe.json`
+- This is strong evidence that one concrete crash cause is the postalloc
+  optimization that rewrites return-register-to-argument-register move chains.
+- Most likely effect:
+  - implicit vectorcall argument-register setup is corrupted after LIR call
+    rewriting.
+- Scope:
+  - this explains the `resnet50` minimal repro
+
+### Second crash path fixed
+
+- A second independent crash path was found in [simplify.cpp](/c:/work/code/issue14/cinderx/Jit/hir/simplify.cpp):
+  - `getKnownBuiltinByName()` was using `PyEval_GetBuiltins()` during compiler-time vectorcall simplification
+  - this crashed on the `dlrm` repro from inside `simplifyVectorCallBuiltinRoundOrInt()`
+- Switching builtin lookup to `instr->frameState()->builtins` fixed that crash family.
+
+### Updated runnable-case status with both fixes applied
+
+- `resnet50`
+  - `nojit = 28.295339091999722s`
+  - `autojit50 = 16.948008662000575s`
+  - delta: `-40.1031788066025%`
+- `dlrm`
+  - `nojit = 6.843976243999805s`
+  - `autojit50 = 8.228583048001383s`
+  - delta: `+20.2310287855759%`
+- `pytorch_unet`
+  - `nojit = 24.438342152000132s`
+  - `autojit50 = 20.4554385320007s`
+  - delta: `-16.2977651889265%`
+
+### Remaining blockers
+
+- `timm_vision_transformer`: blocked by external model-weight download/network failure
+- `hf_Bert`: blocked by TorchBench/HuggingFace config bug (`BertConfig` unresolved)
+
+### Test note
+
+- Added a targeted backend regression in [backend_test.cpp](/c:/work/code/issue14/cinderx/RuntimeTests/backend_test.cpp).
+- I did not find a built `BackendTest` binary on the remote host to execute it directly in this round.
+
+## 2026-03-20 pyperformance regression sweep for selected benchmarks
+
+### Requested set
+
+- `generators`
+- `coroutines`
+- `comprehensions`
+- `richards`
+- `richards_super`
+- `float`
+- `go`
+- `deltablue`
+- `nqueens`
+- `nbody`
+- `unpack_sequence`
+- `fannkuch`
+- `coverage`
+- `scimark`
+- `spectral_norm`
+- `chaos`
+- `logging`
+
+### Baseline caveat
+
+- Plain `HEAD` did not provide a usable `autojit50` baseline for this set.
+- The selected-set `autojit50` run segfaulted before producing a summary file.
+
+### Reliable regression screen
+
+- Current fixed build completed the set in both `nojit` and `autojit50`.
+- Comparison used:
+  - current fixed `autojit50` vs current fixed `nojit`
+- Threshold:
+  - `+10%` slower = regression
+- Compared benchmark entries: `23`
+  - `logging` expanded to 3 entries
+  - `scimark` expanded to 5 entries
+- Result:
+  - `0` regressions above threshold
+
+Largest slowdowns:
+
+- `scimark_lu`: `+0.4349%`
+- `coverage`: `+0.4055%`
+- `richards_super`: `+0.3752%`
+- `scimark_sor`: `+0.2223%`
+- `chaos`: `+0.2167%`
+
+Largest speedups:
+
+- `float`: `-1.2475%`
+- `deltablue`: `-0.4790%`
+- `logging_simple`: `-0.3922%`
+- `nbody`: `-0.3334%`
+- `go`: `-0.3020%`
+
+### Conclusion
+
+- On the requested pyperformance set, the current fixed build does not show a
+  large `autojit50` regression relative to the same build in `nojit`.
+
+## 2026-03-20 Complete 5-case TorchBench summary
+
+### Blocker bypasses
+
+- `timm_vision_transformer`
+  - bypassed external download dependence by forcing `pretrained=False`
+- `hf_Bert`
+  - bypassed TorchBench config issue with a fixed `download_model()` path
+  - fixed benchmark invocation to pass `dict` inputs as keyword args
+
+### Final `aot_eager` first-compile results
+
+- `resnet50`
+  - `nojit = 28.039484222998s`
+  - `autojit50 = 16.635168142998737s`
+  - delta: `-40.672346143391%`
+- `timm_vision_transformer`
+  - `nojit = 26.222583919996396s`
+  - `autojit50 = 20.863191790998826s`
+  - delta: `-20.4380779001367%`
+- `hf_Bert`
+  - `nojit = 28.845688269000675s`
+  - `autojit50 = 71.1851240870019s`
+  - delta: `+146.779079851257%`
+- `dlrm`
+  - `nojit = 15.1736698349996s`
+  - `autojit50 = 16.930543468995893s`
+  - delta: `+11.578435889938%`
+- `pytorch_unet`
+  - `nojit = 47.600911387999076s`
+  - `autojit50 = 28.27733482900294s`
+  - delta: `-40.5949718094429%`
+
+### JIT engagement after first compile
+
+- `resnet50`: `torch_compiled_function_count = 1537`
+- `timm_vision_transformer`: `6650`
+- `hf_Bert`: `2004`
+- `dlrm`: `2913`
+- `pytorch_unet`: `6557`
+
+### Final interpretation
+
+- After the two crash fixes, CinderX is able to JIT substantial portions of the
+  PyTorch compiler/runtime stack on all five selected TorchBench cases.
+- The first-graph-compile impact is workload-dependent:
+  - strong positive on `resnet50`, `timm_vision_transformer`, `pytorch_unet`
+  - mild negative on `dlrm`
+  - strongly negative on `hf_Bert`
+
+## 2026-03-24 coroutines send(None) loop rewrite
+
+### Scope
+
+- Issue: `#65`
+- Benchmark: `pyperformance coroutines`
+- Remote entrypoint:
+  - `scripts/arm/remote_update_build_test.sh`
+
+### Root cause confirmed
+
+- On Python 3.14, the benchmark loop uses:
+  - `LOAD_ATTR send`
+  - `LOAD_CONST None`
+  - `CALL 1`
+  - `POP_TOP`
+  - `StopIteration` handler
+- Baseline builder lowering kept this as generic method invocation:
+  - `LoadMethod("send")`
+  - `GetSecondOutput`
+  - `CallMethod`
+- Normal completion therefore escaped compiled control flow as:
+  - `UnhandledException`
+  - `description: CallMethod`
+
+### Implementation
+
+- Added a narrow bytecode-shape matcher in:
+  - `cinderx/Jit/hir/builder.cpp`
+- Declared the helper in:
+  - `cinderx/Jit/hir/builder.h`
+- Inserted the rewrite before generic `CallMethod` lowering in `emitAnyCall()`
+- Added regression coverage in:
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+- Added remote verification helper:
+  - `scripts/arm/verify_coroutines_send_none.py`
+
+### Verified benchmark-function evidence
+
+- Real benchmark function loaded from:
+  - `/root/venv-cinderx314/lib/python3.14/site-packages/pyperformance/data-files/benchmarks/bm_coroutines/run_benchmark.py`
+- Compiled function name:
+  - `bm_coroutines_run_benchmark:bench_coroutines`
+- JIT log:
+  - `send-none rewrite hit in bm_coroutines_run_benchmark:bench_coroutines at bc_off 126`
+- HIR/log evidence includes:
+  - `Send`
+  - `GetSecondOutput<CInt64>`
+  - `CondBranch`
+- Verification JSON:
+  - `forced = true`
+  - `send_count = 1`
+  - `callmethod_count = 0`
+  - `callmethod_unhandled_deopt_count = 0`
+  - `deopt_count = 0`
+
+### Unified remote entrypoint result
+
+- Build/install succeeded through the standard remote entrypoint.
+- Targeted ARM runtime regression passed:
+  - `test_cinderx.test_arm_runtime.ArmRuntimeTests.test_coroutines_send_none_loop_lowers_to_send`
+- Actual benchmark-function verification also ran through `EXTRA_VERIFY_CMD` on:
+  - `/root/venv-cinderx314/lib/python3.14/site-packages/pyperformance/data-files/benchmarks/bm_coroutines/run_benchmark.py`
+- pyperformance smoke outputs:
+  - `coroutines_jitlist_20260324_191926.json`
+    - value: `0.06542330799857154`
+  - `coroutines_autojit50_20260324_191926.json`
+    - value: `0.06333435199485393`
+  - `coroutines_autojit50_20260324_191926_compile_summary.json`
+    - `main_compile_count = 1`
+    - `total_compile_count = 112`
+
+### Bottom line
+
+- The benchmark shape no longer relies on `UnhandledException / CallMethod` for normal `coro.send(None)` completion.
+- The completion path now stays in compiled control flow via `Send + GetSecondOutput<CInt64> + CondBranch`.
+
+### Follow-up timing and regression screen
+
+- Steady-state `coroutines` on the current build:
+  - current `nojit` median: `0.02804468712565722s`
+  - current `autojit50` median: `0.028144777875240834s`
+  - delta: `+0.3569%`
+- Small regression screen (`coroutines,generators,comprehensions`, `--fast`, current `autojit50` vs current `nojit`):
+  - regressions above `10%`: `0`
+  - `comprehensions`: `+0.2864%`
+  - `coroutines`: `-0.0292%`
+  - `generators`: `+0.0484%`
+
+### Added regression anchor
+
+- Added a 3.14 HIR fixture for the minimal `bench_coroutines` shape in:
+  - `cinderx/RuntimeTests/hir_tests/all_passes_test.txt`
+- Goal:
+  - keep a cheap text-level regression anchor for `Send + GetSecondOutput<CInt64> + CondBranch`
+- Execution status:
+  - not run in this round because the current remote build tree did not expose a `RuntimeTests`/HIR fixture binary target

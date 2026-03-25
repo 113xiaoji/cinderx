@@ -84,6 +84,143 @@ fun jittestmodule:test {
   }
 }
 --- Test Name ---
+CoroutinesSendNoneLoopUsesSendControlFlow
+--- Input ---
+async def leaf():
+  return 1
+
+def bench_coroutines(loops):
+  for _ in range(loops):
+    coro = leaf()
+    while True:
+      try:
+        coro.send(None)
+      except StopIteration:
+        break
+--- Expected 3.14 ---
+fun jittestmodule:bench_coroutines {
+  bb 0 {
+    LoadFrame
+    UpdatePrevInstr<idx:0 line_no:4: no parent>
+    v23:CInt64 = LoadEvalBreaker
+    CondBranch<11, 10> v23
+  }
+
+  bb 11 (preds 0) {
+    v24:CInt32 = RunPeriodicTasks {
+      FrameState {
+        CurInstrOffset 0
+        Locals<3> v20 v22 v22
+      }
+    }
+    Branch<10>
+  }
+
+  bb 10 (preds 0, 11) {
+    v28:OptObject = LoadGlobalCached<0; "range">
+    v29:ImmortalTypeExact[range:obj] = GuardIs<0xdeadbeef> v28 {
+      Descr 'LOAD_GLOBAL: range'
+      LiveValues<3> b:v20 unc:v22 b:v28
+      FrameState {
+        CurInstrOffset 2
+        Locals<3> v20 v22 v22
+      }
+    }
+    v58:Object = VectorCall<1> v29 v20 {
+      LiveValues<3> b:v20 unc:v22 unc:v29
+      FrameState {
+        CurInstrOffset 14
+        Locals<3> v20 v22 v22
+      }
+    }
+    v32:Object = GetIter v58 {
+      LiveValues<3> b:v20 unc:v22 o:v58
+      FrameState {
+        CurInstrOffset 22
+        Locals<3> v20 v22 v22
+      }
+    }
+    Decref v58
+    Branch<1>
+  }
+
+  bb 1 (preds 10, 13) {
+    v36:OptObject = Phi<10, 13> v22 v38
+    v37:OptObject = Phi<10, 13> v22 v56
+    v38:Object = InvokeIterNext v32 {
+      LiveValues<4> b:v20 o:v32 o:v36 o:v37
+      FrameState {
+        CurInstrOffset 24
+        Locals<3> v20 v36 v37
+        Stack<1> v32
+      }
+    }
+    CondBranchIterNotDone<2, 5> v38
+  }
+
+  bb 2 (preds 1) {
+    v41:OptObject = LoadGlobalCached<1; "leaf">
+    v42:MortalFunc[function:0xdeadbeef] = GuardIs<0xdeadbeef> v41 {
+      Descr 'LOAD_GLOBAL: leaf'
+      LiveValues<6> b:v20 o:v32 o:v36 o:v37 o:v38 b:v41
+      FrameState {
+        CurInstrOffset 28
+        Locals<3> v20 v36 v37
+        Stack<2> v32 v38
+      }
+    }
+    XDecref v36
+    v56:Object = VectorCall<0> v42 {
+      LiveValues<5> b:v20 o:v32 o:v37 o:v38 b:v42
+      FrameState {
+        CurInstrOffset 40
+        Locals<3> v20 v38 v37
+        Stack<1> v32
+      }
+    }
+    XDecref v37
+    Branch<3>
+  }
+
+  bb 3 (preds 2, 3) {
+    v57:Object = LoadMethodCached<2; "send"> v56 {
+      LiveValues<4> b:v20 o:v32 o:v38 o:v56
+      FrameState {
+        CurInstrOffset 56
+        Locals<3> v20 v38 v56
+        Stack<1> v32
+      }
+    }
+    v51:OptObject = GetSecondOutput<OptObject> v57
+    Decref v57
+    v52:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    v53:Object = Send v51 v52 {
+      LiveValues<6> b:v20 o:v32 o:v38 o:v51 unc:v52 o:v56
+      FrameState {
+        CurInstrOffset 78
+        Locals<3> v20 v38 v56
+        Stack<2> v32 v51
+      }
+    }
+    XDecref v51
+    v54:CInt64 = GetSecondOutput<CInt64> v53
+    Decref v53
+    CondBranch<13, 3> v54
+  }
+
+  bb 13 (preds 3) {
+    Branch<1>
+  }
+
+  bb 5 (preds 1) {
+    Decref v32
+    XDecref v36
+    XDecref v37
+    v55:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Return v55
+  }
+}
+--- Test Name ---
 IfIsinstanceEmitsLoadFieldAndIsInstance
 --- Input ---
 def test(x):

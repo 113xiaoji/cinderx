@@ -91,6 +91,10 @@ bool isMethodDescr(Register* callable) {
   return callable_obj != nullptr && Py_TYPE(callable_obj) == &PyMethodDescr_Type;
 }
 
+bool isConstNone(Register* reg) {
+  return getConstantObject(reg) == Py_None;
+}
+
 struct StdlibArrayDescr {
   char typecode;
   int itemsize;
@@ -2163,6 +2167,10 @@ void HIRBuilder::emitAnyCall(
         flags |= CallFlags::KwArgs;
       }
 
+      if (tryEmitSendNoneLoopRewrite(cfg, tc, bc_it, bc_instrs)) {
+        break;
+      }
+
       if (getConfig().specialized_opcodes &&
           !(tc.frame.stack.peek(num_stack_inputs - 1)->type() <= TNullptr)) {
         Register* callable = tc.frame.stack.peek(num_stack_inputs);
@@ -2449,6 +2457,149 @@ bool HIRBuilder::tryInlineSetGenexprCall(
 
   bc_it = next_it;
   return true;
+}
+
+bool HIRBuilder::tryEmitSendNoneLoopRewrite(
+    CFG& cfg,
+    TranslationContext& tc,
+    jit::BytecodeInstructionBlock::Iterator& bc_it,
+    const jit::BytecodeInstructionBlock& bc_instrs) {
+#if PY_VERSION_HEX < 0x030E0000
+  return false;
+#else
+  BytecodeInstruction bc_instr = *bc_it;
+  if (bc_instr.opcode() != CALL || bc_instr.oparg() != 1 || kwnames_ != nullptr ||
+      tc.frame.stack.size() < 3) {
+    return false;
+  }
+
+  bool have_prev = false;
+  bool have_prev_prev = false;
+  BytecodeInstruction prev{code_, BCOffset{0}};
+  BytecodeInstruction prev_prev{code_, BCOffset{0}};
+  for (auto it = bc_instrs.begin(); it != bc_it; ++it) {
+    have_prev_prev = have_prev;
+    prev_prev = prev;
+    prev = *it;
+    have_prev = true;
+  }
+  if (!have_prev || !have_prev_prev || prev.opcode() != LOAD_CONST ||
+      constArg(prev) != Py_None || prev_prev.opcode() != LOAD_ATTR) {
+    return false;
+  }
+  int load_attr_name_idx = loadAttrIndex(prev_prev.oparg());
+  BorrowedRef<> load_attr_name = PyTuple_GET_ITEM(code_->co_names, load_attr_name_idx);
+  if (
+      (prev_prev.oparg() & 1) == 0 || !PyUnicode_Check(load_attr_name) ||
+      PyUnicode_CompareWithASCIIString(load_attr_name, "send") != 0) {
+    return false;
+  }
+
+  auto next_it = bc_it;
+  ++next_it;
+  if (next_it == bc_instrs.end()) {
+    return false;
+  }
+  BytecodeInstruction pop_instr = *next_it;
+  if (pop_instr.opcode() != POP_TOP) {
+    return false;
+  }
+
+  auto loop_it = next_it;
+  ++loop_it;
+  if (loop_it == bc_instrs.end()) {
+    return false;
+  }
+  BytecodeInstruction loop_instr = *loop_it;
+  if (loop_instr.opcode() != JUMP_BACKWARD) {
+    return false;
+  }
+
+  BCIndex end_idx{countIndices(code_)};
+  BytecodeInstruction handler = loop_instr.nextInstr();
+  while (
+      handler.opcodeIndex().value() < end_idx.value() &&
+      handler.opcode() != PUSH_EXC_INFO) {
+    handler = handler.nextInstr();
+  }
+  if (
+      handler.opcodeIndex().value() >= end_idx.value() ||
+      handler.opcode() != PUSH_EXC_INFO) {
+    return false;
+  }
+  BytecodeInstruction load_exc = handler.nextInstr();
+  if (load_exc.opcode() != LOAD_GLOBAL) {
+    return false;
+  }
+  int exc_name_idx = load_exc.oparg() >> 1;
+  BorrowedRef<> exc_name = PyTuple_GET_ITEM(code_->co_names, exc_name_idx);
+  if (
+      !PyUnicode_Check(exc_name) ||
+      PyUnicode_CompareWithASCIIString(exc_name, "StopIteration") != 0) {
+    return false;
+  }
+  BytecodeInstruction check_exc = load_exc.nextInstr();
+  if (check_exc.opcode() != CHECK_EXC_MATCH) {
+    return false;
+  }
+  BytecodeInstruction pop_jump = check_exc.nextInstr();
+  if (pop_jump.opcode() != POP_JUMP_IF_FALSE) {
+    return false;
+  }
+  BytecodeInstruction rereraise{code_, pop_jump.getJumpTarget()};
+  if (rereraise.opcode() != RERAISE) {
+    return false;
+  }
+  BytecodeInstruction pop_match = pop_jump.nextInstr();
+  int skip_budget = 4;
+  while (
+      skip_budget-- > 0 &&
+      (pop_match.opcode() == NOT_TAKEN || pop_match.opcode() == NOP)) {
+    pop_match = pop_match.nextInstr();
+  }
+  if (pop_match.opcode() != POP_TOP) {
+    return false;
+  }
+  BytecodeInstruction pop_except = pop_match.nextInstr();
+  if (pop_except.opcode() != POP_EXCEPT) {
+    return false;
+  }
+  BytecodeInstruction done_jump = pop_except.nextInstr();
+  if (done_jump.opcode() != JUMP_BACKWARD) {
+    return false;
+  }
+
+  Register* arg = tc.frame.stack.top();
+  if (!isConstNone(arg)) {
+    return false;
+  }
+
+  Register* value_out = tc.frame.stack.pop();
+  Register* iter = tc.frame.stack.pop();
+  tc.frame.stack.pop(); // loaded method object, unused by Send
+
+  tc.frame.stack.push(iter);
+  tc.frame.stack.push(value_out);
+  value_out = tc.frame.stack.pop();
+  iter = tc.frame.stack.top();
+
+  Register* value_in = temps_.AllocateNonStack();
+  tc.emit<Send>(iter, value_out, value_in, tc.frame);
+  tc.frame.stack.pop();
+
+  Register* is_done = temps_.AllocateNonStack();
+  tc.emit<GetSecondOutput>(is_done, TCInt64, value_in);
+  BasicBlock* done_block = getBlockAtOff(done_jump.getJumpTarget());
+  BasicBlock* continue_block = getBlockAtOff(loop_instr.getJumpTarget());
+  tc.emit<CondBranch>(is_done, done_block, continue_block);
+  JIT_DLOG(
+      "send-none rewrite hit in {} at bc_off {}",
+      preloader_.fullname(),
+      bc_instr.baseOffset());
+
+  bc_it = loop_it;
+  return true;
+#endif
 }
 
 void HIRBuilder::emitCallInstrinsic(

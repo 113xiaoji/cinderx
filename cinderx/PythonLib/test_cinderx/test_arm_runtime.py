@@ -1,4 +1,4 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
+﻿# Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import platform
 import os
@@ -2964,6 +2964,84 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-3]), 1, proc.stdout)
             self.assertEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(lines[-1], "{32, 10, 43, 21}", proc.stdout)
+
+    def test_coroutines_send_none_loop_lowers_to_send(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            async def leaf():
+                return 1
+
+            def bench_coroutines(loops):
+                for _ in range(loops):
+                    coro = leaf()
+                    while True:
+                        try:
+                            coro.send(None)
+                        except StopIteration:
+                            break
+
+            for _ in range(5000):
+                bench_coroutines(1)
+
+            assert jit.force_compile(bench_coroutines)
+            counts = cinderjit.get_function_hir_opcode_counts(bench_coroutines)
+
+            jit.get_and_clear_runtime_stats()
+            bench_coroutines(2000)
+            stats = jit.get_and_clear_runtime_stats()
+
+            deopt_count = sum(
+                entry["int"]["count"]
+                for entry in stats.get("deopt", [])
+                if entry["normal"]["func_qualname"] == "bench_coroutines"
+                and entry["normal"]["reason"] == "UnhandledException"
+                and entry["normal"]["description"] == "CallMethod"
+            )
+
+            print(counts.get("Send", 0))
+            print(counts.get("CallMethod", 0))
+            print(deopt_count)
+            print("done")
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/coroutines_send_none_loop.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITDUMPFINALHIR"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertGreaterEqual(int(lines[-4]), 1, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertEqual(int(lines[-2]), 0, proc.stdout)
+            self.assertEqual(lines[-1], "done", proc.stdout)
+
+            dump = proc.stdout + "\n" + proc.stderr
+            self.assertIn("Send", dump)
+            self.assertIn("GetSecondOutput<CInt64>", dump)
+            self.assertIn("CondBranch", dump)
 
     def test_set_genexpr_preserves_exception_behavior(self) -> None:
         code = textwrap.dedent(
