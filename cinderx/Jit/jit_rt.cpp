@@ -945,6 +945,39 @@ PyObject* get_dict_item_miss_sentinel() {
   return sentinel;
 }
 
+PyObject* get_pickle_dispatch_continue_sentinel() {
+  static std::once_flag once;
+  static PyObject* sentinel = nullptr;
+  std::call_once(once, []() {
+    sentinel = PyCapsule_New(
+        reinterpret_cast<void*>(get_pickle_dispatch_continue_sentinel),
+        "cinderx.jit.pickle_dispatch_continue",
+        nullptr);
+  });
+  return sentinel;
+}
+
+PyTypeObject* get_pickle_stop_type() {
+  static std::once_flag once;
+  static PyTypeObject* stop_type = nullptr;
+  std::call_once(once, []() {
+    PyObject* pickle_mod = PyImport_ImportModule("pickle");
+    if (pickle_mod == nullptr) {
+      PyErr_Clear();
+      return;
+    }
+    PyObject* stop = PyObject_GetAttrString(pickle_mod, "_Stop");
+    Py_DECREF(pickle_mod);
+    if (stop == nullptr || !PyType_Check(stop)) {
+      Py_XDECREF(stop);
+      PyErr_Clear();
+      return;
+    }
+    stop_type = reinterpret_cast<PyTypeObject*>(stop);
+  });
+  return stop_type;
+}
+
 } // namespace
 
 PyObject* JITRT_GetDictItemMissSentinel(void) {
@@ -1009,6 +1042,30 @@ PyObject* JITRT_DeepcopyTuplePostMiss(PyObject* x, PyObject* y) {
       return PySequence_Tuple(y);
     }
   }
+}
+
+PyObject* JITRT_GetPickleDispatchContinueSentinel(void) {
+  return get_pickle_dispatch_continue_sentinel();
+}
+
+PyObject* JITRT_CallPickleDispatchOrStop(PyObject* callable, PyObject* self) {
+  PyTypeObject* stop_type = get_pickle_stop_type();
+  PyObject* args[1] = {self};
+  PyObject* result = PyObject_Vectorcall(callable, args, 1, nullptr);
+  if (result != nullptr) {
+    Py_DECREF(result);
+    PyObject* sentinel = get_pickle_dispatch_continue_sentinel();
+    return sentinel == nullptr ? nullptr : Py_NewRef(sentinel);
+  }
+
+  if (stop_type != nullptr && PyErr_ExceptionMatches((PyObject*)stop_type)) {
+    Ref<> exc = Ref<>::steal(PyErr_GetRaisedException());
+    if (exc == nullptr) {
+      return nullptr;
+    }
+    return PyObject_GetAttrString(exc, "value");
+  }
+  return nullptr;
 }
 
 #endif

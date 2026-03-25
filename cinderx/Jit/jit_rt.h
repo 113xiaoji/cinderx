@@ -203,6 +203,21 @@ PyObject* JITRT_GetDictItemMissSentinel(void);
  * Returns either a new reference to `x` or a new tuple built from `y`.
  */
 PyObject* JITRT_DeepcopyTuplePostMiss(PyObject* x, PyObject* y);
+
+/*
+ * Return the private sentinel object used by JITRT_CallPickleDispatchOrStop().
+ * The returned object is borrowed and must only be used for identity checks.
+ */
+PyObject* JITRT_GetPickleDispatchContinueSentinel(void);
+
+/*
+ * Call a pickle dispatch callable with `self`.
+ *
+ * Returns a new reference to a private "continue" sentinel on normal success,
+ * a new reference to `stopinst.value` if the call raised `pickle._Stop`, and
+ * NULL on any other exception with the Python exception left set.
+ */
+PyObject* JITRT_CallPickleDispatchOrStop(PyObject* callable, PyObject* self);
 #endif
 
 /*

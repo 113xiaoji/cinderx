@@ -43,16 +43,64 @@ skip = (
 
 # pyperformance 1.14 executes benchmark scripts directly and no longer passes
 # the historical "--worker" argv token. Keep supporting the old shape, but
-# also recognize the worker-specific run id environment.
-worker = _has_token("--worker") or os.environ.get("PYPERFORMANCE_RUNID") not in (
-    None,
-    "",
+# use an explicit worker marker we control rather than piggybacking on
+# PYPERFORMANCE_RUNID, which interferes with JIT initialization.
+worker = _has_token("--worker") or _is_truthy(
+    os.environ.get("CINDERX_PYPERF_WORKER")
 )
 
+
+def _setenv(key: str, value: str) -> None:
+    os.putenv(key, value)
+    os.environ[key] = value
+
+
+def _delenv(key: str) -> None:
+    os.unsetenv(key)
+    os.environ.pop(key, None)
+
+
+def _install_pyperf_precompile_hook() -> None:
+    if not _is_truthy(os.environ.get("CINDERX_PYPERF_PRECOMPILE_ALL")):
+        return
+
+    try:
+        import pyperf  # type: ignore
+        import cinderx.jit as jit
+    except Exception:
+        return
+
+    runner_cls = getattr(pyperf, "Runner", None)
+    if runner_cls is None:
+        return
+
+    orig = getattr(runner_cls, "bench_time_func", None)
+    if orig is None or getattr(orig, "_cinderx_precompile_patch", False):
+        return
+
+    def patched(self, name, time_func, *args, **kwargs):
+        did_precompile = False
+
+        def wrapped(loops, *inner_args):
+            nonlocal did_precompile
+            if not did_precompile:
+                did_precompile = True
+                try:
+                    jit.precompile_all(0)
+                except Exception:
+                    pass
+            return time_func(loops, *inner_args)
+
+        return orig(self, name, wrapped, *args, **kwargs)
+
+    patched._cinderx_precompile_patch = True  # type: ignore[attr-defined]
+    runner_cls.bench_time_func = patched
+
 if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
-    if os.environ.get("PYPERFORMANCE_RUNID"):
+    if _is_truthy(os.environ.get("CINDERX_PYPERF_WORKER")):
         # pyperf metadata collection can trip over os._Environ methods after
-        # JIT-enabled startup. A plain dict avoids that worker-only bug.
+        # JIT-enabled startup. A plain dict avoids that worker-only bug for the
+        # worker processes we explicitly mark.
         os.environ = dict(os.environ)
 
     # Keep the pyperformance driver process on the safe side by allowing it to
@@ -60,11 +108,14 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
     # inheriting a dedicated worker-only autojit setting.
     worker_autojit = os.environ.get("CINDERX_WORKER_PYTHONJITAUTO")
     if worker_autojit not in (None, ""):
-        os.environ["PYTHONJITAUTO"] = worker_autojit
-        os.environ.pop("PYTHONJITDISABLE", None)
+        # Keep the process environment in sync with the Python mapping. JIT
+        # initialization reads getenv(), so mutating only a copied dict is not
+        # enough once PYPERFORMANCE_RUNID has swapped out os.environ.
+        _setenv("PYTHONJITAUTO", worker_autojit)
+        _delenv("PYTHONJITDISABLE")
 
     try:
-        if os.environ.get("PYPERFORMANCE_RUNID"):
+        if _is_truthy(os.environ.get("CINDERX_PYPERF_WORKER")):
             import platform
 
             platform.architecture = (
@@ -72,6 +123,8 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
             )
 
         import cinderx.jit as jit
+
+        _install_pyperf_precompile_hook()
 
         if os.environ.get("PYTHONJITDISABLE") in (None, "", "0"):
             jit.enable()

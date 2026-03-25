@@ -4394,9 +4394,9 @@ class ArmRuntimeTests(unittest.TestCase):
 
     def test_pickle_unframer_current_frame_lookup_is_reused(self) -> None:
         # Regression guard:
-        # pure-Python pickle hot paths should not rebuild the split-dict
-        # current_frame load chain twice in `_Unframer.read` and
-        # `_Unframer.load_frame`.
+        # pure-Python pickle hot paths should split `current_frame.read()` into
+        # a fast `_io.BytesIO` branch and a preserved slow branch, rather than
+        # only rebuilding the second split-dict chain unconditionally.
         code = textwrap.dedent(
             """
             import sys
@@ -4451,17 +4451,67 @@ class ArmRuntimeTests(unittest.TestCase):
             read_hir = extract_section("pickle:_Unframer.read")
             load_frame_hir = extract_section("pickle:_Unframer.load_frame")
 
-            self.assertEqual(read_hir.count("SplitDictDeoptPatcher"), 1, read_hir)
-            self.assertEqual(read_hir.count('LoadAttr<0; "current_frame">'), 1, read_hir)
-            self.assertEqual(read_hir.count("current_frame@24"), 1, read_hir)
+            for hir in (read_hir, load_frame_hir):
+                self.assertIn("CondBranchCheckType", hir)
+                self.assertIn("ObjectUser[_io.BytesIO:Exact]", hir)
+                self.assertIn("RefineType<ObjectUser[_io.BytesIO:Exact]>", hir)
+                self.assertEqual(hir.count("SplitDictDeoptPatcher"), 2, hir)
+                self.assertEqual(hir.count("current_frame@24"), 2, hir)
+                self.assertEqual(hir.count('LoadMethodCached<1; "read">'), 2, hir)
 
-            self.assertEqual(
-                load_frame_hir.count("SplitDictDeoptPatcher"), 1, load_frame_hir
+    def test_pickle_unpickler_load_lowers_dispatch_stop_helper(self) -> None:
+        # Regression guard:
+        # the `_Stop` control flow in `pickle._Unpickler.load` should lower to
+        # the dedicated dispatch helper rather than staying on a generic
+        # unhandled VectorCall path.
+        code = textwrap.dedent(
+            """
+            import sys
+            sys.modules.pop("pickle", None)
+            sys.modules["_pickle"] = None
+
+            import pickle
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            assert jit.force_compile(pickle._Unpickler.load)
+            print("compiled")
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/pickle_unpickler_load_hir.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITDUMPFINALHIR"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
             )
             self.assertEqual(
-                load_frame_hir.count('LoadAttr<0; "current_frame">'), 1, load_frame_hir
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
             )
-            self.assertEqual(load_frame_hir.count("current_frame@24"), 1, load_frame_hir)
+
+            dump = proc.stdout + "\n" + proc.stderr
+            marker = "Optimized HIR for pickle:_Unpickler.load:"
+            start = dump.find(marker)
+            self.assertNotEqual(start, -1, dump)
+            next_start = dump.find("Optimized HIR for ", start + len(marker))
+            hir = dump[start:] if next_start == -1 else dump[start:next_start]
+
+            self.assertIn("JITRT_CallPickleDispatchOrStop", hir)
+            self.assertIn("CallStatic<JITRT_CallPickleDispatchOrStop", hir)
+            self.assertIn("CheckExc", hir)
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@
 #include "cinderx/Jit/hir/list_slice_cleanup.h"
 #include "cinderx/Jit/hir/long_loop_unboxing.h"
 #include "cinderx/Jit/hir/make_function_const_fold.h"
+#include "cinderx/Jit/hir/pickle_unframer_optimization.h"
 #include "cinderx/Jit/hir/phi_elimination.h"
 #include "cinderx/Jit/hir/printer.h"
 #include "cinderx/Jit/hir/primitive_box_remat.h"
@@ -127,6 +128,7 @@ void Compiler::runPasses(
   runPassIf(hir::CleanCFG{}, PassConfig::kCleanCFG);
   runPassIf(hir::DeadCodeElimination{}, PassConfig::kDeadCodeElim);
   runPassIf(hir::CleanCFG{}, PassConfig::kCleanCFG);
+  runPass(jit::hir::PickleUnframerOptimization{}, irfunc, callback);
 
   runPass(jit::hir::RefcountInsertion{}, irfunc, callback);
   runPass(jit::hir::ListSliceCleanup{}, irfunc, callback);

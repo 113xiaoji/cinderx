@@ -661,6 +661,120 @@ BytecodeInstruction skipHandlerNoops(BytecodeInstruction instr) {
   return instr;
 }
 
+bool isPickleUnpicklerLoadCode(BorrowedRef<PyCodeObject> code) {
+  if (code == nullptr || !PyUnicode_Check(code->co_qualname) ||
+      !PyUnicode_Check(code->co_filename)) {
+    return false;
+  }
+  const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
+  const char* filename = PyUnicode_AsUTF8(code->co_filename);
+  if (qualname == nullptr || filename == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  return std::strcmp(qualname, "_Unpickler.load") == 0 &&
+      std::strstr(filename, "pickle.py") != nullptr;
+}
+
+bool isZeroLongConstant(Register* reg) {
+  reg = chaseAssign(reg);
+  if (reg == nullptr || !reg->instr()->IsLoadConst()) {
+    return false;
+  }
+  Type type = static_cast<LoadConst*>(reg->instr())->type();
+  if (!type.hasObjectSpec()) {
+    return false;
+  }
+  PyObject* obj = type.objectSpec();
+  return PyLong_CheckExact(obj) && PyLong_AsLong(obj) == 0;
+}
+
+struct PickleUnpicklerDispatchStopPattern {
+  BCOffset continue_off{-1};
+};
+
+std::optional<PickleUnpicklerDispatchStopPattern>
+matchPickleUnpicklerDispatchStopPattern(
+    BorrowedRef<PyCodeObject> code,
+    const BytecodeInstruction& call_instr) {
+  if (!isPickleUnpicklerLoadCode(code) || call_instr.opcode() != CALL ||
+      call_instr.oparg() != 1) {
+    return std::nullopt;
+  }
+
+  BytecodeInstruction pop_top = call_instr.nextInstr();
+  if (pop_top.opcode() != POP_TOP) {
+    return std::nullopt;
+  }
+  BytecodeInstruction loop_jump = pop_top.nextInstr();
+  if (loop_jump.opcode() != JUMP_BACKWARD &&
+      loop_jump.opcode() != JUMP_BACKWARD_NO_INTERRUPT) {
+    return std::nullopt;
+  }
+
+  BytecodeInstruction handler_instr = loop_jump.nextInstr();
+  int max_scan = static_cast<int>(countIndices(code));
+  while (
+      max_scan-- > 0 &&
+      static_cast<size_t>(handler_instr.baseIndex().value()) <
+          countIndices(code) &&
+      handler_instr.opcode() != PUSH_EXC_INFO) {
+    handler_instr = handler_instr.nextInstr();
+  }
+  if (handler_instr.opcode() != PUSH_EXC_INFO) {
+    return std::nullopt;
+  }
+  handler_instr = handler_instr.nextInstr();
+  if (!nameEquals(loadGlobalName(code, handler_instr), "_Stop")) {
+    return std::nullopt;
+  }
+  handler_instr = handler_instr.nextInstr();
+  if (handler_instr.opcode() != CHECK_EXC_MATCH) {
+    return std::nullopt;
+  }
+  handler_instr = handler_instr.nextInstr();
+  if (handler_instr.opcode() != POP_JUMP_IF_FALSE) {
+    return std::nullopt;
+  }
+  handler_instr = skipHandlerNoops(handler_instr.nextInstr());
+  if (handler_instr.opcode() != STORE_FAST) {
+    return std::nullopt;
+  }
+  int stopinst_idx = handler_instr.oparg();
+  handler_instr = handler_instr.nextInstr();
+  if (
+      handler_instr.opcode() != LOAD_FAST ||
+      handler_instr.oparg() != stopinst_idx) {
+    return std::nullopt;
+  }
+  handler_instr = handler_instr.nextInstr();
+  if (
+      handler_instr.opcode() != LOAD_ATTR ||
+      !nameEquals(loadAttrName(code, handler_instr), "value")) {
+    return std::nullopt;
+  }
+
+  bool saw_return = false;
+  max_scan = static_cast<int>(countIndices(code));
+  while (
+      max_scan-- > 0 &&
+      static_cast<size_t>(handler_instr.baseIndex().value()) <
+          countIndices(code)) {
+    if (handler_instr.opcode() == RETURN_VALUE) {
+      saw_return = true;
+      break;
+    }
+    handler_instr = handler_instr.nextInstr();
+  }
+  if (!saw_return) {
+    return std::nullopt;
+  }
+
+  return PickleUnpicklerDispatchStopPattern{
+      .continue_off = loop_jump.getJumpTarget(),
+  };
+}
+
 struct DeepcopyDictSubscrPattern {
   enum class Kind {
     kKeepAliveInline,
@@ -2517,6 +2631,12 @@ void HIRBuilder::emitAnyCall(
   }
   auto flags = is_awaited ? CallFlags::Awaited : CallFlags::None;
   bool call_used_is_awaited = true;
+
+#if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
+  if (tryEmitPickleUnpicklerDispatchStopCall(cfg, tc, bc_it, flags)) {
+    return;
+  }
+#endif
 
   if (tryEmitProfiledMethodWithValuesCall(cfg, tc, bc_instr, flags)) {
     return;
@@ -5380,11 +5500,6 @@ void HIRBuilder::emitPopJumpIf(
     if (auto it = truthy_attr_sources_.find(var);
         it != truthy_attr_sources_.end() &&
         true_block->in_edges().size() <= 1) {
-      JIT_LOG(
-          "issue63-seed block={} name_idx={} value={}",
-          true_block->id,
-          it->second.name_idx,
-          fmt::ptr(it->second.value));
       seeded_block_attr_values_[true_block].push_back(it->second);
       truthy_attr_sources_.erase(it);
     }
@@ -5392,6 +5507,115 @@ void HIRBuilder::emitPopJumpIf(
     tc.emit<CondBranch>(var, true_block, false_block);
   }
 }
+
+#if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
+bool HIRBuilder::tryEmitPickleUnpicklerDispatchStopCall(
+    CFG& cfg,
+    TranslationContext& tc,
+    jit::BytecodeInstructionBlock::Iterator& bc_it,
+    CallFlags flags) {
+  BytecodeInstruction bc_instr = *bc_it;
+  if (flags != CallFlags::None || kwnames_ != nullptr) {
+    return false;
+  }
+
+  auto pattern = matchPickleUnpicklerDispatchStopPattern(code_, bc_instr);
+  if (!pattern.has_value() || tc.frame.stack.size() < 3) {
+    return false;
+  }
+
+  Register* self_arg = chaseAssign(tc.frame.stack.top());
+  Register* null_sentinel = tc.frame.stack.top(1);
+  Register* callable = chaseAssign(tc.frame.stack.top(2));
+  if (self_arg != tc.frame.localsplus[0] || !isNullSentinel(null_sentinel) ||
+      callable == nullptr || !callable->instr()->IsBinaryOp()) {
+    return false;
+  }
+
+  int dispatch_idx = findLocalIndexByName(code_, "dispatch");
+  int key_idx = findLocalIndexByName(code_, "key");
+
+  auto* dispatch_lookup = static_cast<BinaryOp*>(callable->instr());
+  Register* dispatch_left = chaseAssign(dispatch_lookup->left());
+  bool dispatch_matches_local =
+      dispatch_idx >= 0 && dispatch_left == tc.frame.localsplus[dispatch_idx];
+  bool dispatch_matches_attr =
+      dispatch_left != nullptr && dispatch_left->instr()->IsLoadAttr() &&
+      nameEquals(static_cast<LoadAttr*>(dispatch_left->instr())->name(), "dispatch") &&
+      chaseAssign(static_cast<LoadAttr*>(dispatch_left->instr())->GetOperand(0)) ==
+          tc.frame.localsplus[0];
+  if (
+      dispatch_lookup->op() != BinaryOpKind::kSubscript ||
+      (!dispatch_matches_local && !dispatch_matches_attr)) {
+    return false;
+  }
+
+  Register* key_subscript = chaseAssign(dispatch_lookup->right());
+  if (key_subscript == nullptr || !key_subscript->instr()->IsBinaryOp()) {
+    return false;
+  }
+  auto* key_lookup = static_cast<BinaryOp*>(key_subscript->instr());
+  Register* key_left = chaseAssign(key_lookup->left());
+  Register* key_right = chaseAssign(key_lookup->right());
+  bool key_matches_local =
+      key_idx >= 0 && key_left == tc.frame.localsplus[key_idx];
+  bool key_matches_direct_read =
+      key_left != nullptr &&
+      (key_left->instr()->IsCallMethod() || key_left->instr()->IsVectorCall());
+  bool key_matches_zero = isZeroLongConstant(key_lookup->right());
+  if (
+      key_lookup->op() != BinaryOpKind::kSubscript ||
+      (!key_matches_local && !key_matches_direct_read) ||
+      !key_matches_zero) {
+    return false;
+  }
+
+  PyObject* sentinel_obj = JITRT_GetPickleDispatchContinueSentinel();
+  if (sentinel_obj == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+
+  auto next_it = bc_it;
+  ++next_it; // POP_TOP
+  ++next_it; // JUMP_BACKWARD
+
+  Register* arg = tc.frame.stack.pop();
+  tc.frame.stack.pop(); // discard PUSH_NULL sentinel
+  Register* func = tc.frame.stack.pop();
+
+  Register* result = temps_.AllocateStack();
+  auto* helper = tc.emit<CallStatic>(
+      2,
+      result,
+      reinterpret_cast<void*>(JITRT_CallPickleDispatchOrStop),
+      TOptObject);
+  helper->SetOperand(0, func);
+  helper->SetOperand(1, arg);
+  tc.emit<CheckExc>(result, result, tc.frame);
+
+  Register* sentinel = temps_.AllocateStack();
+  Register* is_continue = temps_.AllocateStack();
+  tc.emit<LoadConst>(sentinel, Type::fromObject(sentinel_obj));
+  tc.emit<PrimitiveCompare>(
+      is_continue, PrimitiveCompareOp::kEqual, result, sentinel);
+
+  BasicBlock* continue_cleanup = cfg.AllocateBlock();
+  BasicBlock* return_block = cfg.AllocateBlock();
+  tc.emit<CondBranch>(is_continue, continue_cleanup, return_block);
+
+  TranslationContext continue_tc{continue_cleanup, tc.frame};
+  continue_tc.emit<Decref>(result);
+  continue_tc.emit<Branch>(getBlockAtOff(pattern->continue_off));
+
+  TranslationContext return_tc{return_block, tc.frame};
+  return_tc.emit<Return>(result);
+
+  bc_it = next_it;
+  stop_block_translation_ = true;
+  return true;
+}
+#endif
 
 void HIRBuilder::emitPopJumpIfNone(
     TranslationContext& tc,

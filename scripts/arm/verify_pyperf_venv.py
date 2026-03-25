@@ -60,6 +60,8 @@ payload = {
     "PYPERFORMANCE_RUNID": os.environ.get("PYPERFORMANCE_RUNID"),
     "PYTHONJITAUTO": os.environ.get("PYTHONJITAUTO"),
     "PYTHONJITDISABLE": os.environ.get("PYTHONJITDISABLE"),
+    "CINDERX_PYPERF_WORKER": os.environ.get("CINDERX_PYPERF_WORKER"),
+    "CINDERX_PYPERF_PRECOMPILE_ALL": os.environ.get("CINDERX_PYPERF_PRECOMPILE_ALL"),
     "CINDERX_JITLIST_ENTRIES": os.environ.get("CINDERX_JITLIST_ENTRIES"),
     "CINDERX_ENABLE_SPECIALIZED_OPCODES": os.environ.get(
         "CINDERX_ENABLE_SPECIALIZED_OPCODES"
@@ -80,6 +82,14 @@ print(json.dumps(payload, ensure_ascii=False))
     env = os.environ.copy()
     if env_overrides:
         env.update(env_overrides)
+    if (
+        env.get("CINDERX_PYPERF_WORKER") in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+        or env.get("CINDERX_WORKER_PYTHONJITAUTO") not in (None, "")
+    ):
+        # Worker processes must not start with PYTHONJITDISABLE already in the
+        # process environment. The JIT consumes that knob during native
+        # initialization before Python-level hooks can recover from it.
+        env.pop("PYTHONJITDISABLE", None)
     proc = subprocess.run(
         [str(python_exe), "-c", code, *argv_tokens],
         check=False,
