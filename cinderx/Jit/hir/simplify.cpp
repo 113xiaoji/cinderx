@@ -1127,36 +1127,153 @@ struct YieldFromProfileDumper {
   }
 } yieldFromProfileDumper;
 
-// Phase 3: 逃逸分析辅助函数
+// Phase 3: 逃逸分析辅助函数（简化实现）
 // 分析生成器是否逃逸
-EscapeLevel analyzeGeneratorEscape(Instr* iter_instr) {
+EscapeLevel analyzeGeneratorEscape(Instr* iter_instr, Function& func) {
+  fprintf(stderr, "[ESCAPE] analyzeGeneratorEscape called\n");
+  fflush(stderr);
+
   if (iter_instr == nullptr) {
+    fprintf(stderr, "[ESCAPE] iter_instr is NULL, returning kUnknown\n");
+    fflush(stderr);
     return EscapeLevel::kUnknown;
   }
 
   // 简化实现：检查迭代器是否被直接消费
   // 如果迭代器来自 GetIter，检查 GetIter 的使用情况
 
-  // 遍历使用该寄存器的所有指令
   Register* iter_reg = iter_instr->output();
   if (iter_reg == nullptr) {
+    fprintf(stderr, "[ESCAPE] iter_reg is NULL, returning kUnknown\n");
+    fflush(stderr);
     return EscapeLevel::kUnknown;
   }
 
-  // 检查所有使用该寄存器的指令
+  fprintf(stderr, "[ESCAPE] iter_reg = %p\n", (void*)iter_reg);
+  fflush(stderr);
+
+  // 使用 collectDirectRegUses 收集所有寄存器的使用
+  RegUses reg_uses = collectDirectRegUses(func);
+
+  // 查找 iter_reg 的所有使用
+  auto use_it = reg_uses.find(iter_reg);
+  if (use_it == reg_uses.end()) {
+    // 没有使用，不逃逸
+    JIT_LOG("  -> Generator has no uses, kNoEscape");
+    return EscapeLevel::kNoEscape;
+  }
+
+  const std::unordered_set<Instr*>& uses = use_it->second;
+
+  // 检查所有使用
   bool has_escaping_use = false;
-  bool has_consuming_use = false;
+  int consuming_use_count = 0;
 
-  // 使用 RegUses 来收集寄存器的所有使用
-  // TODO: 需要遍历 CFG 来检查使用情况
-  // 当前简化实现：保守处理，返回 kUnknown
+  for (Instr* use_instr : uses) {
+    if (use_instr == nullptr) {
+      continue;
+    }
 
-  // 临时：总是返回 kUnknown，等待完整实现
-  // 完整实现需要：
-  // 1. 遍历所有基本块
-  // 2. 检查 iter_reg 的所有使用
-  // 3. 判断是否逃逸
+    // 检查是否是 CallEx 指令（调用 list/set/tuple）
+    if (use_instr->opcode() == Opcode::kCallEx) {
+      const CallEx* call = static_cast<const CallEx*>(use_instr);
+      if (!call) {
+        has_escaping_use = true;
+        break;
+      }
 
+      Register* func_reg = call->func();
+      if (!func_reg || !func_reg->instr()) {
+        has_escaping_use = true;
+        break;
+      }
+
+      Instr* func_instr = func_reg->instr();
+
+      // 检查是否是 LoadGlobal 指令
+      if (func_instr->opcode() == Opcode::kLoadGlobal) {
+        const LoadGlobal* load_global = static_cast<const LoadGlobal*>(func_instr);
+        if (!load_global) {
+          has_escaping_use = true;
+          break;
+        }
+
+        // 获取全局变量名称
+        BorrowedRef<PyUnicodeObject> name_ref = load_global->name();
+        if (!name_ref) {
+          has_escaping_use = true;
+          break;
+        }
+
+        const char* name_cstr = PyUnicode_AsUTF8(name_ref);
+        if (!name_cstr) {
+          PyErr_Clear();
+          has_escaping_use = true;
+          break;
+        }
+
+        std::string name(name_cstr);
+
+        // 检查是否是 list, set, tuple
+        if (name == "list" || name == "set" || name == "tuple") {
+          // 检查 pargs 中是否包含 iter_reg
+          Register* pargs = call->pargs();
+
+          // pargs 应该来自 MakeTuple 指令
+          if (pargs && pargs->instr()) {
+            Instr* pargs_instr = pargs->instr();
+
+            // 检查是否是 MakeTuple 指令
+            if (pargs_instr->opcode() == Opcode::kMakeTuple) {
+              const MakeTuple* make_tuple = static_cast<const MakeTuple*>(pargs_instr);
+              if (make_tuple) {
+                // 检查元组中的所有元素
+                for (size_t i = 0; i < make_tuple->NumOperands(); i++) {
+                  if (make_tuple->GetOperand(i) == iter_reg) {
+                    // iter_reg 在元组中
+                    JIT_LOG(
+                        "  -> Generator is consumed by {}(), safe use",
+                        name);
+                    consuming_use_count++;
+                    goto next_use;  // 跳到下一个使用
+                  }
+                }
+              }
+            }
+          }
+
+          // 如果 pargs 直接是 iter_reg（不太可能，但保险起见）
+          if (pargs == iter_reg) {
+            JIT_LOG(
+                "  -> Generator is directly passed to {}(), safe use",
+                name);
+            consuming_use_count++;
+            continue;
+          }
+        }
+      }
+    }
+
+  next_use:;
+    // 其他使用情况，保守处理
+    has_escaping_use = true;
+    break;
+  }
+
+  if (has_escaping_use) {
+    JIT_LOG("  -> Generator has escaping use, kEscapes");
+    return EscapeLevel::kEscapes;
+  }
+
+  if (consuming_use_count > 0) {
+    JIT_LOG(
+        "  -> Generator has {} consuming uses, kNoEscape",
+        consuming_use_count);
+    return EscapeLevel::kNoEscape;
+  }
+
+  // 保守处理：未知情况
+  JIT_LOG("  -> Generator usage unknown, kUnknown");
   return EscapeLevel::kUnknown;
 }
 
@@ -1171,6 +1288,10 @@ Register* simplifyYieldFrom(Env& env, const YieldFrom* instr) {
   const char* qualname = env.func.code && PyUnicode_Check(env.func.code->co_qualname)
       ? PyUnicode_AsUTF8(env.func.code->co_qualname)
       : "<unknown>";
+
+  fprintf(stderr, "[SIMPLIFY] simplifyYieldFrom CALLED for function: %s\n", qualname ? qualname : "<null>");
+  fflush(stderr);
+
   JIT_LOG(
       "simplifyYieldFrom CALLED for ",
       qualname ? qualname : "<null>");
@@ -1343,7 +1464,7 @@ Register* simplifyYieldFrom(Env& env, const YieldFrom* instr) {
       yieldFromStats.optimization_detected++;
 
       // 检查逃逸级别
-      EscapeLevel escape = analyzeGeneratorEscape(iter_instr);
+      EscapeLevel escape = analyzeGeneratorEscape(iter_instr, env.func);
       if (escape == EscapeLevel::kNoEscape) {
         JIT_LOG(
             "OPTIMIZE: Escape analysis says kNoEscape, emitting InlineIter for self.{} pattern",
@@ -1461,7 +1582,7 @@ Register* simplifyYieldFrom(Env& env, const YieldFrom* instr) {
       attr_str);
 
   // 检查逃逸级别，决定使用 InlineIter 还是 OptimizedYieldFrom
-  EscapeLevel escape = analyzeGeneratorEscape(iter_instr);
+  EscapeLevel escape = analyzeGeneratorEscape(iter_instr, env.func);
   if (escape == EscapeLevel::kNoEscape) {
     JIT_LOG(
         "OPTIMIZE: Escape analysis says kNoEscape, emitting InlineIter for self.{} pattern",
@@ -4346,6 +4467,12 @@ Register* simplifyYieldFrom(Env& env, const YieldFrom* instr) {
 }
 
 Register* simplifyInstr(Env& env, const Instr* instr) {
+  // 调试输出：检查是否遇到 YieldFrom 指令
+  if (instr->opcode() == Opcode::kYieldFrom) {
+    fprintf(stderr, "[SIMPLIFY] Found YieldFrom instruction in simplifyInstr!\n");
+    fflush(stderr);
+  }
+
   switch (instr->opcode()) {
     case Opcode::kCheckVar:
     case Opcode::kCheckExc:
