@@ -1354,61 +1354,107 @@ void translateOptimizedYieldFrom(Environ* env, const Instruction* instr) {
 
 void translateYieldFromInline(Environ* env, const Instruction* instr) {
   // YieldFromInline: 内联的 yield-from，用于树遍历状态机
-  // 操作数: [iter, next_state]
+  // 操作数: [tstate, iter, next_state, ...deopt_data]
   // 输出: yield 的值
   //
   // 语义:
   //   value = next(iter)
-  //   state = next_state
+  //   footer->currentState = next_state
   //   yield value
 
 #if defined(CINDER_X86_64)
   arch::Builder* as = env->as;
 
-  // 1. 加载 iter (迭代器)
+  // 1. 加载 iter (迭代器) 到 RDI
   const OperandBase* iter_op = instr->getInput(1);
   if (iter_op->isReg()) {
     PhyLocation iter_loc = iter_op->getStackSlot();
-    as->mov(x86::rdi, x86::qword_ptr(x86::rbp, iter_loc.loc));
+    as->mov(x86::rdi, x86::ptr(x86::rbp, iter_loc.loc));
   } else {
-    as->mov(x86::rdi, x86::qword_ptr(x86::rbp, iter_op->getStackSlot().loc));
+    as->mov(x86::rdi, x86::ptr(x86::rbp, iter_op->getStackSlot().loc));
   }
 
-  // 2. 加载 next_state
+  // 2. 加载 next_state 到 RSI
   const OperandBase* next_state_op = instr->getInput(2);
   if (next_state_op->isReg()) {
     PhyLocation next_state_loc = next_state_op->getStackSlot();
-    as->mov(x86::rsi, x86::qword_ptr(x86::rbp, next_state_loc.loc));
+    as->mov(x86::rsi, x86::ptr(x86::rbp, next_state_loc.loc));
   } else {
-    as->mov(x86::rsi, x86::qword_ptr(x86::rbp, next_state_op->getStackSlot().loc));
+    as->mov(x86::rsi, x86::ptr(x86::rbp, next_state_op->getStackSlot().loc));
   }
 
-  // 3. 调用运行时辅助函数 JITRT_YieldFromInlineHelper
-  // JITRT_YieldFromInlineHelper(iter, next_state, gen_data_footer)
-  // 返回 yield 的值或 nullptr
+  // 3. 保存 next_state 到 GenDataFooter->currentState
+  //    在调用辅助函数之前保存，这样即使 next() 失败状态也已更新
+#if PY_VERSION_HEX < 0x030E0000
+  // Python < 3.14: 保存到 GenDataFooter->currentState
+  auto currentStateOffset = offsetof(GenDataFooter, currentState);
+  as->mov(x86::dword_ptr(x86::rbp, currentStateOffset), x86::esi);
+#endif
+
+  // 4. 调用运行时辅助函数 JITRT_YieldFromInlineHelper(iter, next_state)
+  //    返回 yield 的值或 nullptr
   uint64_t helper_func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
   emitCall(*env, helper_func, instr);
   // 结果在 RAX
 
+  // 5. 保存状态到 GenDataFooter 并跳转到 yield 退出点
+  //    类似于 translateYieldValue 的处理
+  auto scratch_r = x86::r9;
+  auto resume_label = as->newLabel();
+  emitStoreGenYieldPoint(as, env, instr, resume_label, x86::rbp, scratch_r);
+
+  // 6. 跳转到 yield 退出点
+  as->jmp(env->exit_for_yield_label);
+
+  // 7. 恢复执行入口（生成器恢复时从这里开始）
+  as->bind(resume_label);
+
+  // 8. 加载恢复的值（sent-in value）到输出
+  //    sent-in value 在 RSI，tstate 在 RCX
+  emitLoadResumedYieldInputs(as, instr, RSI, x86::rcx);
+
 #elif defined(CINDER_AARCH64)
   arch::Builder* as = env->as;
 
-  // 1. 加载 iter
+  // 1. 加载 iter 到 X0
   const OperandBase* iter_op = instr->getInput(1);
   as->ldr(
       a64::x0,
       arch::ptr_resolve(as, arch::fp, iter_op->getStackSlot().loc, arch::reg_scratch_0));
 
-  // 2. 加载 next_state
+  // 2. 加载 next_state 到 X1
   const OperandBase* next_state_op = instr->getInput(2);
   as->ldr(
       a64::x1,
       arch::ptr_resolve(as, arch::fp, next_state_op->getStackSlot().loc, arch::reg_scratch_0));
 
-  // 3. 调用运行时辅助函数
+  // 3. 保存 next_state 到 GenDataFooter->currentState
+#if PY_VERSION_HEX < 0x030E0000
+  auto currentStateOffset = offsetof(GenDataFooter, currentState);
+  as->str(
+      a64::w1,
+      arch::ptr_resolve(as, arch::fp, currentStateOffset, arch::reg_scratch_0));
+#endif
+
+  // 4. 调用运行时辅助函数
   uint64_t helper_func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
   emitCall(*env, helper_func, instr);
   // 结果在 X0
+
+  // 5. 保存状态到 GenDataFooter 并跳转到 yield 退出点
+  auto scratch_r = arch::reg_scratch_0;
+  auto resume_label = as->newLabel();
+  emitStoreGenYieldPoint(as, env, instr, resume_label, arch::fp, scratch_r);
+
+  // 6. 跳转到 yield 退出点
+  as->b(env->exit_for_yield_label);
+
+  // 7. 恢复执行入口
+  as->bind(resume_label);
+
+  // 8. 加载恢复的值到输出
+  //    sent-in value 在 X1，tstate 在 X3
+  emitLoadResumedYieldInputs(as, instr, X1, a64::x3);
 
 #else
   CINDER_UNSUPPORTED
