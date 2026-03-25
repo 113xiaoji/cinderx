@@ -1352,6 +1352,71 @@ void translateOptimizedYieldFrom(Environ* env, const Instruction* instr) {
 #endif
 }
 
+void translateYieldFromInline(Environ* env, const Instruction* instr) {
+  // YieldFromInline: 内联的 yield-from，用于树遍历状态机
+  // 操作数: [receiver, field_idx, next_state]
+  // 输出: yield 的值
+  //
+  // 语义:
+  //   field_value = receiver.fields[field_idx]
+  //   if field_value is None:
+  //     // 子树为空，跳过
+  //     return None
+  //   else:
+  //     // yield from field_value
+  //     iter = iter(field_value)
+  //     value = next(iter)
+  //     state = next_state
+  //     yield value
+
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  // TODO: 实现 x86_64 代码生成
+  // 当前简化版本：调用运行时辅助函数
+
+  // 1. 加载 receiver (self)
+  PhyLocation receiver_loc = instr->getInput(0)->getStackSlot();
+  as->mov(x86::rdi, x86::qword_ptr(x86::rbp, receiver_loc.loc));
+
+  // 2. 加载 field_idx
+  PhyLocation field_idx_loc = instr->getInput(1)->getStackSlot();
+  as->mov(x86::rsi, x86::qword_ptr(x86::rbp, field_idx_loc.loc));
+
+  // 3. 加载 next_state
+  PhyLocation next_state_loc = instr->getInput(2)->getStackSlot();
+  as->mov(x86::rdx, x86::qword_ptr(x86::rbp, next_state_loc.loc));
+
+  // 4. 调用运行时辅助函数 JITRT_YieldFromInlineHelper
+  // TODO: 需要实现这个辅助函数
+  // uint64_t func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
+  // emitCall(*env, func, instr);
+
+  // 临时：输出调试信息并返回 None
+  as->mov(x86::rax, reinterpret_cast<uint64_t>(Py_None));
+  as->inc(qword_ptr(reinterpret_cast<uint64_t>(&Py_None->ob_refcnt)));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  // TODO: 实现 ARM64 代码生成
+  // 当前简化版本：返回 None
+
+  // 临时：返回 None
+  as->mov(a64::x0, reinterpret_cast<uint64_t>(Py_None));
+  as->ldr(
+      a64::x1,
+      arch::ptr_resolve(as, a64::x0, 0, arch::reg_scratch_0));  // ob_refcnt
+  as->add(a64::x1, a64::x1, 1);
+  as->str(
+      a64::x1,
+      arch::ptr_resolve(as, a64::x0, 0, arch::reg_scratch_0));  // ob_refcnt++
+
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
 // ***********************************************************************
 // The following templates and macros implement the auto generation table.
 // The generator table defines a hash table, whose key is instruction type,
@@ -2039,6 +2104,10 @@ END_RULES
 
 BEGIN_RULES(Instruction::kOptimizedYieldFrom)
   GEN(ANY, CALL_C(translateOptimizedYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kYieldFromInline)
+  GEN(ANY, CALL_C(translateYieldFromInline))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)
@@ -3364,6 +3433,10 @@ END_RULES
 
 BEGIN_RULES(Instruction::kOptimizedYieldFrom)
   GEN(ANY, CALL_C(translateOptimizedYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kYieldFromInline)
+  GEN(ANY, CALL_C(translateYieldFromInline))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)

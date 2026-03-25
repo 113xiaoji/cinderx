@@ -1295,15 +1295,6 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         JIT_ABORT("LoadState not yet implemented in LIR generator");
         break;
       }
-      case Opcode::kYieldFromInline: {
-        // Phase 2: Treat as InlineIter for now
-        // TODO: Implement proper YieldFromInline logic
-        Instruction* instr = bbb.appendInstr(
-            i.output(), Instruction::kInlineIter, env_->asm_tstate,
-            i.GetOperand(0), i.GetOperand(1), i.GetOperand(2));
-        finishYield(bbb, instr, static_cast<const YieldFromInline*>(&i));
-        break;
-      }
       case Opcode::kSetCurrentAwaiter: {
         bbb.appendInvokeInstruction(
             JITRT_SetCurrentAwaiter, i.GetOperand(0), env_->asm_tstate);
@@ -1330,12 +1321,15 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       case Opcode::kYieldFrom:
       case Opcode::kOptimizedYieldFrom:
       case Opcode::kYieldFromHandleStopAsyncIteration:
-      case Opcode::kInlineIter: {
+      case Opcode::kInlineIter:
+      case Opcode::kYieldFromInline: {
         Instruction::Opcode op = [&] {
           if (opcode == Opcode::kYieldAndYieldFrom) {
             return Instruction::kYieldFromSkipInitialSend;
           } else if (opcode == Opcode::kOptimizedYieldFrom || opcode == Opcode::kInlineIter) {
             return opcode == Opcode::kInlineIter ? Instruction::kInlineIter : Instruction::kOptimizedYieldFrom;
+          } else if (opcode == Opcode::kYieldFromInline) {
+            return Instruction::kYieldFromInline;
           } else if (opcode == Opcode::kYieldFrom) {
             return Instruction::kYieldFrom;
           } else {
@@ -1350,6 +1344,11 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
                 i.GetOperand(1), i.GetOperand(2));
           } else if (opcode == Opcode::kInlineIter) {
             // InlineIter has 3 operands: send_value, iter, state_size
+            return bbb.appendInstr(
+                i.output(), op, env_->asm_tstate, i.GetOperand(0),
+                i.GetOperand(1), i.GetOperand(2));
+          } else if (opcode == Opcode::kYieldFromInline) {
+            // YieldFromInline has 3 operands: receiver, field_idx, next_state
             return bbb.appendInstr(
                 i.output(), op, env_->asm_tstate, i.GetOperand(0),
                 i.GetOperand(1), i.GetOperand(2));

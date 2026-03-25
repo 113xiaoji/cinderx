@@ -292,6 +292,8 @@ bool Instruction::isAnyYield() const {
     case kYieldFromSkipInitialSend:
     case kYieldInitial:
     case kYieldValue:
+    case kInlineIter:
+    case kYieldFromInline:
       return true;
     default:
       return false;
