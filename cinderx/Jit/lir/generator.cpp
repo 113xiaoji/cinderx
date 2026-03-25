@@ -1348,10 +1348,10 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
                 i.output(), op, env_->asm_tstate, i.GetOperand(0),
                 i.GetOperand(1), i.GetOperand(2));
           } else if (opcode == Opcode::kYieldFromInline) {
-            // YieldFromInline has 3 operands: receiver, field_idx, next_state
+            // YieldFromInline has 2 operands: iter, next_state
             return bbb.appendInstr(
                 i.output(), op, env_->asm_tstate, i.GetOperand(0),
-                i.GetOperand(1), i.GetOperand(2));
+                i.GetOperand(1));
           }
           return bbb.appendInstr(
               i.output(), op, env_->asm_tstate, i.GetOperand(0), i.GetOperand(1));
