@@ -1126,6 +1126,40 @@ struct YieldFromProfileDumper {
     }
   }
 } yieldFromProfileDumper;
+
+// Phase 3: 逃逸分析辅助函数
+// 分析生成器是否逃逸
+EscapeLevel analyzeGeneratorEscape(Instr* iter_instr) {
+  if (iter_instr == nullptr) {
+    return EscapeLevel::kUnknown;
+  }
+
+  // 简化实现：检查迭代器是否被直接消费
+  // 如果迭代器来自 GetIter，检查 GetIter 的使用情况
+
+  // 遍历使用该寄存器的所有指令
+  Register* iter_reg = iter_instr->output();
+  if (iter_reg == nullptr) {
+    return EscapeLevel::kUnknown;
+  }
+
+  // 检查所有使用该寄存器的指令
+  bool has_escaping_use = false;
+  bool has_consuming_use = false;
+
+  // 使用 RegUses 来收集寄存器的所有使用
+  // TODO: 需要遍历 CFG 来检查使用情况
+  // 当前简化实现：保守处理，返回 kUnknown
+
+  // 临时：总是返回 kUnknown，等待完整实现
+  // 完整实现需要：
+  // 1. 遍历所有基本块
+  // 2. 检查 iter_reg 的所有使用
+  // 3. 判断是否逃逸
+
+  return EscapeLevel::kUnknown;
+}
+
 } // anonymous namespace
 
 // Experimental: Inline yield-from for self.<attr> patterns
