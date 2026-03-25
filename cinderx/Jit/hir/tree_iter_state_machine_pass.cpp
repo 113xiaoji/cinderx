@@ -93,11 +93,9 @@ void TreeIterStateMachinePass::Run(Function& func) {
   }
 
   // 生成状态机并替换 YieldFrom
-  // TODO: 暂时禁用状态机生成，等待 YieldFromInline 代码生成实现
-  JIT_DLOG("TreeIterStateMachinePass: Tree iter pattern detected, but state machine generation disabled");
-  fprintf(stderr, "TreeIterStateMachinePass: ✅ Pattern detected! State machine generation temporarily disabled.\n");
+  fprintf(stderr, "TreeIterStateMachinePass: ✅ Pattern detected! Generating state machine...\n");
   fflush(stderr);
-  // generateStateMachine(func, yield_froms);
+  generateStateMachine(func, yield_froms);
 }
 
 bool TreeIterStateMachinePass::isTreeIterGenerator(const Function& func) const {
@@ -489,6 +487,34 @@ bool TreeIterStateMachinePass::isTreeIterPattern(const YieldFrom* yf) const {
   return false;
 }
 
+// 辅助函数：从 Phi 节点或直接指令中提取 GetIter
+// 用于处理 iter 寄存器可能来自 Phi 节点的情况
+const GetIter* extractGetIterFromPhi(Register* iter_reg) {
+  if (iter_reg == nullptr || iter_reg->instr() == nullptr) {
+    return nullptr;
+  }
+
+  Instr* iter_instr = iter_reg->instr();
+
+  // 情况 1：直接是 GetIter
+  if (iter_instr->IsGetIter()) {
+    return static_cast<const GetIter*>(iter_instr);
+  }
+
+  // 情况 2：是 Phi 节点，遍历输入查找 GetIter
+  if (iter_instr->IsPhi()) {
+    auto* phi = static_cast<const Phi*>(iter_instr);
+    for (size_t i = 0; i < phi->NumOperands(); i++) {
+      Instr* input = phi->GetOperand(i)->instr();
+      if (input != nullptr && input->IsGetIter()) {
+        return static_cast<const GetIter*>(input);
+      }
+    }
+  }
+
+  return nullptr;
+}
+
 void TreeIterStateMachinePass::generateStateMachine(
     Function& func,
     const std::vector<const YieldFrom*>& yield_froms) {
@@ -560,24 +586,23 @@ void TreeIterStateMachinePass::generateStateMachine(
 
     // 2. 提取 field 信息和 receiver
     // YieldFrom 的操作数: [send_value, iter]
-    // iter 来自 GetIter(LoadField(self, "left/right"))
+    // iter 可能来自 Phi 节点或直接来自 GetIter(LoadField(self, "left/right"))
 
     Register* iter_reg = yf->GetOperand(1);
-    if (iter_reg == nullptr || iter_reg->instr() == nullptr) {
+    if (iter_reg == nullptr) {
       JIT_DLOG("TreeIterStateMachinePass: Invalid iter operand, skipping");
-      // 添加终结符避免 CFG 验证错误
       state_bb->append<Branch>(done_block);
       continue;
     }
 
-    Instr* iter_instr = iter_reg->instr();
-    if (!iter_instr->IsGetIter()) {
-      JIT_DLOG("TreeIterStateMachinePass: iter is not from GetIter, skipping");
+    // 使用辅助函数提取 GetIter（处理 Phi 节点情况）
+    const GetIter* get_iter = extractGetIterFromPhi(iter_reg);
+    if (get_iter == nullptr) {
+      JIT_DLOG("TreeIterStateMachinePass: Could not extract GetIter from iter, skipping");
       state_bb->append<Branch>(done_block);
       continue;
     }
 
-    auto* get_iter = static_cast<const GetIter*>(iter_instr);
     Register* field_value = get_iter->iterable();
 
     if (field_value == nullptr || field_value->instr() == nullptr) {
