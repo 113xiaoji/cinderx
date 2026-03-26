@@ -42,4 +42,23 @@ class TreeIterStateMachinePass : public Pass {
   void generateStateMachine(Function& func, const std::vector<const YieldFrom*>& yield_froms);
 };
 
+// Phase 枚举：表示状态机的当前阶段
+enum class TreeIterPhase : int {
+  kLeft = 0,      // 进入左子树
+  kYield = 1,     // 产生当前值
+  kRight = 2,     // 进入右子树
+  kBacktrack = 3  // 回溯到父节点
+};
+
+// 状态机配置常量
+struct StateMachineConfig {
+  static constexpr int kMaxInlineDepth = 12;       // 最大内联深度
+  static constexpr int kStateSize = 256;           // 状态栈大小（字节）
+  static constexpr int kNodeOffset = 0;            // 当前节点偏移
+  static constexpr int kPhaseOffset = 8;           // 当前阶段偏移
+  static constexpr int kStackBase = 16;            // 栈帧开始偏移
+  static constexpr int kStackEntrySize = 16;      // 每个栈条目大小
+  static constexpr int kUninitializedState = -1;  // 未初始化状态值
+};
+
 }  // namespace jit::hir
