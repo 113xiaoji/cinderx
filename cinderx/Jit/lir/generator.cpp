@@ -1359,6 +1359,25 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         finishYield(bbb, instr, static_cast<const DeoptBase*>(&i));
         break;
       }
+      case Opcode::kStateStackPush: {
+        // StateStackPush: 将 (node, phase) 压入 GenDataFooter.state_stack
+        // HIR 操作数: [node (TObject), phase (TCInt32)]
+        // LIR 指令: 无输出，2 个输入
+        bbb.appendInstr(
+            Instruction::kStateStackPush,
+            i.GetOperand(0),
+            i.GetOperand(1));
+        break;
+      }
+      case Opcode::kStateStackPop: {
+        // StateStackPop: 从 GenDataFooter.state_stack 弹出 node
+        // HIR 输出: node (TObject)
+        // LIR 指令: 1 个输出 (k64bit)，0 个输入
+        bbb.appendInstr(
+            Instruction::kStateStackPop,
+            OutVReg{OperandBase::k64bit});
+        break;
+      }
       case Opcode::kAssign: {
         JIT_CHECK(false, "assign shouldn't be present");
       }

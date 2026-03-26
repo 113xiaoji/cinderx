@@ -627,6 +627,10 @@ Type outputTypeWithRecursiveCoroHint(
       return TBool;
     }
 
+    case Opcode::kStateStackPop: {
+      return TObject;
+    }
+
     case Opcode::kPrimitiveBox: {
       // This duplicates the logic in Type::asBoxed(), but it has enough
       // special cases (for exactness/optionality/nullptr) that it's not worth

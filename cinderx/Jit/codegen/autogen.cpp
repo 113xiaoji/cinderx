@@ -1461,6 +1461,178 @@ void translateYieldFromInline(Environ* env, const Instruction* instr) {
 #endif
 }
 
+// Phase 3.2 Task 4: State machine stack operations codegen
+void translateStateStackPush(Environ* env, const Instruction* instr) {
+  // StateStackPush: 将 (node, phase) 压入 GenDataFooter.state_stack
+  // 操作数: [node, phase]
+  //
+  // 伪代码:
+  //   stack_top_offset = offsetof(GenDataFooter, stack_top)
+  //   stack_base_offset = offsetof(GenDataFooter, state_stack)
+  //   index = GenDataFooter.stack_top
+  //   GenDataFooter.state_stack[index].node = node
+  //   GenDataFooter.state_stack[index].phase = phase
+  //   GenDataFooter.stack_top++
+
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  // 计算偏移量
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+
+  // 1. 加载 stack_top 到 RAX
+  as->mov(x86::eax, x86::dword_ptr(x86::rbp, stack_top_offset));
+
+  // 2. 加载 node 到 RDI 并存储到 state_stack[eax].node
+  const OperandBase* node_op = instr->getInput(0);
+  if (node_op->isReg()) {
+    as->mov(x86::rdi, AutoTranslator::getGp(node_op));
+  } else {
+    as->mov(x86::rdi, x86::qword_ptr(x86::rbp, node_op->getStackSlot().loc));
+  }
+  as->mov(x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0), x86::rdi);
+
+  // 3. 加载 phase 到 ESI 并存储到 state_stack[eax].phase
+  const OperandBase* phase_op = instr->getInput(1);
+  if (phase_op->isReg()) {
+    as->mov(x86::esi, AutoTranslator::getGp(phase_op));
+  } else {
+    as->mov(x86::esi, x86::dword_ptr(x86::rbp, phase_op->getStackSlot().loc));
+  }
+  as->mov(x86::dword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 8), x86::esi);
+
+  // 4. stack_top++
+  as->inc(x86::dword_ptr(x86::rbp, stack_top_offset));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+
+  // 1. 加载 stack_top 到 W0
+  as->ldr(
+      a64::w0,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+
+  // 2. 加载 node 到 X1 并存储
+  const OperandBase* node_op = instr->getInput(0);
+  as->ldr(
+      a64::x1,
+      arch::ptr_resolve(as, arch::fp, node_op->getStackSlot().loc, arch::reg_scratch_0));
+  // 计算 state_stack[w0].node 的地址并存储
+  // state_stack_base + w0*16 + 0
+  as->mov(arch::reg_scratch_1, stack_base_offset);
+  as->add(arch::reg_scratch_1, arch::fp, arch::reg_scratch_1);
+  as->lsl(a64::x2, a64::x0, 4);  // x2 = w0 * 16
+  as->add(arch::reg_scratch_1, arch::reg_scratch_1, a64::x2);
+  as->str(a64::x1, a64::ptr(arch::reg_scratch_1, 0));
+
+  // 3. 加载 phase 到 W2 并存储
+  const OperandBase* phase_op = instr->getInput(1);
+  as->ldr(
+      a64::w2,
+      arch::ptr_resolve(as, arch::fp, phase_op->getStackSlot().loc, arch::reg_scratch_0));
+  as->str(a64::w2, a64::ptr(arch::reg_scratch_1, 8));
+
+  // 4. stack_top++
+  as->add(a64::w0, a64::w0, 1);
+  as->str(
+      a64::w0,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+void translateStateStackPop(Environ* env, const Instruction* instr) {
+  // StateStackPop: 从 GenDataFooter.state_stack 弹出 (node, phase)
+  // 输出: node (PyObject*)
+  // phase 存储到 GenDataFooter.popped_phase 字段
+  //
+  // 伪代码:
+  //   GenDataFooter.stack_top--
+  //   index = GenDataFooter.stack_top
+  //   node = GenDataFooter.state_stack[index].node
+  //   GenDataFooter.popped_phase = GenDataFooter.state_stack[index].phase
+  //   return node
+
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 1. stack_top--
+  as->dec(x86::dword_ptr(x86::rbp, stack_top_offset));
+
+  // 2. 加载新的 stack_top 到 RAX
+  as->mov(x86::eax, x86::dword_ptr(x86::rbp, stack_top_offset));
+
+  // 3. 加载 node 从 state_stack[eax].node 到 RDI
+  as->mov(x86::rdi, x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0));
+
+  // 4. 加载 phase 从 state_stack[eax].phase 到 ESI
+  as->mov(x86::esi, x86::dword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 8));
+
+  // 5. 存储 phase 到 GenDataFooter.popped_phase
+  as->mov(x86::dword_ptr(x86::rbp, popped_phase_offset), x86::esi);
+
+  // 6. 清空栈条目（避免悬挂指针）
+  as->mov(x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0), 0);
+  as->mov(x86::dword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 8), 0);
+
+  // 7. 存储 node 到输出寄存器
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  as->mov(output, x86::rdi);
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 1. 加载 stack_top 到 W0
+  as->ldr(
+      a64::w0,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+
+  // 2. stack_top--
+  as->sub(a64::w0, a64::w0, 1);
+  as->str(
+      a64::w0,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+
+  // 3. 加载 node 和 phase
+  as->mov(arch::reg_scratch_1, stack_base_offset);
+  as->add(arch::reg_scratch_1, arch::fp, arch::reg_scratch_1);
+  as->lsl(a64::x2, a64::x0, 4);  // x2 = w0 * 16
+  as->add(arch::reg_scratch_1, arch::reg_scratch_1, a64::x2);
+
+  as->ldr(a64::x1, a64::ptr(arch::reg_scratch_1, 0));  // node
+  as->ldr(a64::w2, a64::ptr(arch::reg_scratch_1, 8));  // phase
+
+  // 4. 存储 phase 到 GenDataFooter.popped_phase
+  as->str(
+      a64::w2,
+      arch::ptr_resolve(as, arch::fp, popped_phase_offset, arch::reg_scratch_0));
+
+  // 5. 清空栈条目
+  as->str(a64::xzr, a64::ptr(arch::reg_scratch_1, 0));
+  as->str(a64::wzr, a64::ptr(arch::reg_scratch_1, 8));
+
+  // 6. 存储 node 到输出寄存器
+  a64::Gp output = AutoTranslator::getGpOutput(instr->output());
+  as->mov(output, a64::x1);
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+
 // ***********************************************************************
 // The following templates and macros implement the auto generation table.
 // The generator table defines a hash table, whose key is instruction type,
@@ -2152,6 +2324,14 @@ END_RULES
 
 BEGIN_RULES(Instruction::kYieldFromInline)
   GEN(ANY, CALL_C(translateYieldFromInline))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPush)
+  GEN(ANY, CALL_C(translateStateStackPush))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPop)
+  GEN(ANY, CALL_C(translateStateStackPop))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)
@@ -3481,6 +3661,14 @@ END_RULES
 
 BEGIN_RULES(Instruction::kYieldFromInline)
   GEN(ANY, CALL_C(translateYieldFromInline))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPush)
+  GEN(ANY, CALL_C(translateStateStackPush))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPop)
+  GEN(ANY, CALL_C(translateStateStackPop))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)

@@ -90,7 +90,30 @@ struct GenDataFooter {
   // Using int32_t for efficiency (aligned to 4 bytes, but padded to 8)
   int32_t currentState{-1};
 #endif
+
+  // Phase 3.2: State machine inline stack
+  // Stack for tree traversal state machine to eliminate yield-from overhead
+  struct StackEntry {
+    int64_t node;      // PyObject* (current tree node)
+    int32_t phase;     // TreeIterPhase (0=LEFT, 1=YIELD, 2=RIGHT, 3=BACKTRACK)
+    int32_t reserved;  // Padding for alignment (16 bytes total)
+  };
+
+  int32_t stack_top{0};           // Stack top pointer (0 = empty)
+  int32_t popped_phase{0};        // Phase from last pop operation (for StateStackPop)
+  int32_t reserved_padding{0};    // Padding to align StackEntry array
+
+  // Stack capacity: 16 entries supports depth ≤ 12 (max 2^12 - 1 = 4095 nodes)
+  // Each entry is 16 bytes, total stack size = 256 bytes
+  StackEntry state_stack[16];
 };
+
+static_assert(
+    sizeof(GenDataFooter::StackEntry) == 16,
+    "StackEntry must be 16 bytes for proper alignment");
+static_assert(
+    sizeof(GenDataFooter::state_stack) == 256,
+    "State stack must be exactly 256 bytes (16 entries * 16 bytes)");
 
 #if PY_VERSION_HEX >= 0x030C0000
 GenDataFooter** jitGenDataFooterPtr(PyGenObject* gen, PyCodeObject* gen_code);

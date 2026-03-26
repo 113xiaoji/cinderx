@@ -3789,6 +3789,26 @@ DEFINE_SIMPLE_INSTR(
     Operands<2>,
     DeoptBase);
 
+// StateStackPush: 状态机栈 Push 操作
+// 将 (node, phase) 压入 GenDataFooter.state_stack
+// 操作数: node (PyObject*), phase (int32_t)
+// 注意：这是无输出指令，直接修改 GenDataFooter
+DEFINE_SIMPLE_INSTR(
+    StateStackPush,
+    (TObject, TCInt32),
+    Operands<2>);
+
+// StateStackPop: 状态机栈 Pop 操作
+// 从 GenDataFooter.state_stack 弹出 (node, phase)
+// 输出: node (PyObject*), phase (int32_t) - 通过两个输出寄存器返回
+// 注意：这需要双输出，但 CinderX HIR 不支持，因此使用单一结构体输出
+// 临时方案：返回一个包含两个值的元组对象
+DEFINE_SIMPLE_INSTR(
+    StateStackPop,
+    (),
+    HasOutput,
+    Operands<0>);
+
 // A more compact (in terms of emitted code) equivalent to YieldValue followed
 // by YieldFrom.
 DEFINE_SIMPLE_INSTR(

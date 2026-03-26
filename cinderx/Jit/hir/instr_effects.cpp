@@ -354,6 +354,12 @@ MemoryEffects memoryEffects(const Instr& inst) {
     case Opcode::kYieldFromInline:
       // 内联 yield from 读写生成器状态
       return {true, AFuncArgs, {3, 1}, AAny};
+    case Opcode::kStateStackPush:
+      // 修改 GenDataFooter 栈，读取 node 和 phase 操作数
+      return commonEffects(inst, AEmpty);
+    case Opcode::kStateStackPop:
+      // 修改 GenDataFooter 栈，输出 node
+      return commonEffects(inst, AEmpty);
     case Opcode::kYieldFromHandleStopAsyncIteration: {
       // In 3.10 YieldFrom's output is either the yielded value from the subiter
       // or the final result from a StopIteration, and is owned in either case.
@@ -579,6 +585,8 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kOptimizedYieldFrom:
     case Opcode::kInlineIter:
     case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
+    case Opcode::kStateStackPush:
+    case Opcode::kStateStackPop:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return true;

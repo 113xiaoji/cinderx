@@ -336,6 +336,13 @@ static std::string format_immediates(const Function* func, const Instr& instr) {
           yfi.GetOperand(1)->id(),
           yfi.GetOperand(2)->id());
     }
+    case Opcode::kStateStackPush: {
+      const auto& ssp = static_cast<const StateStackPush&>(instr);
+      return fmt::format("node={}, phase={}", ssp.GetOperand(0)->id(), ssp.GetOperand(1)->id());
+    }
+    case Opcode::kStateStackPop: {
+      return "stack_pop";
+    }
     case Opcode::kBeginInlinedFunction:
       return static_cast<const BeginInlinedFunction&>(instr).fullname();
     case Opcode::kLoadArrayItem: {
