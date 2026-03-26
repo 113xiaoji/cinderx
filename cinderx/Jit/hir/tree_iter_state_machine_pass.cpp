@@ -502,6 +502,13 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateInitBlock() {
   bb->append<LoadState>(ctx_.phase_reg);
   (void)init_phase;  // 占位：后续保存状态
 
+  // 初始化 stack_top = 0
+  Register* zero = CreateIntConst(bb, 0);
+  // TODO(Task 4): 使用 Move 或 Assign 指令将 zero 赋值给 stack_top_reg
+  // 当前 CinderX HIR 可能没有直接的 Move 指令
+  // 占位：stack_top_reg 保持未初始化状态
+  (void)zero;
+
   // 跳转到循环 - 延迟到 Generate() 中在 bb_loop_ 设置后添加
 
   return bb;
@@ -646,33 +653,97 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateBacktrackBlock() {
   //   goto loop;
   // }
 
+  // TODO(Task 4): 实现栈空检查
+  // 当前占位符：检查 stack_top 是否为 0
+  // 由于 stack_top_reg 未初始化，这个检查结果未定义
+
+  Register* is_empty = ctx_.func->env.AllocateRegister();
+  Register* zero = CreateIntConst(bb, 0);
+  bb->append<PrimitiveCompare>(
+      is_empty, PrimitiveCompareOp::kEqual, ctx_.stack_top_reg, zero);
+
+  BasicBlock* stack_not_empty = ctx_.func->cfg.AllocateUnlinkedBlock();
+  bb->append<CondBranch>(is_empty, bb_done_, stack_not_empty);
+
+  // 栈非空：执行 Pop
   auto [node_reg, phase_reg] = GenerateStackPop();
+  (void)node_reg;   // TODO: 更新 current_node_reg
+  (void)phase_reg;  // TODO: 更新 phase_reg
 
-  // 检查是否为空（通过检查 node 是否为 None）
-  Register* is_null = ctx_.func->env.AllocateRegister();
-  Register* none_const = ctx_.func->env.AllocateRegister();
-  bb->append<LoadConst>(none_const, Type::fromObject(Py_None));
-  bb->append<PrimitiveCompare>(is_null, PrimitiveCompareOp::kEqual, node_reg, none_const);
-
-  bb->append<CondBranch>(is_null, bb_done_, bb_loop_);
+  stack_not_empty->append<Branch>(bb_loop_);
 
   return bb;
 }
 
 void hir_ns::StateMachineGenerator::GenerateStackPush(Register* node, TreeIterPhase phase) {
-  // 占位符：后续 Task 4 实现
-  JIT_LOG("StateMachineGenerator: GenerateStackPush - placeholder");
+  // TODO(Task 4): 实现真实的栈 Push 操作
+  //
+  // 当前 CinderX HIR 的限制：
+  // 1. 没有 Alloca 指令来分配栈空间
+  // 2. LoadArrayItem/StoreArrayItem 需要数组指针 (ob_item)
+  // 3. 状态机栈需要持久化在生成器帧中
+  //
+  // 可能的实现方案：
+  // 方案 A: 在 GenDataFooter 中添加固定大小的栈数组
+  //   - 优点: 直接内存访问，性能好
+  //   - 缺点: 需要修改 GenDataFooter 结构
+  //   - 实现: 添加字段如 `int64_t state_stack[kMaxDepth * 2]`
+  //
+  // 方案 B: 使用 Python 列表作为栈（通过运行时调用）
+  //   - 优点: 不需要修改 C++ 结构
+  //   - 缺点: 性能开销较大
+  //   - 实现: 调用 JITRT_StateStackPush/Pop 辅助函数
+  //
+  // 方案 C: 在初始化时分配栈空间并传递指针
+  //   - 优点: 灵活的大小管理
+  //   - 缺点: 需要生命周期管理
+  //
+  // 伪代码（方案 A）：
+  // 1. 计算栈顶地址: GenDataFooter.stack_base + stack_top * kStackEntrySize
+  // 2. 存储 node 到 [stack_base + offset + kNodeOffset]
+  // 3. 存储 phase 到 [stack_base + offset + kPhaseOffset]
+  // 4. stack_top++
+  //
+  // 当前占位符行为：
+  // - 不执行任何操作
+  // - 依赖后续 Task 完善实现
+  // - 编译通过但不产生实际效果
+
+  JIT_LOG("StateMachineGenerator: GenerateStackPush - placeholder (TODO: implement stack storage)");
+  JIT_LOG("  -> node register: {:p}", (void*)node);
+  JIT_LOG("  -> phase: {}", static_cast<int>(phase));
+
+  // 占位符：不执行任何操作
   (void)node;
   (void)phase;
 }
 
 std::pair<hir_ns::Register*, hir_ns::Register*> hir_ns::StateMachineGenerator::GenerateStackPop() {
-  // 占位符：后续 Task 4 实现
+  // TODO(Task 4): 实现真实的栈 Pop 操作
+  //
+  // 与 GenerateStackPush 相同的限制和方案选择
+  //
+  // 伪代码（方案 A - GenDataFooter 栈数组）：
+  // 1. stack_top--
+  // 2. 计算栈地址: GenDataFooter.stack_base + stack_top * kStackEntrySize
+  // 3. 从 [stack_base + offset + kNodeOffset] 加载 node
+  // 4. 从 [stack_base + offset + kPhaseOffset] 加载 phase
+  // 5. 返回 (node, phase)
+  //
+  // 当前占位符行为：
+  // - 返回两个新分配的寄存器（值为 undefined）
+  // - GenerateBacktrackBlock 会检查返回的 node 是否为 None
+  // - 由于寄存器未初始化，行为未定义
+  // - 需要后续 Task 完善实现
+
   Register* node_reg = ctx_.func->env.AllocateRegister();
   Register* phase_reg = ctx_.func->env.AllocateRegister();
 
-  JIT_LOG("StateMachineGenerator: GenerateStackPop - placeholder");
+  JIT_LOG("StateMachineGenerator: GenerateStackPop - placeholder (TODO: implement stack storage)");
+  JIT_LOG("  -> returning uninitialized registers");
 
+  // 占位符：返回未初始化的寄存器
+  // 注意：这会导致 GenerateBacktrackBlock 的 None 检查结果未定义
   return {node_reg, phase_reg};
 }
 
