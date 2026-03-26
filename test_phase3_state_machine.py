@@ -4,7 +4,6 @@ Phase 3.2 状态机内联 TDD 测试
 """
 
 import os
-import sys
 import time
 import unittest
 
@@ -86,5 +85,9 @@ class TestStateMachineInline(unittest.TestCase):
         elapsed = (time.perf_counter() - start) * 1000 / iterations
 
         print(f"\n  depth=5: {elapsed:.4f} ms")
-        # 目标: < 0.002 ms (3x 改进)
+        # 目标: < 0.002 ms (2-3x 改进)
         self.assertLess(elapsed, 0.002)
+
+
+if __name__ == '__main__':
+    unittest.main()
