@@ -388,7 +388,54 @@ void TreeIterStateMachinePass::generateStateMachine(
   StateMachineGenerator generator(ctx);
   generator.Generate();
 
-  JIT_LOG("TreeIterStateMachinePass: State machine generated successfully");
+  // === 连接状态机到控制流 ===
+  // 1. 替换原始 YieldFrom 指令
+  for (const YieldFrom* yf : yield_froms) {
+    BasicBlock* block = yf->block();
+    Instr* yf_mutable = const_cast<YieldFrom*>(yf);
+    yf_mutable->unlink();
+    delete yf_mutable;
+  }
+
+  JIT_LOG("TreeIterStateMachinePass: Replaced {} YieldFrom instructions",
+          yield_froms.size());
+
+  // 2. 找到生成器入口块（包含 InitialYield）
+  BasicBlock* generator_entry = func.cfg.entry_block;
+  if (generator_entry == nullptr) {
+    JIT_LOG("TreeIterStateMachinePass: No entry block found");
+    return;
+  }
+
+  // 3. 查找 InitialYield 指令
+  Instr* initial_yield = nullptr;
+  for (auto& instr : *generator_entry) {
+    if (instr.IsInitialYield()) {
+      initial_yield = &instr;
+      break;
+    }
+  }
+
+  if (initial_yield == nullptr) {
+    JIT_LOG("TreeIterStateMachinePass: No InitialYield found");
+    return;
+  }
+
+  // 4. 在 InitialYield 之后分割基本块
+  BasicBlock* after_init = func.cfg.splitAfter(*initial_yield);
+
+  // generator_entry 现在只包含 InitialYield
+  generator_entry->append<Branch>(after_init);
+
+  // 5. 将 after_init 连接到状态机入口
+  Instr* term = after_init->GetTerminator();
+  if (term != nullptr) {
+    term->unlink();
+    delete term;
+  }
+  after_init->append<Branch>(ctx.bb_init);
+
+  JIT_LOG("TreeIterStateMachinePass: State machine connected to control flow");
 }
 
 // === StateMachineGenerator 实现 ===
@@ -419,25 +466,27 @@ void hir_ns::StateMachineGenerator::Generate() {
   ctx_.stack_top_reg = ctx_.func->env.AllocateRegister();
 
   // 2. 生成初始化块
-  bb_init_ = GenerateInitBlock();
+  ctx_.bb_init = bb_init_ = GenerateInitBlock();
 
   // 3. 生成主循环块
-  bb_loop_ = GenerateLoopBlock();
+  ctx_.bb_loop = bb_loop_ = GenerateLoopBlock();
 
   // 4. 生成各阶段基本块
-  bb_left_ = GenerateLeftBlock();
-  bb_yield_ = GenerateYieldBlock();
-  bb_right_ = GenerateRightBlock();
-  bb_backtrack_ = GenerateBacktrackBlock();
+  ctx_.bb_left = bb_left_ = GenerateLeftBlock();
+  ctx_.bb_yield = bb_yield_ = GenerateYieldBlock();
+  ctx_.bb_right = bb_right_ = GenerateRightBlock();
+  ctx_.bb_backtrack = bb_backtrack_ = GenerateBacktrackBlock();
 
   // 5. 生成结束块
-  bb_done_ = ctx_.func->cfg.AllocateUnlinkedBlock();
+  ctx_.bb_done = bb_done_ = ctx_.func->cfg.AllocateUnlinkedBlock();
   Register* none_reg = ctx_.func->env.AllocateRegister();
   bb_done_->append<LoadConst>(none_reg, Type::fromObject(Py_None));
   bb_done_->append<Return>(none_reg, Type::fromObject(Py_None));
 
   // 6. 连接初始化块到循环块
   bb_init_->append<Branch>(bb_loop_);
+
+  JIT_LOG("StateMachineGenerator: State machine generated successfully");
 }
 
 BasicBlock* hir_ns::StateMachineGenerator::GenerateInitBlock() {
