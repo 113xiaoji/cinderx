@@ -118,3 +118,7 @@ class StateMachineGenerator {
 };
 
 }  // namespace jit::hir
+
+// 探针计数器：验证状态机 pass 是否被触发
+// 当 TreeIterStateMachinePass 检测到树遍历模式并生成状态机时递增
+extern "C" int g_state_machine_pass_triggered;

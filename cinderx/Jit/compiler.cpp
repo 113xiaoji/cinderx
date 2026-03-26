@@ -132,12 +132,6 @@ void Compiler::runPasses(
   runPass(jit::hir::InlineGenexprMakeFunctionHoist{}, irfunc, callback);
 
   // Run tree iter state machine pass after cleanup passes
-  fprintf(stderr, "[DEBUG] About to check kTreeIterStateMachine bit in config\n");
-  if (config & PassConfig::kTreeIterStateMachine) {
-    fprintf(stderr, "[DEBUG] kTreeIterStateMachine bit is SET, will run pass\n");
-  } else {
-    fprintf(stderr, "[DEBUG] kTreeIterStateMachine bit is NOT set, skipping pass\n");
-  }
   runPassIf(hir::TreeIterStateMachinePass{}, PassConfig::kTreeIterStateMachine);
 
   runPass(jit::hir::RefcountInsertion{}, irfunc, callback);
@@ -174,9 +168,6 @@ std::optional<CompiledFunctionData> Compiler::Compile(
 }
 
 PassConfig createConfig() {
-  fprintf(stderr, "=== createConfig() CALLED ===\n");
-  fflush(stderr);
-
   auto result = static_cast<uint64_t>(PassConfig::kMinimal);
 
   auto set = [&](bool global, PassConfig pass) {
@@ -186,12 +177,6 @@ PassConfig createConfig() {
   };
 
   auto const& hir_opts = getConfig().hir_opts;
-
-  // DEBUG: 输出 tree_iter_state_machine 配置
-  fprintf(stderr, "createConfig: hir_opts.tree_iter_state_machine = %d\n", hir_opts.tree_iter_state_machine);
-  JIT_LOG(
-      "createConfig: hir_opts.tree_iter_state_machine = {}",
-      hir_opts.tree_iter_state_machine);
 
   set(hir_opts.begin_inlined_function_elim,
       PassConfig::kBeginInlinedFunctionElim);
@@ -207,26 +192,12 @@ PassConfig createConfig() {
   set(hir_opts.simplify, PassConfig::kSimplify);
   set(hir_opts.tree_iter_state_machine, PassConfig::kTreeIterStateMachine);
 
-  JIT_LOG("createConfig: result = {:#x}, kTreeIterStateMachine bit = {}",
-          result,
-          (result & static_cast<uint64_t>(PassConfig::kTreeIterStateMachine)) != 0);
-
   return static_cast<PassConfig>(result);
 }
 
 std::optional<CompiledFunctionData> Compiler::Compile(
     const jit::hir::Preloader& preloader) {
-  fprintf(stderr, "=== Compiler::Compile() CALLED for %s ===\n", preloader.fullname().c_str());
-  fflush(stderr);
-
   const std::string& fullname = preloader.fullname();
-
-  // 写入调试文件
-  FILE* debug_file = fopen("/tmp/jit_compile_debug.log", "a");
-  if (debug_file) {
-    fprintf(debug_file, "Compiler::Compile() called for %s\n", fullname.c_str());
-    fclose(debug_file);
-  }
 
   if (!PyDict_CheckExact(preloader.globals())) {
     JIT_DLOG(

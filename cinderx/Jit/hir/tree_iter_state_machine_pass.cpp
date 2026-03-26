@@ -14,6 +14,9 @@
 
 namespace jit::hir {
 
+// 探针计数器定义
+extern "C" int g_state_machine_pass_triggered{0};
+
 void TreeIterStateMachinePass::Run(Function& func) {
   JIT_LOG("TreeIterStateMachinePass: Running on function {}", func.fullname);
   JIT_DLOG("TreeIterStateMachinePass: Running on function");
@@ -47,6 +50,7 @@ void TreeIterStateMachinePass::Run(Function& func) {
 
   // 生成状态机并替换 YieldFrom
   JIT_LOG("TreeIterStateMachinePass: Pattern detected! Generating state machine");
+  g_state_machine_pass_triggered++;
   generateStateMachine(func, yield_froms);
 }
 
