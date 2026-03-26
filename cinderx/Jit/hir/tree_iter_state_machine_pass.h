@@ -61,4 +61,60 @@ struct StateMachineConfig {
   static constexpr int kUninitializedState = -1;  // 未初始化状态值
 };
 
+// 状态机生成器上下文
+struct StateMachineContext {
+  Function* func;
+  Register* self_reg{nullptr};
+  Register* current_node_reg{nullptr};
+  Register* phase_reg{nullptr};
+  Register* stack_top_reg{nullptr};
+
+  int max_depth{0};
+  int stack_size{0};
+
+  BasicBlock* bb_init{nullptr};
+  BasicBlock* bb_loop{nullptr};
+  BasicBlock* bb_left{nullptr};
+  BasicBlock* bb_yield{nullptr};
+  BasicBlock* bb_right{nullptr};
+  BasicBlock* bb_backtrack{nullptr};
+  BasicBlock* bb_done{nullptr};
+};
+
+// 状态机生成器类
+class StateMachineGenerator {
+ public:
+  explicit StateMachineGenerator(StateMachineContext& ctx) : ctx_(ctx) {}
+
+  // 生成完整状态机
+  void Generate();
+
+  // 生成各个阶段的基本块
+  BasicBlock* GenerateInitBlock();
+  BasicBlock* GenerateLoopBlock();
+  BasicBlock* GenerateLeftBlock();
+  BasicBlock* GenerateYieldBlock();
+  BasicBlock* GenerateRightBlock();
+  BasicBlock* GenerateBacktrackBlock();
+
+ private:
+  StateMachineContext& ctx_;
+
+  // 辅助方法
+  void GenerateStackPush(Register* node, TreeIterPhase phase);
+  std::pair<Register*, Register*> GenerateStackPop();
+
+  Register* CreatePhaseConst(BasicBlock* bb, TreeIterPhase phase);
+  Register* CreateIntConst(BasicBlock* bb, int value);
+
+  // 成员变量（用于跟踪生成的基本块）
+  BasicBlock* bb_init_{nullptr};
+  BasicBlock* bb_loop_{nullptr};
+  BasicBlock* bb_left_{nullptr};
+  BasicBlock* bb_yield_{nullptr};
+  BasicBlock* bb_right_{nullptr};
+  BasicBlock* bb_backtrack_{nullptr};
+  BasicBlock* bb_done_{nullptr};
+};
+
 }  // namespace jit::hir
