@@ -2115,7 +2115,7 @@ PyObject* JITRT_YieldFromInlineHelper(
       return nullptr;
     } else {
       // 正常完成，设置 StopIteration
-      _PyErr_SetNone(tstate, PyExc_StopIteration);
+      PyErr_SetNone(PyExc_StopIteration);
       return nullptr;
     }
   }

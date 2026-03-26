@@ -14,6 +14,9 @@
 
 namespace jit::hir {
 
+// 探针计数器定义
+extern "C" int g_state_machine_pass_triggered{0};
+
 void TreeIterStateMachinePass::Run(Function& func) {
   JIT_LOG("TreeIterStateMachinePass: Running on function {}", func.fullname);
   JIT_DLOG("TreeIterStateMachinePass: Running on function");
@@ -47,7 +50,15 @@ void TreeIterStateMachinePass::Run(Function& func) {
 
   // 生成状态机并替换 YieldFrom
   JIT_LOG("TreeIterStateMachinePass: Pattern detected! Generating state machine");
-  generateStateMachine(func, yield_froms);
+  g_state_machine_pass_triggered++;
+
+  // TODO(Task 5): 实际生成状态机并连接控制流
+  // 当前只递增探针计数器，不修改 CFG
+  // 因为 YieldFrom 替换后旧块控制流断裂，需要 Task 5 的完整实现才能正确工作
+  //
+  // 当 Task 5 完成后，取消下面注释：
+  // generateStateMachine(func, yield_froms);
+  (void)yield_froms; // suppress unused warning
 }
 
 bool TreeIterStateMachinePass::isTreeIterGenerator(const Function& func) const {
@@ -478,7 +489,7 @@ void hir_ns::StateMachineGenerator::Generate() {
   ctx_.bb_backtrack = bb_backtrack_ = GenerateBacktrackBlock();
 
   // 5. 生成结束块
-  ctx_.bb_done = bb_done_ = ctx_.func->cfg.AllocateUnlinkedBlock();
+  ctx_.bb_done = bb_done_ = ctx_.func->cfg.AllocateBlock();
   Register* none_reg = ctx_.func->env.AllocateRegister();
   bb_done_->append<LoadConst>(none_reg, Type::fromObject(Py_None));
   bb_done_->append<Return>(none_reg, Type::fromObject(Py_None));
@@ -490,7 +501,7 @@ void hir_ns::StateMachineGenerator::Generate() {
 }
 
 BasicBlock* hir_ns::StateMachineGenerator::GenerateInitBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* bb = ctx_.func->cfg.AllocateBlock();
   bb_init_ = bb;
 
   // 初始化 current_node = self
@@ -515,7 +526,7 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateInitBlock() {
 }
 
 BasicBlock* hir_ns::StateMachineGenerator::GenerateLoopBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* bb = ctx_.func->cfg.AllocateBlock();
   bb_loop_ = bb;
 
   // Switch(phase) -> bb_left, bb_yield, bb_right, bb_backtrack
@@ -537,15 +548,15 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateLoopBlock() {
       cmp_right, PrimitiveCompareOp::kEqual, ctx_.phase_reg, right_const);
 
   // CondBranch 链
-  BasicBlock* after_left = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* after_left = ctx_.func->cfg.AllocateBlock();
   bb->append<CondBranch>(cmp_left, bb_left_, after_left);
 
   // Yield 检查
-  BasicBlock* after_yield = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* after_yield = ctx_.func->cfg.AllocateBlock();
   after_left->append<CondBranch>(cmp_yield, bb_yield_, after_yield);
 
   // Right 检查
-  BasicBlock* after_right = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* after_right = ctx_.func->cfg.AllocateBlock();
   after_yield->append<CondBranch>(cmp_right, bb_right_, after_right);
 
   // 默认到 backtrack
@@ -555,7 +566,7 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateLoopBlock() {
 }
 
 BasicBlock* hir_ns::StateMachineGenerator::GenerateLeftBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* bb = ctx_.func->cfg.AllocateBlock();
   bb_left_ = bb;
 
   // if (current_node->left) {
@@ -579,8 +590,8 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateLeftBlock() {
   bb->append<PrimitiveCompare>(is_null, PrimitiveCompareOp::kEqual, left_reg, none_const);
 
   // 条件分支
-  BasicBlock* has_left = ctx_.func->cfg.AllocateUnlinkedBlock();
-  BasicBlock* no_left = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* has_left = ctx_.func->cfg.AllocateBlock();
+  BasicBlock* no_left = ctx_.func->cfg.AllocateBlock();
   bb->append<CondBranch>(is_null, no_left, has_left);
 
   // has_left: 有左子树，跳回循环
@@ -595,7 +606,7 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateLeftBlock() {
 }
 
 BasicBlock* hir_ns::StateMachineGenerator::GenerateYieldBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* bb = ctx_.func->cfg.AllocateBlock();
   bb_yield_ = bb;
 
   // value = current_node->value
@@ -616,7 +627,7 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateYieldBlock() {
 }
 
 BasicBlock* hir_ns::StateMachineGenerator::GenerateRightBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* bb = ctx_.func->cfg.AllocateBlock();
   bb_right_ = bb;
 
   // 类似 Left 块，但处理 right 字段
@@ -629,8 +640,8 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateRightBlock() {
   bb->append<LoadConst>(none_const, Type::fromObject(Py_None));
   bb->append<PrimitiveCompare>(is_null, PrimitiveCompareOp::kEqual, right_reg, none_const);
 
-  BasicBlock* has_right = ctx_.func->cfg.AllocateUnlinkedBlock();
-  BasicBlock* no_right = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* has_right = ctx_.func->cfg.AllocateBlock();
+  BasicBlock* no_right = ctx_.func->cfg.AllocateBlock();
   bb->append<CondBranch>(is_null, no_right, has_right);
 
   has_right->append<Branch>(bb_loop_);
@@ -643,7 +654,7 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateRightBlock() {
 }
 
 BasicBlock* hir_ns::StateMachineGenerator::GenerateBacktrackBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* bb = ctx_.func->cfg.AllocateBlock();
   bb_backtrack_ = bb;
 
   // if (StackEmpty) {
@@ -662,7 +673,7 @@ BasicBlock* hir_ns::StateMachineGenerator::GenerateBacktrackBlock() {
   bb->append<PrimitiveCompare>(
       is_empty, PrimitiveCompareOp::kEqual, ctx_.stack_top_reg, zero);
 
-  BasicBlock* stack_not_empty = ctx_.func->cfg.AllocateUnlinkedBlock();
+  BasicBlock* stack_not_empty = ctx_.func->cfg.AllocateBlock();
   bb->append<CondBranch>(is_empty, bb_done_, stack_not_empty);
 
   // 栈非空：执行 Pop
