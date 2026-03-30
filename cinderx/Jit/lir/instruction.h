@@ -219,6 +219,24 @@ enum OperandSizeType {
     1,                                                                        \
     {},                                                                       \
     1)                                                                        \
+  X(LoadPoppedPhase,                                                          \
+    false,                                                                    \
+    FlagEffects::kNone,                                                       \
+    kDefault,                                                                 \
+    1,                                                                        \
+    {},                                                                       \
+    0)                                                                        \
+  X(LoadStackTop,                                                             \
+    false,                                                                    \
+    FlagEffects::kNone,                                                       \
+    kDefault,                                                                 \
+    1,                                                                        \
+    {},                                                                       \
+    0)                                                                        \
+  X(SaveCurrentNode, false, FlagEffects::kNone, kDefault, 0, {}, 1)           \
+  X(LoadCurrentNode, false, FlagEffects::kNone, kDefault, 1, {}, 0)           \
+  X(SavePhase, false, FlagEffects::kNone, kDefault, 0, {}, 1)                 \
+  X(LoadPhase, false, FlagEffects::kNone, kDefault, 1, {}, 0)                 \
   X(YieldValue, false, FlagEffects::kInvalidate, kDefault, 0, {}, 1)
 
 // Instruction class defines instructions in LIR.

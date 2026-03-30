@@ -786,6 +786,11 @@ JITRT_AllocateAndLinkGenAndInterpreterFrame(
             original_frame_pointer) +
         1);
 
+  // Phase 3.2: 初始化状态机栈字段（free-list 回收的内存不保证清零）
+  footer->stack_top = 0;
+  footer->popped_phase = 0;
+  memset(footer->state_stack, 0, sizeof(footer->state_stack));
+
   PyObject_GC_Track(gen);
 
   return {tstate, footer};
@@ -2716,4 +2721,116 @@ PyObject* JITRT_InvokeIterNext(PyObject* iterator) {
   }
   Py_INCREF(&JITRT_IterDoneSentinel);
   return &JITRT_IterDoneSentinel;
+}
+
+// Phase 3.2: State machine stack operations
+// These functions get GenDataFooter from the current generator's thread state.
+
+static jit::GenDataFooter* getCurrentGenDataFooter() {
+  PyThreadState* tstate = PyThreadState_Get();
+  _PyInterpreterFrame* frame = currentFrame(tstate);
+  BorrowedRef<PyGenObject> base_gen = _PyGen_GetGeneratorFromFrame(frame);
+  jit::JitGenObject* jit_gen = jit::JitGenObject::cast(base_gen.get());
+  JIT_DCHECK(jit_gen != nullptr, "Expected JIT generator");
+  return jit_gen->genDataFooter();
+}
+
+void JITRT_StateStackPush(PyObject* node, int32_t phase) {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  int32_t top = footer->stack_top;
+  JIT_DCHECK(top >= 0 && top < 16, "stack_top out of range: {}", top);
+  footer->state_stack[top].node = reinterpret_cast<int64_t>(node);
+  footer->state_stack[top].phase = phase;
+  // Incref: 栈持有引用，RefcountInsertion 会对传入的寄存器 XDecref
+  if (node != nullptr) {
+    Py_INCREF(node);
+  }
+  footer->stack_top = top + 1;
+}
+
+PyObject* JITRT_StateStackPop() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  footer->stack_top--;
+  int32_t top = footer->stack_top;
+  JIT_DCHECK(top >= 0, "stack_top underflow: {}", top);
+  PyObject* node = reinterpret_cast<PyObject*>(footer->state_stack[top].node);
+  footer->popped_phase = footer->state_stack[top].phase;
+  footer->state_stack[top].node = 0;
+  footer->state_stack[top].phase = 0;
+  // 转移栈引用给调用者：不 decref 栈引用，让调用者（寄存器）持有它
+  // RefcountInsertion 会对返回的寄存器 XDecref，这会释放这个引用
+  return node;
+}
+
+int32_t JITRT_LoadPoppedPhase() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  return footer->popped_phase;
+}
+
+int32_t JITRT_LoadStackTop() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  return footer->stack_top;
+}
+
+void JITRT_SaveCurrentNode(PyObject* node) {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return;
+  }
+  // Decref 旧值（GenDataFooter 持有的引用）
+  PyObject* old_node = reinterpret_cast<PyObject*>(footer->current_node);
+  if (old_node != nullptr) {
+    Py_DECREF(old_node);
+  }
+  // Incref 新值（GenDataFooter 持有引用）
+  if (node != nullptr) {
+    Py_INCREF(node);
+  }
+  footer->current_node = reinterpret_cast<int64_t>(node);
+}
+
+PyObject* JITRT_DebugLoadField(PyObject* node, int32_t offset, const char* name) {
+  fprintf(stderr, "[SM-DBG] DebugLoadField: node=%p offset=%d name=%s\n",
+          (void*)node, offset, name);
+  if (node == nullptr) {
+    fprintf(stderr, "[SM-DBG]   node is NULL!\n");
+    return nullptr;
+  }
+  PyObject* field = *reinterpret_cast<PyObject**>(
+      reinterpret_cast<char*>(node) + offset);
+  fprintf(stderr, "[SM-DBG]   field value=%p\n", (void*)field);
+  return field;
+}
+
+PyObject* JITRT_LoadCurrentNode() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return nullptr;
+  }
+  PyObject* result = reinterpret_cast<PyObject*>(footer->current_node);
+  // Incref: RefcountInsertion 会对返回的寄存器 XDecref
+  // GenDataFooter 继续持有自己的引用（SaveCurrentNode 时 incref 的）
+  if (result != nullptr) {
+    Py_INCREF(result);
+  }
+  return result;
+}
+
+void JITRT_SavePhase(int32_t phase) {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return;
+  }
+  footer->current_phase = phase;
+}
+
+int32_t JITRT_LoadPhase() {
+  fprintf(stderr, "[SM] LoadPhase\n");
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return -1;
+  }
+  int32_t result = footer->current_phase;
+  fprintf(stderr, "[SM] LoadPhase result=%d\n", result);
+  return result;
 }

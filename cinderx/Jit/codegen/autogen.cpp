@@ -1044,14 +1044,20 @@ void translateYieldValue(Environ* env, const Instruction* instr) {
   a64::Builder* as = env->as;
 
   // Make sure tstate is in x2 for use in epilogue.
-  PhyLocation tstate = instr->getInput(0)->getStackSlot();
-  as->ldr(
-      a64::x2,
-      arch::ptr_resolve(as, arch::fp, tstate.loc, arch::reg_scratch_0));
+  if (instr->getInput(0)->isReg()) {
+    as->mov(a64::x2, AutoTranslator::getGp(instr->getInput(0)));
+  } else {
+    PhyLocation tstate = instr->getInput(0)->getStackSlot();
+    as->ldr(
+        a64::x2,
+        arch::ptr_resolve(as, arch::fp, tstate.loc, arch::reg_scratch_0));
+  }
 
   // Value to send goes to x0 so it can be yielded (returned) by epilogue.
   if (instr->getInput(1)->isImm()) {
     as->mov(a64::x0, instr->getInput(1)->getConstant());
+  } else if (instr->getInput(1)->isReg()) {
+    as->mov(a64::x0, AutoTranslator::getGp(instr->getInput(1)));
   } else {
     PhyLocation value_out = instr->getInput(1)->getStackSlot();
     as->ldr(
@@ -1473,36 +1479,47 @@ void translateStateStackPush(Environ* env, const Instruction* instr) {
   //   GenDataFooter.state_stack[index].node = node
   //   GenDataFooter.state_stack[index].phase = phase
   //   GenDataFooter.stack_top++
+  //
+  // 关键：必须先读取输入操作数到 scratch 寄存器，
+  // 再使用任何固定寄存器，避免寄存器冲突。
 
 #if defined(CINDER_X86_64)
   arch::Builder* as = env->as;
 
-  // 计算偏移量
   auto stack_top_offset = offsetof(GenDataFooter, stack_top);
   auto stack_base_offset = offsetof(GenDataFooter, state_stack);
 
-  // 1. 加载 stack_top 到 RAX
-  as->mov(x86::eax, x86::dword_ptr(x86::rbp, stack_top_offset));
+  // 关键：先读取输入操作数到临时寄存器，再使用 RAX 加载 stack_top
+  // 避免寄存器分配器将 node/phase 分配到 RAX 后被 stack_top 读取覆盖
 
-  // 2. 加载 node 到 RDI 并存储到 state_stack[eax].node
+  // Step 1: 读取 node 到 RDI
   const OperandBase* node_op = instr->getInput(0);
   if (node_op->isReg()) {
     as->mov(x86::rdi, AutoTranslator::getGp(node_op));
+  } else if (node_op->isImm()) {
+    as->mov(x86::rdi, static_cast<int64_t>(node_op->getConstant()));
   } else {
     as->mov(x86::rdi, x86::qword_ptr(x86::rbp, node_op->getStackSlot().loc));
   }
-  as->mov(x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0), x86::rdi);
 
-  // 3. 加载 phase 到 ESI 并存储到 state_stack[eax].phase
+  // Step 2: 读取 phase 到 ESI
   const OperandBase* phase_op = instr->getInput(1);
   if (phase_op->isReg()) {
     as->mov(x86::esi, AutoTranslator::getGp(phase_op));
+  } else if (phase_op->isImm()) {
+    as->mov(x86::esi, static_cast<int32_t>(phase_op->getConstant()));
   } else {
     as->mov(x86::esi, x86::dword_ptr(x86::rbp, phase_op->getStackSlot().loc));
   }
+
+  // Step 3: 加载 stack_top 到 RAX（现在 RDI/ESI 已经被保存）
+  as->mov(x86::eax, x86::dword_ptr(x86::rbp, stack_top_offset));
+
+  // Step 4: 存储 node 和 phase
+  as->mov(x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0), x86::rdi);
   as->mov(x86::dword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 8), x86::esi);
 
-  // 4. stack_top++
+  // Step 5: stack_top++
   as->inc(x86::dword_ptr(x86::rbp, stack_top_offset));
 
 #elif defined(CINDER_AARCH64)
@@ -1511,36 +1528,73 @@ void translateStateStackPush(Environ* env, const Instruction* instr) {
   auto stack_top_offset = offsetof(GenDataFooter, stack_top);
   auto stack_base_offset = offsetof(GenDataFooter, state_stack);
 
-  // 1. 加载 stack_top 到 W0
-  as->ldr(
-      a64::w0,
-      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+  // 寄存器使用策略（避免寄存器冲突）:
+  // x12 (reg_scratch_0): 目标地址计算（会被 ptr_resolve 修改）
+  // x13 (reg_scratch_1): 临时保存 stack_top 或 phase/node 值
+  // x16 (reg_scratch_br): ptr_resolve 的 scratch（避免与 x12 冲突）
+  //
+  // 关键: ptr_resolve(fp, offset, scratch) 会修改 scratch 寄存器!
+  // 不能用 reg_scratch_0 (x12) 作为 ptr_resolve scratch，因为
+  // x12 同时持有 stack_top 值。
 
-  // 2. 加载 node 到 X1 并存储
   const OperandBase* node_op = instr->getInput(0);
-  as->ldr(
-      a64::x1,
-      arch::ptr_resolve(as, arch::fp, node_op->getStackSlot().loc, arch::reg_scratch_0));
-  // 计算 state_stack[w0].node 的地址并存储
-  // state_stack_base + w0*16 + 0
-  as->mov(arch::reg_scratch_1, stack_base_offset);
-  as->add(arch::reg_scratch_1, arch::fp, arch::reg_scratch_1);
-  as->lsl(a64::x2, a64::x0, 4);  // x2 = w0 * 16
-  as->add(arch::reg_scratch_1, arch::reg_scratch_1, a64::x2);
-  as->str(a64::x1, a64::ptr(arch::reg_scratch_1, 0));
-
-  // 3. 加载 phase 到 W2 并存储
   const OperandBase* phase_op = instr->getInput(1);
-  as->ldr(
-      a64::w2,
-      arch::ptr_resolve(as, arch::fp, phase_op->getStackSlot().loc, arch::reg_scratch_0));
-  as->str(a64::w2, a64::ptr(arch::reg_scratch_1, 8));
 
-  // 4. stack_top++
-  as->add(a64::w0, a64::w0, 1);
+  // Step 1: 加载 stack_top 到 w12（用 x16 作为 ptr_resolve scratch）
+  as->ldr(
+      a64::w12,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
+
+  // Step 2: 计算 &state_stack[stack_top] 到 reg_scratch_0
+  // 此时 w12 = stack_top，x12 没有被 ptr_resolve 覆盖
+  as->mov(arch::reg_scratch_0, stack_base_offset);
+  as->add(arch::reg_scratch_0, arch::fp, arch::reg_scratch_0);
+  as->lsl(a64::x13, a64::x12, 4); // x13 = stack_top * 16
+  as->add(arch::reg_scratch_0, arch::reg_scratch_0, a64::x13);
+
+  // Step 3: 存储 node
+  if (node_op->isReg()) {
+    as->str(AutoTranslator::getGp(node_op), a64::ptr(arch::reg_scratch_0, 0));
+  } else if (node_op->isImm()) {
+    as->mov(a64::x13, static_cast<int64_t>(node_op->getConstant()));
+    as->str(a64::x13, a64::ptr(arch::reg_scratch_0, 0));
+  } else {
+    // Stack slot: ptr_resolve 会覆盖 reg_scratch_0，先保存到 x13
+    as->mov(a64::x13, arch::reg_scratch_0);
+    as->ldr(
+        a64::x16,
+        arch::ptr_resolve(
+            as, arch::fp, node_op->getStackSlot().loc, arch::reg_scratch_0));
+    as->str(a64::x16, a64::ptr(a64::x13, 0));
+    as->mov(arch::reg_scratch_0, a64::x13);
+  }
+
+  // Step 4: 存储 phase
+  if (phase_op->isReg()) {
+    as->str(AutoTranslator::getGp(phase_op).w(), a64::ptr(arch::reg_scratch_0, 8));
+  } else if (phase_op->isImm()) {
+    int32_t phase_val = static_cast<int32_t>(phase_op->getConstant());
+    if (phase_val == 0) {
+      as->str(a64::wzr, a64::ptr(arch::reg_scratch_0, 8));
+    } else {
+      as->mov(a64::w13, phase_val);
+      as->str(a64::w13, a64::ptr(arch::reg_scratch_0, 8));
+    }
+  } else {
+    as->mov(a64::x13, arch::reg_scratch_0);
+    as->ldr(
+        a64::w16,
+        arch::ptr_resolve(
+            as, arch::fp, phase_op->getStackSlot().loc, arch::reg_scratch_0));
+    as->str(a64::w16, a64::ptr(a64::x13, 8));
+    as->mov(arch::reg_scratch_0, a64::x13);
+  }
+
+  // Step 5: stack_top++（用 x16 作为 ptr_resolve scratch）
+  as->add(a64::w12, a64::w12, 1);
   as->str(
-      a64::w0,
-      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+      a64::w12,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
 #else
   CINDER_UNSUPPORTED
 #endif
@@ -1595,38 +1649,99 @@ void translateStateStackPop(Environ* env, const Instruction* instr) {
   auto stack_base_offset = offsetof(GenDataFooter, state_stack);
   auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
 
-  // 1. 加载 stack_top 到 W0
+  // 寄存器使用策略（避免 ptr_resolve 覆盖正在使用的值）:
+  // x12 (reg_scratch_0): 地址计算（会被 ptr_resolve 修改）
+  // x13 (reg_scratch_1): 保存 stack_top-1 / phase 值
+  // x16 (reg_scratch_br): ptr_resolve scratch / 临时值
+  //
+  // 关键: ptr_resolve(fp, offset, scratch) 会修改 scratch 寄存器!
+  // x12 和 w12 是同一个寄存器，所以 ptr_resolve 用 x12 作为 scratch
+  // 会覆盖 w12 中的值。必须用 x16 作为 ptr_resolve scratch。
+
+  // 1. 加载 stack_top 到 w12（用 x16 作为 scratch 避免冲突）
   as->ldr(
-      a64::w0,
-      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+      a64::w12,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
 
-  // 2. stack_top--
-  as->sub(a64::w0, a64::w0, 1);
+  // 2. stack_top--, 保存新值到 x13（str 的 ptr_resolve 会覆盖 x12）
+  as->sub(a64::w12, a64::w12, 1);
+  as->mov(a64::x13, a64::x12); // x13 = stack_top - 1（保存！）
+
+  // 3. 存储新 stack_top（用 w13 而非 w12，因为 ptr_resolve 会覆盖 x12）
   as->str(
-      a64::w0,
-      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+      a64::w13,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
 
-  // 3. 加载 node 和 phase
-  as->mov(arch::reg_scratch_1, stack_base_offset);
-  as->add(arch::reg_scratch_1, arch::fp, arch::reg_scratch_1);
-  as->lsl(a64::x2, a64::x0, 4);  // x2 = w0 * 16
-  as->add(arch::reg_scratch_1, arch::reg_scratch_1, a64::x2);
+  // 4. 计算 &state_stack[new_top]（使用保存在 x13 中的 stack_top-1）
+  as->mov(arch::reg_scratch_0, stack_base_offset);
+  as->add(arch::reg_scratch_0, arch::fp, arch::reg_scratch_0);
+  as->lsl(a64::x16, a64::x13, 4); // x16 = (stack_top-1) * 16
+  as->add(arch::reg_scratch_0, arch::reg_scratch_0, a64::x16);
 
-  as->ldr(a64::x1, a64::ptr(arch::reg_scratch_1, 0));  // node
-  as->ldr(a64::w2, a64::ptr(arch::reg_scratch_1, 8));  // phase
+  as->ldr(a64::x16, a64::ptr(arch::reg_scratch_0, 0)); // node → x16
+  as->ldr(a64::w13, a64::ptr(arch::reg_scratch_0, 8)); // phase → w13
 
-  // 4. 存储 phase 到 GenDataFooter.popped_phase
+  // 5. 存储 phase 到 popped_phase（reg_scratch_0 不再需要，可用于 ptr_resolve）
   as->str(
-      a64::w2,
+      a64::w13,
       arch::ptr_resolve(as, arch::fp, popped_phase_offset, arch::reg_scratch_0));
-
-  // 5. 清空栈条目
-  as->str(a64::xzr, a64::ptr(arch::reg_scratch_1, 0));
-  as->str(a64::wzr, a64::ptr(arch::reg_scratch_1, 8));
 
   // 6. 存储 node 到输出寄存器
   a64::Gp output = AutoTranslator::getGpOutput(instr->output());
-  as->mov(output, a64::x1);
+  as->mov(output, a64::x16);
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+// Phase 3.2 Task 5: LoadPoppedPhase codegen
+// 从 GenDataFooter.popped_phase 加载 int32_t phase 值
+void translateLoadPoppedPhase(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 加载 popped_phase 到输出寄存器
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  as->mov(output, x86::dword_ptr(x86::rbp, popped_phase_offset));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 直接加载到输出寄存器，不使用 x0 作为中间
+  auto output = AutoTranslator::getGpOutput(instr->output());
+  as->ldr(
+      output.w(),
+      arch::ptr_resolve(as, arch::fp, popped_phase_offset, arch::reg_scratch_0));
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+// Phase 3.2 Task 5: LoadStackTop codegen
+// 从 GenDataFooter.stack_top 加载 int32_t 栈顶指针
+void translateLoadStackTop(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  as->mov(output, x86::dword_ptr(x86::rbp, stack_top_offset));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+
+  // 直接加载到输出寄存器，不使用 x0 作为中间
+  auto output = AutoTranslator::getGpOutput(instr->output());
+  as->ldr(
+      output.w(),
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
 #else
   CINDER_UNSUPPORTED
 #endif
@@ -2332,6 +2447,14 @@ END_RULES
 
 BEGIN_RULES(Instruction::kStateStackPop)
   GEN(ANY, CALL_C(translateStateStackPop))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadPoppedPhase)
+  GEN(ANY, CALL_C(translateLoadPoppedPhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadStackTop)
+  GEN(ANY, CALL_C(translateLoadStackTop))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)
@@ -3669,6 +3792,14 @@ END_RULES
 
 BEGIN_RULES(Instruction::kStateStackPop)
   GEN(ANY, CALL_C(translateStateStackPop))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadPoppedPhase)
+  GEN(ANY, CALL_C(translateLoadPoppedPhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadStackTop)
+  GEN(ANY, CALL_C(translateLoadStackTop))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)

@@ -1020,6 +1020,8 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       }
       case Opcode::kPrimitiveCompare: {
         auto instr = static_cast<const PrimitiveCompare*>(&i);
+        JIT_DLOG("LIR: Lowering PrimitiveCompare op={} in func {}",
+            static_cast<int>(instr->op()), GetHIRFunction()->fullname);
         Instruction::Opcode op;
         switch (instr->op()) {
           case PrimitiveCompareOp::kEqual:
@@ -1360,22 +1362,40 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         break;
       }
       case Opcode::kStateStackPush: {
-        // StateStackPush: 将 (node, phase) 压入 GenDataFooter.state_stack
-        // HIR 操作数: [node (TObject), phase (TCInt32)]
-        // LIR 指令: 无输出，2 个输入
-        bbb.appendInstr(
-            Instruction::kStateStackPush,
-            i.GetOperand(0),
-            i.GetOperand(1));
+        // void JITRT_StateStackPush(PyObject* node, int32_t phase)
+        bbb.appendInvokeInstruction(
+            JITRT_StateStackPush, i.GetOperand(0), i.GetOperand(1));
         break;
       }
       case Opcode::kStateStackPop: {
-        // StateStackPop: 从 GenDataFooter.state_stack 弹出 node
-        // HIR 输出: node (TObject)
-        // LIR 指令: 1 个输出 (k64bit)，0 个输入
-        bbb.appendInstr(
-            Instruction::kStateStackPop,
-            OutVReg{OperandBase::k64bit});
+        // PyObject* JITRT_StateStackPop()
+        bbb.appendCallInstruction(i.output(), JITRT_StateStackPop);
+        break;
+      }
+      case Opcode::kLoadPoppedPhase: {
+        // int32_t JITRT_LoadPoppedPhase()
+        bbb.appendCallInstruction(i.output(), JITRT_LoadPoppedPhase);
+        break;
+      }
+      case Opcode::kLoadStackTop: {
+        // int32_t JITRT_LoadStackTop()
+        bbb.appendCallInstruction(i.output(), JITRT_LoadStackTop);
+        break;
+      }
+      case Opcode::kSaveCurrentNode: {
+        bbb.appendInvokeInstruction(JITRT_SaveCurrentNode, i.GetOperand(0));
+        break;
+      }
+      case Opcode::kLoadCurrentNode: {
+        bbb.appendCallInstruction(i.output(), JITRT_LoadCurrentNode);
+        break;
+      }
+      case Opcode::kSavePhase: {
+        bbb.appendInvokeInstruction(JITRT_SavePhase, i.GetOperand(0));
+        break;
+      }
+      case Opcode::kLoadPhase: {
+        bbb.appendCallInstruction(i.output(), JITRT_LoadPhase);
         break;
       }
       case Opcode::kAssign: {

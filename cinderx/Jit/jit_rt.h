@@ -696,3 +696,19 @@ extern PyObject JITRT_IterDoneSentinel;
  * Returns the next value, or JITRT_IterDoneSentinel if the iterator is done.
  */
 PyObject* JITRT_InvokeIterNext(PyObject* iterator);
+
+// Phase 3.2: State machine stack operations
+// These functions get GenDataFooter from the current generator's thread state.
+// Used to replace buggy inline assembly with portable C runtime calls.
+void JITRT_StateStackPush(PyObject* node, int32_t phase);
+PyObject* JITRT_StateStackPop();
+int32_t JITRT_LoadPoppedPhase();
+int32_t JITRT_LoadStackTop();
+
+// Phase 3.2: State machine current node/phase operations
+// These store/load the current tree node and phase directly in GenDataFooter,
+// eliminating the need for SSA Phi nodes and their type inference issues.
+void JITRT_SaveCurrentNode(PyObject* node);
+PyObject* JITRT_LoadCurrentNode();
+void JITRT_SavePhase(int32_t phase);
+int32_t JITRT_LoadPhase();
