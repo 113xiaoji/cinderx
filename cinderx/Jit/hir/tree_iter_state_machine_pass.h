@@ -5,9 +5,34 @@
 #include "cinderx/Jit/hir/pass.h"
 #include "cinderx/Jit/hir/hir.h"
 
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace jit::hir {
+
+// 树遍历字段信息
+struct TreeIterFieldInfo {
+  std::string name;
+  std::size_t offset{0};
+  int name_idx{-1};
+};
+
+// TreeIterStateMachinePass: 检测树遍历模式并生成状态机
+class TreeIterStateMachinePass : public Pass {
+ public:
+  TreeIterStateMachinePass() : Pass("TreeIterStateMachinePass") {}
+
+  void Run(Function& func) override;
+
+ private:
+  bool isTreeIterGenerator(const Function& func) const;
+  void collectYieldFromInstrs(const Function& func, std::vector<const YieldFrom*>& out) const;
+  bool isTreeIterPattern(const YieldFrom* yf) const;
+  const GetIter* findGetIter(Register* iter_reg) const;
+  std::optional<TreeIterFieldInfo> extractValueField(const Function& func) const;
+  void generateStateMachine(Function& func, const std::vector<const YieldFrom*>& yield_froms);
+};
 
 // TreeIterStateMachinePass: 检测树遍历模式并生成状态机
 //
@@ -22,25 +47,6 @@ namespace jit::hir {
 //   dispatch -> state[0] / state[1] / ... / done
 //   state[i] -> (yield value) -> dispatch / done
 //   done -> return None
-class TreeIterStateMachinePass : public Pass {
- public:
-  TreeIterStateMachinePass() : Pass("TreeIterStateMachinePass") {}
-
-  void Run(Function& func) override;
-
- private:
-  // 检测函数是否是树遍历生成器
-  bool isTreeIterGenerator(const Function& func) const;
-
-  // 收集函数中的所有 YieldFrom 指令
-  void collectYieldFromInstrs(const Function& func, std::vector<const YieldFrom*>& out) const;
-
-  // 检测 YieldFrom 指令是否是树遍历模式
-  bool isTreeIterPattern(const YieldFrom* yf) const;
-
-  // 生成状态机
-  void generateStateMachine(Function& func, const std::vector<const YieldFrom*>& yield_froms);
-};
 
 // Phase 枚举：表示状态机的当前阶段
 enum class TreeIterPhase : int {
@@ -72,6 +78,13 @@ struct StateMachineContext {
   int max_depth{0};
   int stack_size{0};
 
+  // 原始入口块（包含 InitialYield 和 self_reg 定义）
+  BasicBlock* init_block{nullptr};
+
+  // 从原始 HIR 的 YieldValue 指令获取的 FrameState
+  // 用于为状态机的 YieldValue 提供正确的帧信息
+  FrameState* yield_frame_state{nullptr};
+
   BasicBlock* bb_init{nullptr};
   BasicBlock* bb_loop{nullptr};
   BasicBlock* bb_left{nullptr};
@@ -86,10 +99,17 @@ class StateMachineGenerator {
  public:
   explicit StateMachineGenerator(StateMachineContext& ctx) : ctx_(ctx) {}
 
-  // 生成完整状态机
-  void Generate();
+  // 生成完整状态机（含字段偏移量）
+  void Generate(
+      std::size_t left_offset,
+      std::size_t right_offset,
+      std::size_t value_offset);
 
-  // 生成各个阶段的基本块
+  // 返回入口基本块（用于 CFG 集成）
+  BasicBlock* bb_init() const { return bb_init_; }
+  BasicBlock* bb_loop() const { return bb_loop_; }
+
+  // 生成各个阶段的基本块（保留用于兼容性）
   BasicBlock* GenerateInitBlock();
   BasicBlock* GenerateLoopBlock();
   BasicBlock* GenerateLeftBlock();
@@ -104,10 +124,7 @@ class StateMachineGenerator {
   void GenerateStackPush(Register* node, TreeIterPhase phase);
   std::pair<Register*, Register*> GenerateStackPop();
 
-  Register* CreatePhaseConst(BasicBlock* bb, TreeIterPhase phase);
-  Register* CreateIntConst(BasicBlock* bb, int value);
-
-  // 成员变量（用于跟踪生成的基本块）
+  // 生成的关键块指针
   BasicBlock* bb_init_{nullptr};
   BasicBlock* bb_loop_{nullptr};
   BasicBlock* bb_left_{nullptr};

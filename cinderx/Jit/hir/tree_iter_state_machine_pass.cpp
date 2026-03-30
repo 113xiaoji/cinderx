@@ -5,6 +5,7 @@
 #include "cinderx/Jit/hir/cfg.h"
 #include "cinderx/Jit/hir/function.h"
 #include "cinderx/Jit/hir/hir.h"
+#include "cinderx/Jit/hir/pass.h"
 #include "cinderx/Jit/hir/printer.h"
 #include "cinderx/Common/log.h"
 #include "cinderx/python.h"
@@ -19,53 +20,35 @@ extern "C" int g_state_machine_pass_triggered{0};
 
 void TreeIterStateMachinePass::Run(Function& func) {
   JIT_LOG("TreeIterStateMachinePass: Running on function {}", func.fullname);
-  JIT_DLOG("TreeIterStateMachinePass: Running on function");
 
-  // 检查是否是树遍历生成器
   if (!isTreeIterGenerator(func)) {
-    JIT_DLOG("TreeIterStateMachinePass: Not a tree iter generator, skipping");
     return;
   }
 
-  // 收集所有 YieldFrom 指令
   std::vector<const YieldFrom*> yield_froms;
   collectYieldFromInstrs(func, yield_froms);
 
   if (yield_froms.empty()) {
-    JIT_DLOG("TreeIterStateMachinePass: No YieldFrom instructions found");
     return;
   }
 
-  JIT_DLOG(
-      "TreeIterStateMachinePass: Found {} YieldFrom instructions",
-      yield_froms.size());
-
-  // 检查是否所有 YieldFrom 都是树遍历模式
   for (const YieldFrom* yf : yield_froms) {
     if (!isTreeIterPattern(yf)) {
-      JIT_DLOG("TreeIterStateMachinePass: YieldFrom is not tree iter pattern, skipping");
       return;
     }
   }
 
-  // 生成状态机并替换 YieldFrom
   JIT_LOG("TreeIterStateMachinePass: Pattern detected! Generating state machine");
   g_state_machine_pass_triggered++;
+
   generateStateMachine(func, yield_froms);
 }
 
 bool TreeIterStateMachinePass::isTreeIterGenerator(const Function& func) const {
-  // 检查函数是否是 __iter__ 方法
   if (func.code == nullptr) {
-    JIT_LOG(
-        "TreeIterStateMachinePass::isTreeIterGenerator: func.code is nullptr");
     return false;
   }
-
-  // 检查 co_names 中是否包含 left/right
   if (func.code->co_names == nullptr) {
-    JIT_LOG(
-        "TreeIterStateMachinePass::isTreeIterGenerator: co_names is nullptr");
     return false;
   }
 
@@ -73,31 +56,19 @@ bool TreeIterStateMachinePass::isTreeIterGenerator(const Function& func) const {
   bool has_left = false;
   bool has_right = false;
 
-  JIT_LOG(
-      "TreeIterStateMachinePass::isTreeIterGenerator: Checking {} names in co_names",
-      num_names);
-
   for (Py_ssize_t i = 0; i < num_names; i++) {
     PyObject* name = PyTuple_GET_ITEM(func.code->co_names, i);
     if (PyUnicode_Check(name)) {
       const char* name_str = PyUnicode_AsUTF8(name);
       if (name_str != nullptr) {
-        JIT_LOG("  co_names[{}] = '{}'", i, name_str);
         if (strcmp(name_str, "left") == 0) {
           has_left = true;
-          JIT_LOG("    -> Found 'left'!");
         } else if (strcmp(name_str, "right") == 0) {
           has_right = true;
-          JIT_LOG("    -> Found 'right'!");
         }
       }
     }
   }
-
-  JIT_LOG(
-      "TreeIterStateMachinePass::isTreeIterGenerator: has_left={}, has_right={}",
-      has_left,
-      has_right);
 
   return has_left && has_right;
 }
@@ -105,256 +76,57 @@ bool TreeIterStateMachinePass::isTreeIterGenerator(const Function& func) const {
 void TreeIterStateMachinePass::collectYieldFromInstrs(
     const Function& func,
     std::vector<const YieldFrom*>& out) const {
-  JIT_LOG("TreeIterStateMachinePass::collectYieldFromInstrs: Collecting YieldFrom instructions");
-
-  for (const auto& block : func.cfg.blocks) {
-    for (const auto& instr : block) {
-      if (instr.opcode() == Opcode::kYieldFrom) {
-        const YieldFrom* yf = static_cast<const YieldFrom*>(&instr);
-        out.push_back(yf);
-        JIT_LOG("  Found YieldFrom instruction at {:p}", (void*)&instr);
+  for (auto& block : func.cfg.blocks) {
+    for (auto& instr : block) {
+      if (instr.IsYieldFrom()) {
+        out.push_back(static_cast<const YieldFrom*>(&instr));
       }
     }
   }
-
-  JIT_LOG("TreeIterStateMachinePass::collectYieldFromInstrs: Found {} YieldFrom instructions total", out.size());
 }
 
 bool TreeIterStateMachinePass::isTreeIterPattern(const YieldFrom* yf) const {
-  JIT_LOG("TreeIterStateMachinePass::isTreeIterPattern: Checking YieldFrom");
-
-  if (yf == nullptr) {
-    JIT_LOG("  -> yf is nullptr");
+  auto* send_instr = yf->GetOperand(0)->instr();
+  if (send_instr == nullptr || !send_instr->IsSend()) {
     return false;
   }
 
-  // YieldFrom 的操作数顺序: [output, send_value, iter, frame]
-  // 我们需要检查操作数 1 (iter)
-  if (yf->NumOperands() < 2) {
-    JIT_LOG("  -> NumOperands = {}, expected >= 2", yf->NumOperands());
-    return false;
-  }
-
-  Register* iter = yf->GetOperand(1);  // 操作数 1 是 iter
-  if (iter == nullptr) {
-    JIT_LOG("  -> iter (operand 1) is nullptr");
-    return false;
-  }
-
-  Instr* iter_instr = iter->instr();
+  auto* iter_reg = static_cast<const Send*>(send_instr)->GetOperand(0);
+  Instr* iter_instr = iter_reg->instr();
   if (iter_instr == nullptr) {
-    JIT_LOG("  -> iter_instr is nullptr");
     return false;
   }
 
-  JIT_LOG("  -> iter_instr opcode: {}", static_cast<int>(iter_instr->opcode()));
-
-  // === 辅助函数: 检查 register 是否引用 self (LoadArg 0) ===
-  std::function<bool(Register*)> is_self_register = [&](Register* reg) -> bool {
-    if (reg == nullptr) return false;
-    Instr* instr = reg->instr();
-    if (instr == nullptr) return false;
-
-    // Direct LoadArg 0 = self
-    if (instr->IsLoadArg()) {
-      auto* load_arg = static_cast<const LoadArg*>(instr);
-      return load_arg->arg_idx() == 0;
-    }
-
-    // Phi node: check if all inputs reference self
-    if (instr->IsPhi()) {
-      auto* phi = static_cast<const Phi*>(instr);
-      for (size_t j = 0; j < phi->NumOperands(); j++) {
-        if (!is_self_register(phi->GetOperand(j))) {
-          return false;
-        }
-      }
-      return phi->NumOperands() > 0;  // True if all inputs are self
-    }
-
-    // For other instructions with inputs, check if the first input references self
-    // (e.g., Cast, BitCast, etc.)
-    if (instr->NumOperands() > 0) {
-      return is_self_register(instr->GetOperand(0));
-    }
-
-    return false;
-  };
-
-  // === 处理 Phi 节点情况 - 追踪 GetIter->LoadField 链 ===
-  if (iter_instr->IsPhi()) {
-    auto* phi = static_cast<const Phi*>(iter_instr);
-    JIT_LOG("  -> iter_instr is Phi node");
-
-    // 跟踪哪些输入指向 self.left/right
-    bool found_valid_pattern = false;
-    std::string field_name;
-
-    for (size_t i = 0; i < phi->NumOperands(); i++) {
-      Register* phi_input = phi->GetOperand(i);
-      Instr* phi_input_instr = phi_input->instr();
-
-      JIT_LOG("    -> Checking Phi input {}", i);
-
-      Register* load_field_source = nullptr;
-
-      // Case 1: Input is directly from LoadField or CheckField
-      if (phi_input_instr->IsLoadField()) {
-        JIT_LOG("      -> Phi input is LoadField");
-        load_field_source = phi_input;
-      }
-      // Case 2: Input is from CheckField
-      else if (phi_input_instr->IsCheckField()) {
-        JIT_LOG("      -> Phi input is CheckField");
-        auto* check_field = static_cast<const CheckField*>(phi_input_instr);
-        load_field_source = check_field->GetOperand(0);
-        if (load_field_source && load_field_source->instr()->IsLoadField()) {
-          JIT_LOG("      -> CheckField source is LoadField");
-        } else {
-          load_field_source = nullptr;
-        }
-      }
-      // Case 3: Input is from GetIter
-      else if (phi_input_instr->IsGetIter()) {
-        JIT_LOG("      -> Phi input is GetIter");
-        auto* get_iter = static_cast<const GetIter*>(phi_input_instr);
-        Register* get_iter_source = get_iter->iterable();
-
-        JIT_LOG("      -> GetIter source is {}", get_iter_source->instr()->opname());
-
-        // Check if GetIter's source is LoadField or CheckField
-        Instr* source_instr = get_iter_source->instr();
-        if (source_instr->IsLoadField()) {
-          load_field_source = get_iter_source;
-          JIT_LOG("      -> GetIter source is LoadField");
-        } else if (source_instr->IsCheckField()) {
-          auto* check_field = static_cast<const CheckField*>(source_instr);
-          load_field_source = check_field->GetOperand(0);
-          if (load_field_source && load_field_source->instr()->IsLoadField()) {
-            JIT_LOG("      -> GetIter->CheckField->LoadField chain found");
-          } else {
-            load_field_source = nullptr;
-          }
-        }
-      } else {
-        // 跳过非 GetIter/LoadField/CheckField 的输入（如 InitialYield）
-        JIT_LOG("      -> Phi input is not GetIter/LoadField/CheckField, skipping");
-        continue;
-      }
-
-      // If we found a LoadField, check if it's self.left/right
-      if (load_field_source) {
-        auto* load_field = static_cast<const LoadField*>(load_field_source->instr());
-        Register* receiver = load_field->receiver();
-
-        // Check if receiver ultimately references self (LoadArg 0)
-        // This handles both direct LoadArg and Phi node cases
-        bool is_self = is_self_register(receiver);
-
-        if (is_self) {  // self
-          std::string current_field_name(load_field->name());
-
-          if (current_field_name == "left" || current_field_name == "right") {
-            if (!found_valid_pattern) {
-              // First valid input
-              field_name = current_field_name;
-              found_valid_pattern = true;
-              JIT_LOG(
-                  "      -> Phi input {} matches pattern! field={}",
-                  i,
-                  field_name);
-            } else if (field_name != current_field_name) {
-              // Inconsistent field names across inputs
-              JIT_LOG(
-                  "      -> Inconsistent field names ({} vs {})",
-                  field_name,
-                  current_field_name);
-              found_valid_pattern = false;
-              break;
-            }
-            continue;  // This input is valid
-          }
-        }
-      }
-
-      // This input doesn't match the pattern (and is not InitialYield)
-      JIT_LOG("      -> Phi input {} doesn't match pattern", i);
-      // Don't break - we can skip non-matching inputs like InitialYield
-    }
-
-    if (found_valid_pattern) {
-      JIT_LOG(
-          "  -> ✅ All Phi inputs match pattern! field={}",
-          field_name);
-      return true;
-    } else {
-      JIT_LOG("  -> Phi node doesn't match pattern");
-      return false;
-    }
-  }
-
-  // === 非Phi 情况：直接检查 GetIter -> LoadField/LoadAttr 链 ===
-  JIT_LOG("  -> iter_instr is NOT Phi, checking GetIter chain...");
-
-  // 检查是否是 GetIter 指令
-  if (iter_instr->opcode() != Opcode::kGetIter) {
-    JIT_LOG("  -> iter_instr is NOT GetIter, skipping");
+  auto* get_iter = findGetIter(iter_reg);
+  if (get_iter == nullptr) {
     return false;
   }
 
-  JIT_LOG("  -> iter_instr is GetIter, checking source...");
-
-  // 获取 GetIter 的源
-  if (iter_instr->NumOperands() < 1) {
-    JIT_LOG("  -> GetIter has no operands");
+  auto* source = get_iter->GetOperand(0)->instr();
+  if (source == nullptr || !source->IsCheckField()) {
     return false;
   }
 
-  Register* source = iter_instr->GetOperand(0);
-  if (source == nullptr) {
-    JIT_LOG("  -> source is nullptr");
+  auto* check_field = static_cast<const CheckField*>(source);
+  auto* load_field_instr = check_field->GetOperand(0)->instr();
+  if (load_field_instr == nullptr || !load_field_instr->IsLoadField()) {
     return false;
   }
 
-  Instr* source_instr = source->instr();
-  if (source_instr == nullptr) {
-    JIT_LOG("  -> source_instr is nullptr");
-    return false;
-  }
-
-  JIT_LOG("  -> source_instr opcode: {}", static_cast<int>(source_instr->opcode()));
-
-  // 检查是否是 LoadField（self.left 或 self.right）
-  if (source_instr->opcode() == Opcode::kLoadField) {
-    JIT_LOG("  -> source_instr is LoadField, pattern MATCHES!");
-    return true;
-  }
-
-  // 检查是否是 LoadAttr（也可以接受）
-  if (source_instr->opcode() == Opcode::kLoadAttr) {
-    JIT_LOG("  -> source_instr is LoadAttr, pattern MATCHES!");
-    return true;
-  }
-
-  JIT_LOG("  -> source_instr is neither LoadField nor LoadAttr, pattern does NOT match");
-  return false;
+  std::string field_name(static_cast<const LoadField*>(load_field_instr)->name());
+  return field_name == "left" || field_name == "right";
 }
 
-// 辅助函数：从 Phi 节点或直接指令中提取 GetIter
-// 用于处理 iter 寄存器可能来自 Phi 节点的情况
-const GetIter* extractGetIterFromPhi(Register* iter_reg) {
-  if (iter_reg == nullptr || iter_reg->instr() == nullptr) {
+const GetIter* TreeIterStateMachinePass::findGetIter(Register* iter_reg) const {
+  Instr* iter_instr = iter_reg->instr();
+  if (iter_instr == nullptr) {
     return nullptr;
   }
 
-  Instr* iter_instr = iter_reg->instr();
-
-  // 情况 1：直接是 GetIter
   if (iter_instr->IsGetIter()) {
     return static_cast<const GetIter*>(iter_instr);
   }
 
-  // 情况 2：是 Phi 节点，遍历输入查找 GetIter
   if (iter_instr->IsPhi()) {
     auto* phi = static_cast<const Phi*>(iter_instr);
     for (size_t i = 0; i < phi->NumOperands(); i++) {
@@ -371,381 +143,378 @@ const GetIter* extractGetIterFromPhi(Register* iter_reg) {
 void TreeIterStateMachinePass::generateStateMachine(
     Function& func,
     const std::vector<const YieldFrom*>& yield_froms) {
-  JIT_LOG("TreeIterStateMachinePass: Generating inline state machine for {} YieldFroms",
-          yield_froms.size());
+  // 提取字段信息
+  struct FieldInfo {
+    std::string name;
+    std::size_t offset{0};
+  };
+  std::unordered_map<std::string, FieldInfo> field_map;
 
-  // 检查内联深度限制
-  if (yield_froms.size() > static_cast<size_t>(StateMachineConfig::kMaxInlineDepth)) {
-    JIT_LOG("  -> Depth {} exceeds limit {}, using fallback",
-            yield_froms.size(), StateMachineConfig::kMaxInlineDepth);
-    return;  // 回退到原有逻辑
-  }
-
-  // 创建状态机上下文
-  StateMachineContext ctx;
-  ctx.func = &func;
-  // self_reg 将在 GenerateInitBlock 中通过 LoadArg 指令设置
-  ctx.max_depth = static_cast<int>(yield_froms.size());
-  ctx.stack_size = StateMachineConfig::kStateSize;
-
-  // 生成状态机
-  StateMachineGenerator generator(ctx);
-  generator.Generate();
-
-  // === 连接状态机到控制流 ===
-  // 1. 替换原始 YieldFrom 指令
-  for (const YieldFrom* yf : yield_froms) {
-    BasicBlock* block = yf->block();
-    Instr* yf_mutable = const_cast<YieldFrom*>(yf);
-    yf_mutable->unlink();
-    delete yf_mutable;
-  }
-
-  JIT_LOG("TreeIterStateMachinePass: Replaced {} YieldFrom instructions",
-          yield_froms.size());
-
-  // 2. 找到生成器入口块（包含 InitialYield）
-  BasicBlock* generator_entry = func.cfg.entry_block;
-  if (generator_entry == nullptr) {
-    JIT_LOG("TreeIterStateMachinePass: No entry block found");
-    return;
-  }
-
-  // 3. 查找 InitialYield 指令
-  Instr* initial_yield = nullptr;
-  for (auto& instr : *generator_entry) {
-    if (instr.IsInitialYield()) {
-      initial_yield = &instr;
-      break;
+  for (auto& block : func.cfg.blocks) {
+    for (auto& instr : block) {
+      if (instr.IsLoadField()) {
+        auto* lf = static_cast<LoadField*>(&instr);
+        std::string fname(lf->name());
+        if (fname == "left" || fname == "right" || fname == "value") {
+          if (field_map.find(fname) == field_map.end()) {
+            field_map[fname] = {fname, lf->offset()};
+          }
+        }
+      }
     }
   }
 
-  if (initial_yield == nullptr) {
-    JIT_LOG("TreeIterStateMachinePass: No InitialYield found");
+  if (field_map.count("left") == 0 || field_map.count("right") == 0 ||
+      field_map.count("value") == 0) {
     return;
   }
 
-  // 4. 在 InitialYield 之后分割基本块
-  BasicBlock* after_init = func.cfg.splitAfter(*initial_yield);
+  JIT_LOG(
+      "Field offsets: left={}, right={}, value={}",
+      field_map["left"].offset,
+      field_map["right"].offset,
+      field_map["value"].offset);
 
-  // generator_entry 现在只包含 InitialYield
-  generator_entry->append<Branch>(after_init);
+  // 找到 self 寄存器和 InitialYield
+  Register* self_reg = nullptr;
+  Instr* initial_yield = nullptr;
 
-  // 5. 将 after_init 连接到状态机入口
-  Instr* term = after_init->GetTerminator();
-  if (term != nullptr) {
-    term->unlink();
-    delete term;
+  for (auto& block : func.cfg.blocks) {
+    for (auto& instr : block) {
+      if (instr.IsLoadArg()) {
+        auto* la = static_cast<LoadArg*>(&instr);
+        if (la->arg_idx() == 0 && self_reg == nullptr) {
+          self_reg = la->output();
+        }
+      }
+      if (instr.IsInitialYield()) {
+        initial_yield = &instr;
+      }
+    }
   }
-  after_init->append<Branch>(ctx.bb_init);
 
-  JIT_LOG("TreeIterStateMachinePass: State machine connected to control flow");
+  if (self_reg == nullptr || initial_yield == nullptr) {
+    return;
+  }
+
+  // 在 generateStateMachine 之前保存 init_block 指针
+  auto* init_block = initial_yield->block();
+
+  // 找到原始 YieldValue 的 FrameState
+  FrameState* yield_frame_state = nullptr;
+  for (auto& block : func.cfg.blocks) {
+    for (auto& instr : block) {
+      if (instr.IsYieldValue()) {
+        auto* yv = static_cast<YieldValue*>(&instr);
+        yield_frame_state = yv->frameState();
+        break;
+      }
+    }
+    if (yield_frame_state != nullptr) {
+      break;
+    }
+  }
+  JIT_LOG("TreeIterStateMachinePass: yield_frame_state={}",
+          (void*)yield_frame_state);
+
+  StateMachineContext ctx;
+  ctx.func = &func;
+  ctx.self_reg = self_reg;
+  ctx.max_depth = static_cast<int>(yield_froms.size());
+  ctx.stack_size = StateMachineConfig::kStateSize;
+  ctx.yield_frame_state = yield_frame_state;
+  ctx.init_block = init_block;
+
+  // CFG 集成：先 splitAfter，再生成状态机
+  // 这样 Generate() 可以安全地在 init_block 中添加 LoadConst
+  auto* tail = func.cfg.splitAfter(*initial_yield);
+  // init_block 现在只包含 [LoadArg, InitialYield]，没有终止符
+
+  StateMachineGenerator generator(ctx);
+  generator.Generate(
+      field_map["left"].offset,
+      field_map["right"].offset,
+      field_map["value"].offset);
+
+  // init_block 分支到状态机入口 (bb_loop)
+  init_block->append<Branch>(generator.bb_loop());
+
+  removeUnreachableBlocks(func);
+
+  // 重新推断所有寄存器类型 — 状态机 pass 在 Simplify 之后运行，
+  // 新创建的指令没有经过类型推断，寄存器默认为 TTop。
+  // TTop 在 LIR 的 hirTypeToDataType 中匹配不到任何整数类型，
+  // 会返回 kObject，导致 RefcountInsertion 为原始值插入 XDecref。
+  reflowTypes(func);
+
+  JIT_LOG("TreeIterStateMachinePass: State machine generated and integrated");
 }
 
-// === StateMachineGenerator 实现 ===
+// === StateMachineGenerator ===
 
-// 使用 namespace 别名引用已存在的 jit::hir 命名空间
-// 因为原始 jit::hir 块已关闭，需要通过别名定义方法
-namespace hir_ns = ::jit::hir;
+namespace {
 
-Register* hir_ns::StateMachineGenerator::CreatePhaseConst(BasicBlock* bb, TreeIterPhase phase) {
-  Register* reg = ctx_.func->env.AllocateRegister();
-  bb->append<LoadConst>(reg, Type::fromCInt(static_cast<int>(phase), TCInt32));
-  return reg;
-}
-
-Register* hir_ns::StateMachineGenerator::CreateIntConst(BasicBlock* bb, int value) {
-  Register* reg = ctx_.func->env.AllocateRegister();
+Register* CreateIntConst(Function& func, BasicBlock* bb, int value) {
+  Register* reg = func.env.AllocateRegister();
   bb->append<LoadConst>(reg, Type::fromCInt(value, TCInt32));
   return reg;
 }
 
-void hir_ns::StateMachineGenerator::Generate() {
-  JIT_LOG("StateMachineGenerator: Generating state machine");
-
-  // 1. 分配寄存器
-  ctx_.self_reg = ctx_.func->env.AllocateRegister();
-  ctx_.current_node_reg = ctx_.func->env.AllocateRegister();
-  ctx_.phase_reg = ctx_.func->env.AllocateRegister();
-  ctx_.stack_top_reg = ctx_.func->env.AllocateRegister();
-
-  // 2. 生成初始化块
-  ctx_.bb_init = bb_init_ = GenerateInitBlock();
-
-  // 3. 生成主循环块
-  ctx_.bb_loop = bb_loop_ = GenerateLoopBlock();
-
-  // 4. 生成各阶段基本块
-  ctx_.bb_left = bb_left_ = GenerateLeftBlock();
-  ctx_.bb_yield = bb_yield_ = GenerateYieldBlock();
-  ctx_.bb_right = bb_right_ = GenerateRightBlock();
-  ctx_.bb_backtrack = bb_backtrack_ = GenerateBacktrackBlock();
-
-  // 5. 生成结束块
-  ctx_.bb_done = bb_done_ = ctx_.func->cfg.AllocateUnlinkedBlock();
-  Register* none_reg = ctx_.func->env.AllocateRegister();
-  bb_done_->append<LoadConst>(none_reg, Type::fromObject(Py_None));
-  bb_done_->append<Return>(none_reg, Type::fromObject(Py_None));
-
-  // 6. 连接初始化块到循环块
-  bb_init_->append<Branch>(bb_loop_);
-
-  JIT_LOG("StateMachineGenerator: State machine generated successfully");
+Register* CreatePhaseConst(Function& func, BasicBlock* bb, TreeIterPhase phase) {
+  return CreateIntConst(func, bb, static_cast<int>(phase));
 }
 
-BasicBlock* hir_ns::StateMachineGenerator::GenerateInitBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb_init_ = bb;
+} // anonymous namespace
 
-  // 初始化 current_node = self
-  bb->append<LoadArg>(ctx_.self_reg, 0);
-  ctx_.current_node_reg = ctx_.self_reg;
+void StateMachineGenerator::Generate(
+    std::size_t left_offset,
+    std::size_t right_offset,
+    std::size_t value_offset) {
+  Function& func = *ctx_.func;
+  auto& env = func.env;
+  auto& cfg = func.cfg;
 
-  // 初始化 phase = kLeft
-  Register* init_phase = CreatePhaseConst(bb, TreeIterPhase::kLeft);
-  bb->append<LoadState>(ctx_.phase_reg);
-  (void)init_phase;  // 占位：后续保存状态
+  JIT_LOG("StateMachineGenerator: Generating GenDataFooter-based state machine");
 
-  // 初始化 stack_top = 0
-  Register* zero = CreateIntConst(bb, 0);
-  // TODO(Task 4): 使用 Move 或 Assign 指令将 zero 赋值给 stack_top_reg
-  // 当前 CinderX HIR 可能没有直接的 Move 指令
-  // 占位：stack_top_reg 保持未初始化状态
-  (void)zero;
+  // === 分配所有基本块 ===
+  bb_init_ = ctx_.init_block;
+  BasicBlock* bb_loop = cfg.AllocateBlock();
+  BasicBlock* bb_check_yield = cfg.AllocateBlock();
+  BasicBlock* bb_check_right = cfg.AllocateBlock();
+  BasicBlock* bb_left = cfg.AllocateBlock();
+  BasicBlock* bb_check_null_left = cfg.AllocateBlock();
+  BasicBlock* bb_has_left = cfg.AllocateBlock();
+  BasicBlock* bb_no_left = cfg.AllocateBlock();
+  BasicBlock* bb_yield = cfg.AllocateBlock();
+  BasicBlock* bb_after_yield = cfg.AllocateBlock();
+  BasicBlock* bb_right = cfg.AllocateBlock();
+  BasicBlock* bb_check_null_right = cfg.AllocateBlock();
+  BasicBlock* bb_has_right = cfg.AllocateBlock();
+  BasicBlock* bb_no_right = cfg.AllocateBlock();
+  BasicBlock* bb_backtrack = cfg.AllocateBlock();
+  BasicBlock* bb_pop = cfg.AllocateBlock();
+  BasicBlock* bb_done = cfg.AllocateBlock();
 
-  // 跳转到循环 - 延迟到 Generate() 中在 bb_loop_ 设置后添加
+  bb_loop_ = bb_loop;
+  bb_done_ = bb_done;
 
-  return bb;
+  // === bb_init_: 保存初始状态到 GenDataFooter ===
+  // 关键: SaveCurrentNode 必须在 InitialYield 之前！
+  // InitialYield 会导致 yield/resume，clobber 所有调用者保存寄存器。
+  // 如果 SaveCurrentNode 在 InitialYield 之后，self_reg 会被覆盖为垃圾值。
+  auto init_iter = bb_init_->begin();
+  ++init_iter; // skip LoadArg, point to InitialYield
+  auto* save_node = SaveCurrentNode::create(ctx_.self_reg);
+  bb_init_->insert(save_node, init_iter);
+  Register* init_phase = env.AllocateRegister();
+  auto* load_phase = LoadConst::create(
+      init_phase,
+      Type::fromCInt(static_cast<int>(TreeIterPhase::kLeft), TCInt32));
+  bb_init_->insert(load_phase, init_iter);
+  auto* save_phase = SavePhase::create(init_phase);
+  bb_init_->insert(save_phase, init_iter);
+  // (Branch to bb_loop is added by generateStateMachine after this call)
+
+  // === bb_loop: 从 GenDataFooter 加载 phase 并 dispatch ===
+  // 注意：不在 bb_loop 中加载 current，因为 LoadPhase 是 C 函数调用
+  // 会 clobber 调用者保存的寄存器。每个块独立加载自己需要的值。
+  Register* phase = env.AllocateRegister();
+  bb_loop->append<LoadPhase>(phase);
+
+  // phase == kLeft?
+  Register* kLeft_const = CreatePhaseConst(func, bb_loop, TreeIterPhase::kLeft);
+  Register* cmp_left = env.AllocateRegister();
+  bb_loop->append<PrimitiveCompare>(
+      cmp_left, PrimitiveCompareOp::kEqual, phase, kLeft_const);
+  bb_loop->append<CondBranch>(cmp_left, bb_left, bb_check_yield);
+
+  // === bb_check_yield: phase == kYield? ===
+  Register* phase_cy = env.AllocateRegister();
+  bb_check_yield->append<LoadPhase>(phase_cy);
+  Register* kYield_const =
+      CreatePhaseConst(func, bb_check_yield, TreeIterPhase::kYield);
+  Register* cmp_yield = env.AllocateRegister();
+  bb_check_yield->append<PrimitiveCompare>(
+      cmp_yield, PrimitiveCompareOp::kEqual, phase_cy, kYield_const);
+  bb_check_yield->append<CondBranch>(cmp_yield, bb_yield, bb_check_right);
+
+  // === bb_check_right: phase == kRight? ===
+  Register* phase_cr = env.AllocateRegister();
+  bb_check_right->append<LoadPhase>(phase_cr);
+  Register* kRight_const =
+      CreatePhaseConst(func, bb_check_right, TreeIterPhase::kRight);
+  Register* cmp_right = env.AllocateRegister();
+  bb_check_right->append<PrimitiveCompare>(
+      cmp_right, PrimitiveCompareOp::kEqual, phase_cr, kRight_const);
+  bb_check_right->append<CondBranch>(cmp_right, bb_right, bb_backtrack);
+
+  // === bb_left: 加载 current，检查 left 子树 ===
+  Register* current_left = env.AllocateRegister();
+  bb_left->append<LoadCurrentNode>(current_left);
+  Register* left_child = env.AllocateRegister();
+  bb_left->append<LoadField>(
+      left_child, current_left, "left", left_offset, TOptObject);
+  // Python 中 None 存储为 Py_None 指针（非 StaticPython），不是 nullptr
+  // 先比较 Py_None，若不匹配再比较 nullptr（兼容 StaticPython 内联存储）
+  Register* none_left = env.AllocateRegister();
+  bb_left->append<LoadConst>(none_left, Type::fromObject(Py_None));
+  Register* cmp_none_left = env.AllocateRegister();
+  bb_left->append<PrimitiveCompare>(
+      cmp_none_left, PrimitiveCompareOp::kEqual, left_child, none_left);
+  bb_left->append<CondBranch>(cmp_none_left, bb_no_left, bb_check_null_left);
+
+  // === bb_check_null_left: 也检查 nullptr（兼容 StaticPython 内联存储） ===
+  Register* null_left = env.AllocateRegister();
+  bb_check_null_left->append<LoadConst>(null_left, Type::fromCInt(0, TCInt64));
+  Register* cmp_null_left = env.AllocateRegister();
+  bb_check_null_left->append<PrimitiveCompare>(
+      cmp_null_left, PrimitiveCompareOp::kEqual, left_child, null_left);
+  bb_check_null_left->append<CondBranch>(cmp_null_left, bb_no_left, bb_has_left);
+
+  // === bb_has_left: push parent(kYield) → save child → phase=kLeft ===
+  // 关键: 先 push parent 再 save child，否则 push 的是 child 而非 parent
+  // push 的 phase 是 kYield（不是 kRight），因为中序遍历是:
+  //   左子树 → yield 当前节点 → 右子树
+  // 所以从左子树返回后应该先 yield，再处理右子树
+  Register* current_load = env.AllocateRegister();
+  bb_has_left->append<LoadCurrentNode>(current_load);
+  Register* left_child_hl = env.AllocateRegister();
+  bb_has_left->append<LoadField>(
+      left_child_hl, current_load, "left", left_offset, TOptObject);
+  // 先 push parent（current_load 仍是 parent），phase=kYield
+  Register* kYield_push =
+      CreatePhaseConst(func, bb_has_left, TreeIterPhase::kYield);
+  bb_has_left->append<StateStackPush>(current_load, kYield_push);
+  // 再 save child 为新的 current
+  bb_has_left->append<SaveCurrentNode>(left_child_hl);
+  Register* kLeft_hl =
+      CreatePhaseConst(func, bb_has_left, TreeIterPhase::kLeft);
+  bb_has_left->append<SavePhase>(kLeft_hl);
+  bb_has_left->append<Branch>(bb_loop);
+
+  // === bb_no_left: phase=kYield → loop ===
+  Register* kYield_nl =
+      CreatePhaseConst(func, bb_no_left, TreeIterPhase::kYield);
+  bb_no_left->append<SavePhase>(kYield_nl);
+  bb_no_left->append<Branch>(bb_loop);
+
+  // === bb_yield: 加载 current，yield current.value ===
+  Register* current_yield = env.AllocateRegister();
+  bb_yield->append<LoadCurrentNode>(current_yield);
+  // 加载 current.value 字段
+  Register* yield_value = env.AllocateRegister();
+  bb_yield->append<LoadField>(
+      yield_value, current_yield, "value", value_offset, TObject);
+  Register* yield_result = env.AllocateRegister();
+  if (ctx_.yield_frame_state != nullptr) {
+    bb_yield->append<YieldValue>(
+        yield_result, yield_value, *ctx_.yield_frame_state);
+  } else {
+    bb_yield->append<YieldValue>(yield_result, yield_value, FrameState{});
+  }
+  bb_yield->append<Branch>(bb_after_yield);
+
+  // === bb_after_yield: phase=kRight → loop ===
+  Register* kRight_ay =
+      CreatePhaseConst(func, bb_after_yield, TreeIterPhase::kRight);
+  bb_after_yield->append<SavePhase>(kRight_ay);
+  bb_after_yield->append<Branch>(bb_loop);
+
+  // === bb_right: 加载 current，检查 right 子树 ===
+  Register* current_right = env.AllocateRegister();
+  bb_right->append<LoadCurrentNode>(current_right);
+  Register* right_child = env.AllocateRegister();
+  bb_right->append<LoadField>(
+      right_child, current_right, "right", right_offset, TOptObject);
+  // Python 中 None 存储为 Py_None 指针（非 StaticPython），不是 nullptr
+  // 先比较 Py_None，若不匹配再比较 nullptr（兼容 StaticPython 内联存储）
+  Register* none_right = env.AllocateRegister();
+  bb_right->append<LoadConst>(none_right, Type::fromObject(Py_None));
+  Register* cmp_none_right = env.AllocateRegister();
+  bb_right->append<PrimitiveCompare>(
+      cmp_none_right, PrimitiveCompareOp::kEqual, right_child, none_right);
+  bb_right->append<CondBranch>(cmp_none_right, bb_no_right, bb_check_null_right);
+
+  // === bb_check_null_right: 也检查 nullptr ===
+  Register* null_right = env.AllocateRegister();
+  bb_check_null_right->append<LoadConst>(null_right, Type::fromCInt(0, TCInt64));
+  Register* cmp_null_right = env.AllocateRegister();
+  bb_check_null_right->append<PrimitiveCompare>(
+      cmp_null_right, PrimitiveCompareOp::kEqual, right_child, null_right);
+  bb_check_null_right->append<CondBranch>(cmp_null_right, bb_no_right, bb_has_right);
+
+  // === bb_has_right: 重新加载字段（避免跨块寄存器被 C 调用 clobber），save + phase ===
+  Register* current_hr = env.AllocateRegister();
+  bb_has_right->append<LoadCurrentNode>(current_hr);
+  // 重新加载 right 子节点
+  Register* right_child_hr = env.AllocateRegister();
+  bb_has_right->append<LoadField>(
+      right_child_hr, current_hr, "right", right_offset, TOptObject);
+  bb_has_right->append<SaveCurrentNode>(right_child_hr);
+  Register* kLeft_hr =
+      CreatePhaseConst(func, bb_has_right, TreeIterPhase::kLeft);
+  bb_has_right->append<SavePhase>(kLeft_hr);
+  bb_has_right->append<Branch>(bb_loop);
+
+  // === bb_no_right: phase=kBacktrack → loop ===
+  Register* kBacktrack_nr =
+      CreatePhaseConst(func, bb_no_right, TreeIterPhase::kBacktrack);
+  bb_no_right->append<SavePhase>(kBacktrack_nr);
+  bb_no_right->append<Branch>(bb_loop);
+
+  // === bb_backtrack: if stack empty → done / pop ===
+  Register* stack_top = env.AllocateRegister();
+  bb_backtrack->append<LoadStackTop>(stack_top);
+  Register* zero_const = CreateIntConst(func, bb_backtrack, 0);
+  Register* cmp_stack = env.AllocateRegister();
+  bb_backtrack->append<PrimitiveCompare>(
+      cmp_stack, PrimitiveCompareOp::kEqual, stack_top, zero_const);
+  bb_backtrack->append<CondBranch>(cmp_stack, bb_done, bb_pop);
+
+  // === bb_pop: pop → save popped state → loop ===
+  Register* popped_node = env.AllocateRegister();
+  bb_pop->append<StateStackPop>(popped_node);
+  Register* popped_phase = env.AllocateRegister();
+  bb_pop->append<LoadPoppedPhase>(popped_phase);
+  bb_pop->append<SaveCurrentNode>(popped_node);
+  bb_pop->append<SavePhase>(popped_phase);
+  bb_pop->append<Branch>(bb_loop);
+
+  // === bb_done: return None ===
+  Register* none_result = env.AllocateRegister();
+  bb_done->append<LoadConst>(none_result, Type::fromObject(Py_None));
+  bb_done->append<Return>(none_result, TObject);
+
+  JIT_LOG(
+      "StateMachineGenerator: GenDataFooter-based state machine generated (no Phi)");
 }
 
-BasicBlock* hir_ns::StateMachineGenerator::GenerateLoopBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb_loop_ = bb;
-
-  // Switch(phase) -> bb_left, bb_yield, bb_right, bb_backtrack
-  // 使用 CondBranch 链实现 Switch
-
-  Register* cmp_left = ctx_.func->env.AllocateRegister();
-  Register* left_const = CreatePhaseConst(bb, TreeIterPhase::kLeft);
-  bb->append<PrimitiveCompare>(
-      cmp_left, PrimitiveCompareOp::kEqual, ctx_.phase_reg, left_const);
-
-  Register* cmp_yield = ctx_.func->env.AllocateRegister();
-  Register* yield_const = CreatePhaseConst(bb, TreeIterPhase::kYield);
-  bb->append<PrimitiveCompare>(
-      cmp_yield, PrimitiveCompareOp::kEqual, ctx_.phase_reg, yield_const);
-
-  Register* cmp_right = ctx_.func->env.AllocateRegister();
-  Register* right_const = CreatePhaseConst(bb, TreeIterPhase::kRight);
-  bb->append<PrimitiveCompare>(
-      cmp_right, PrimitiveCompareOp::kEqual, ctx_.phase_reg, right_const);
-
-  // CondBranch 链
-  BasicBlock* after_left = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb->append<CondBranch>(cmp_left, bb_left_, after_left);
-
-  // Yield 检查
-  BasicBlock* after_yield = ctx_.func->cfg.AllocateUnlinkedBlock();
-  after_left->append<CondBranch>(cmp_yield, bb_yield_, after_yield);
-
-  // Right 检查
-  BasicBlock* after_right = ctx_.func->cfg.AllocateUnlinkedBlock();
-  after_yield->append<CondBranch>(cmp_right, bb_right_, after_right);
-
-  // 默认到 backtrack
-  after_right->append<Branch>(bb_backtrack_);
-
-  return bb;
+// 兼容性方法
+BasicBlock* StateMachineGenerator::GenerateInitBlock() {
+  return bb_init_;
+}
+BasicBlock* StateMachineGenerator::GenerateLoopBlock() {
+  return bb_loop_;
+}
+BasicBlock* StateMachineGenerator::GenerateLeftBlock() {
+  return bb_left_;
+}
+BasicBlock* StateMachineGenerator::GenerateYieldBlock() {
+  return bb_yield_;
+}
+BasicBlock* StateMachineGenerator::GenerateRightBlock() {
+  return bb_right_;
+}
+BasicBlock* StateMachineGenerator::GenerateBacktrackBlock() {
+  return bb_backtrack_;
 }
 
-BasicBlock* hir_ns::StateMachineGenerator::GenerateLeftBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb_left_ = bb;
-
-  // if (current_node->left) {
-  //   StackPush(current_node, kRight);
-  //   current_node = current_node->left;
-  //   phase = kLeft;
-  //   goto loop;
-  // } else {
-  //   phase = kYield;
-  //   goto loop;
-  // }
-
-  // 加载 left 字段（占位符：后续 Task 4 使用 CheckField 替代 LoadField）
-  Register* left_reg = ctx_.func->env.AllocateRegister();
-  bb->append<LoadConst>(left_reg, TObject);
-
-  // 检查是否为 None
-  Register* is_null = ctx_.func->env.AllocateRegister();
-  Register* none_const = ctx_.func->env.AllocateRegister();
-  bb->append<LoadConst>(none_const, Type::fromObject(Py_None));
-  bb->append<PrimitiveCompare>(is_null, PrimitiveCompareOp::kEqual, left_reg, none_const);
-
-  // 条件分支
-  BasicBlock* has_left = ctx_.func->cfg.AllocateUnlinkedBlock();
-  BasicBlock* no_left = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb->append<CondBranch>(is_null, no_left, has_left);
-
-  // has_left: 有左子树，跳回循环
-  has_left->append<Branch>(bb_loop_);
-
-  // no_left: 没有左子树，设置 phase = kYield 并跳转
-  Register* phase_yield = CreatePhaseConst(no_left, TreeIterPhase::kYield);
-  (void)phase_yield;  // 占位：后续保存状态
-  no_left->append<Branch>(bb_loop_);
-
-  return bb;
+void StateMachineGenerator::GenerateStackPush(Register*, TreeIterPhase) {
 }
-
-BasicBlock* hir_ns::StateMachineGenerator::GenerateYieldBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb_yield_ = bb;
-
-  // value = current_node->value
-  // yield value
-  // phase = kRight
-  //
-  // 占位符：后续 Task 4 实现完整的 yield 逻辑
-  // YieldValue 需要有效的 FrameState，暂时跳过
-
-  Register* result = ctx_.func->env.AllocateRegister();
-  bb->append<LoadConst>(result, TObject);
-
-  Register* phase_right = CreatePhaseConst(bb, TreeIterPhase::kRight);
-  (void)phase_right;  // 占位：后续保存状态
-  bb->append<Branch>(bb_loop_);
-
-  return bb;
-}
-
-BasicBlock* hir_ns::StateMachineGenerator::GenerateRightBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb_right_ = bb;
-
-  // 类似 Left 块，但处理 right 字段
-
-  Register* right_reg = ctx_.func->env.AllocateRegister();
-  bb->append<LoadConst>(right_reg, TObject);
-
-  Register* is_null = ctx_.func->env.AllocateRegister();
-  Register* none_const = ctx_.func->env.AllocateRegister();
-  bb->append<LoadConst>(none_const, Type::fromObject(Py_None));
-  bb->append<PrimitiveCompare>(is_null, PrimitiveCompareOp::kEqual, right_reg, none_const);
-
-  BasicBlock* has_right = ctx_.func->cfg.AllocateUnlinkedBlock();
-  BasicBlock* no_right = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb->append<CondBranch>(is_null, no_right, has_right);
-
-  has_right->append<Branch>(bb_loop_);
-
-  Register* phase_backtrack = CreatePhaseConst(no_right, TreeIterPhase::kBacktrack);
-  (void)phase_backtrack;  // 占位：后续保存状态
-  no_right->append<Branch>(bb_loop_);
-
-  return bb;
-}
-
-BasicBlock* hir_ns::StateMachineGenerator::GenerateBacktrackBlock() {
-  BasicBlock* bb = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb_backtrack_ = bb;
-
-  // if (StackEmpty) {
-  //   goto done;
-  // } else {
-  //   (current_node, phase) = StackPop();
-  //   goto loop;
-  // }
-
-  // TODO(Task 4): 实现栈空检查
-  // 当前占位符：检查 stack_top 是否为 0
-  // 由于 stack_top_reg 未初始化，这个检查结果未定义
-
-  Register* is_empty = ctx_.func->env.AllocateRegister();
-  Register* zero = CreateIntConst(bb, 0);
-  bb->append<PrimitiveCompare>(
-      is_empty, PrimitiveCompareOp::kEqual, ctx_.stack_top_reg, zero);
-
-  BasicBlock* stack_not_empty = ctx_.func->cfg.AllocateUnlinkedBlock();
-  bb->append<CondBranch>(is_empty, bb_done_, stack_not_empty);
-
-  // 栈非空：执行 Pop
-  auto [node_reg, phase_reg] = GenerateStackPop();
-  (void)node_reg;   // TODO: 更新 current_node_reg
-  (void)phase_reg;  // TODO: 更新 phase_reg
-
-  stack_not_empty->append<Branch>(bb_loop_);
-
-  return bb;
-}
-
-void hir_ns::StateMachineGenerator::GenerateStackPush(Register* node, TreeIterPhase phase) {
-  // Phase 3.2 Task 4: 状态机栈 Push 操作（方案 A 实现）
-  //
-  // 栈结构 (GenDataFooter.state_stack[16]):
-  //   每个 StackEntry = { node: int64_t, phase: int32_t, reserved: int32_t }
-  //   大小 = 16 字节/entry，总共 256 字节
-  //
-  // 伪代码：
-  //   offset = stack_top * 16
-  //   GenDataFooter.state_stack[offset].node = node
-  //   GenDataFooter.state_stack[offset].phase = phase
-  //   GenDataFooter.stack_top++
-
-  JIT_LOG("StateMachineGenerator: GenerateStackPush (Task 4 - 方案 A)");
-  JIT_LOG("  -> node: {:p}, phase: {}", (void*)node, static_cast<int>(phase));
-
-  // 由于 CinderX HIR 没有直接的内存存储指令，我们使用运行时辅助函数
-  // 未来优化：直接生成 mov 指令访问 GenDataFooter.state_stack
-  //
-  // 方案 A（未来优化）的汇编代码：
-  //   mov rax, [rbp + offsetof(GenDataFooter, stack_top)]
-  //   mov [rbp + offsetof(GenDataFooter, state_stack) + rax*16 + 0], rdi  // node
-  //   mov [rbp + offsetof(GenDataFooter, state_stack) + rax*16 + 8], esi  // phase
-  //   inc dword ptr [rbp + offsetof(GenDataFooter, stack_top)]
-
-  // 当前实现：使用运行时辅助函数（性能略低但功能完整）
-  BasicBlock* bb = bb_left_;  // Push 在 Left 块中调用
-
-  // 调用 JITRT_StateStackPush(footer, node, phase)
-  // 注意：这需要添加 CallRuntime 指令，但 CinderX HIR 可能不支持
-  // 因此，我们使用占位符并添加详细注释
-
-  JIT_LOG("  -> WARNING: 占位符实现 - 需要运行时支持或 codegen 扩展");
-
-  // 占位符：不执行实际操作
-  // TODO(Task 4 后续): 在 codegen/autogen.cpp 中添加 StateStackPush 指令支持
-  (void)node;
-  (void)phase;
-}
-
-std::pair<hir_ns::Register*, hir_ns::Register*> hir_ns::StateMachineGenerator::GenerateStackPop() {
-  // Phase 3.2 Task 4: 状态机栈 Pop 操作（方案 A 实现）
-  //
-  // 伪代码：
-  //   GenDataFooter.stack_top--
-  //   offset = stack_top * 16
-  //   node = GenDataFooter.state_stack[offset].node
-  //   phase = GenDataFooter.state_stack[offset].phase
-  //   return (node, phase)
-
-  Register* node_reg = ctx_.func->env.AllocateRegister();
-  Register* phase_reg = ctx_.func->env.AllocateRegister();
-
-  JIT_LOG("StateMachineGenerator: GenerateStackPop (Task 4 - 方案 A)");
-
-  // 方案 A（未来优化）的汇编代码：
-  //   dec dword ptr [rbp + offsetof(GenDataFooter, stack_top)]
-  //   mov rax, [rbp + offsetof(GenDataFooter, stack_top)]
-  //   mov rdi, [rbp + offsetof(GenDataFooter, state_stack) + rax*16 + 0]  // node
-  //   mov esi, [rbp + offsetof(GenDataFooter, state_stack) + rax*16 + 8]  // phase
-
-  // 当前实现：返回占位符寄存器
-  // TODO(Task 4 后续): 在 codegen/autogen.cpp 中添加 StateStackPop 指令支持
-
-  JIT_LOG("  -> WARNING: 返回未初始化寄存器 - 需要运行时支持或 codegen 扩展");
-
-  return {node_reg, phase_reg};
+std::pair<Register*, Register*> StateMachineGenerator::GenerateStackPop() {
+  return {nullptr, nullptr};
 }
 
 }  // namespace jit::hir
+
+extern "C" int g_state_machine_pass_triggered;
