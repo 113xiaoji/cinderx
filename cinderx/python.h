@@ -7,6 +7,18 @@
 
 #pragma once
 
+// macOS SDK workaround: GCC 15 doesn't support Apple's _Static_assert extensions
+// in xnu headers. Define as a no-op before system headers are included.
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 10
+#ifndef __linux__
+#if defined(__APPLE__) && defined(__MACH__)
+// Apple's mach/port.h defines xnu_static_assert_struct_size which uses _Static_assert.
+// GCC doesn't handle Apple's extension. Map to standard static_assert.
+#define _Static_assert static_assert
+#endif
+#endif
+#endif
+
 #include <Python.h>
 
 #if PY_VERSION_HEX >= 0x030E0000
