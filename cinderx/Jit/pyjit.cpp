@@ -3954,7 +3954,7 @@ Result compilePreloaderImpl(
   try {
     compiled_func = jit_ctx->compiler().Compile(preloader);
   } catch (const std::exception& exn) {
-    JIT_DLOG("{}", exn.what());
+    JIT_LOG("Compile exception: {}", exn.what());
   }
 
   ThreadedCompileSerialize guard;

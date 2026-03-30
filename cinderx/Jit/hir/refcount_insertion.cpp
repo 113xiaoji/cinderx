@@ -724,11 +724,14 @@ void initializeInState(
 
     // Using an arbitrary predecessor to get definition order, insert any
     // copies that are still live into this block.
-    auto& pred_rstate = pred_state.getModel(model);
-    for (int i = 0, n = pred_rstate.numCopies(); i < n; ++i) {
-      auto copy = pred_rstate.copy(i);
-      if (live_in.contains(copy)) {
-        rstate.addCopy(copy);
+    auto it = pred_state.find(model);
+    if (it != pred_state.end()) {
+      auto& pred_rstate = it->second;
+      for (int i = 0, n = pred_rstate.numCopies(); i < n; ++i) {
+        auto copy = pred_rstate.copy(i);
+        if (live_in.contains(copy)) {
+          rstate.addCopy(copy);
+        }
       }
     }
   }
@@ -900,7 +903,11 @@ void updateInState(Env& env, BasicBlock* block) {
 
     if (!(model->instr()->IsPhi() && model->instr()->block() == block)) {
       for (auto& pred : preds) {
-        rstate.merge(pred.state->getModel(model));
+        auto it = pred.state->find(model);
+        if (it == pred.state->end()) {
+          continue;
+        }
+        rstate.merge(it->second);
         if (rstate.isOwned()) {
           break;
         }
