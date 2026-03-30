@@ -195,7 +195,13 @@ namespace jit::hir {
   V(LoadState)                         \
   V(YieldFromInline)                  \
   V(StateStackPush)                   \
-  V(StateStackPop)
+  V(StateStackPop)                    \
+  V(LoadPoppedPhase)                  \
+  V(LoadStackTop)                     \
+  V(SaveCurrentNode)                  \
+  V(LoadCurrentNode)                  \
+  V(SavePhase)                        \
+  V(LoadPhase)
 
 enum class Opcode {
 #define DECLARE_OP(opname) k##opname,

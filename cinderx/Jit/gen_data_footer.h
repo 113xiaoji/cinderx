@@ -91,8 +91,11 @@ struct GenDataFooter {
   int32_t currentState{-1};
 #endif
 
-  // Phase 3.2: State machine inline stack
-  // Stack for tree traversal state machine to eliminate yield-from overhead
+  // Current tree node for state machine (as int64_t for pointer tagging)
+  int64_t current_node{0};
+  // Current phase for state machine (kLeft = 1, kYield, 2=LEFT, 1=YIELD, 3=RIGHT, 4=BACKTRACK)
+  int32_t current_phase{0};
+
   struct StackEntry {
     int64_t node;      // PyObject* (current tree node)
     int32_t phase;     // TreeIterPhase (0=LEFT, 1=YIELD, 2=RIGHT, 3=BACKTRACK)

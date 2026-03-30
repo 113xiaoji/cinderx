@@ -3805,7 +3805,52 @@ DEFINE_SIMPLE_INSTR(
 // 临时方案：返回一个包含两个值的元组对象
 DEFINE_SIMPLE_INSTR(
     StateStackPop,
-    (),
+    (TObject),
+    HasOutput,
+    Operands<0>);
+
+// LoadPoppedPhase: 读取 GenDataFooter.popped_phase
+// StateStackPop 将 phase 存储到 GenDataFooter.popped_phase，
+// LoadPoppedPhase 将其加载到寄存器供状态机使用
+DEFINE_SIMPLE_INSTR(
+    LoadPoppedPhase,
+    (TCInt32),
+    HasOutput,
+    Operands<0>);
+
+// LoadStackTop: 读取 GenDataFooter.stack_top
+// StateStackPush/StateStackPop 修改 stack_top，
+// LoadStackTop 将其加载到寄存器用于空栈检查
+DEFINE_SIMPLE_INSTR(
+    LoadStackTop,
+    (TCInt32),
+    HasOutput,
+    Operands<0>);
+
+// SaveCurrentNode: 存储 PyObject* 到 GenDataFooter.current_node
+// 用于状态机循环，消除 SSA Phi 自引用
+DEFINE_SIMPLE_INSTR(
+    SaveCurrentNode,
+    (TObject),
+    Operands<1>);
+
+// LoadCurrentNode: 从 GenDataFooter.current_node 加载 PyObject*
+DEFINE_SIMPLE_INSTR(
+    LoadCurrentNode,
+    (TObject),
+    HasOutput,
+    Operands<0>);
+
+// SavePhase: 存储 int32_t 到 GenDataFooter.current_phase
+DEFINE_SIMPLE_INSTR(
+    SavePhase,
+    (TCInt32),
+    Operands<1>);
+
+// LoadPhase: 从 GenDataFooter.current_phase 加载 int32_t
+DEFINE_SIMPLE_INSTR(
+    LoadPhase,
+    (TCInt32),
     HasOutput,
     Operands<0>);
 

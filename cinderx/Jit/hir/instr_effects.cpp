@@ -356,9 +356,27 @@ MemoryEffects memoryEffects(const Instr& inst) {
       return {true, AFuncArgs, {3, 1}, AAny};
     case Opcode::kStateStackPush:
       // 修改 GenDataFooter 栈，读取 node 和 phase 操作数
-      return commonEffects(inst, AEmpty);
+      return {false, AEmpty, {inst.NumOperands()}, AOther};
     case Opcode::kStateStackPop:
       // 修改 GenDataFooter 栈，输出 node
+      return {false, AEmpty, {0, 0}, AOther};
+    case Opcode::kLoadPoppedPhase:
+      // 只读 GenDataFooter.popped_phase
+      return commonEffects(inst, AEmpty);
+    case Opcode::kLoadStackTop:
+      // 只读 GenDataFooter.stack_top
+      return commonEffects(inst, AEmpty);
+    case Opcode::kSaveCurrentNode:
+      // 修改 GenDataFooter.current_node
+      return commonEffects(inst, AOther);
+    case Opcode::kLoadCurrentNode:
+      // 只读 GenDataFooter.current_node
+      return commonEffects(inst, AEmpty);
+    case Opcode::kSavePhase:
+      // 修改 GenDataFooter.current_phase
+      return commonEffects(inst, AOther);
+    case Opcode::kLoadPhase:
+      // 只读 GenDataFooter.current_phase
       return commonEffects(inst, AEmpty);
     case Opcode::kYieldFromHandleStopAsyncIteration: {
       // In 3.10 YieldFrom's output is either the yielded value from the subiter
@@ -587,6 +605,12 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
     case Opcode::kStateStackPush:
     case Opcode::kStateStackPop:
+    case Opcode::kLoadPoppedPhase:
+    case Opcode::kLoadStackTop:
+    case Opcode::kSaveCurrentNode:
+    case Opcode::kLoadCurrentNode:
+    case Opcode::kSavePhase:
+    case Opcode::kLoadPhase:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return true;

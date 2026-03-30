@@ -537,6 +537,12 @@ bool Instr::isReplayable() const {
     case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
     case Opcode::kStateStackPush:
     case Opcode::kStateStackPop:
+    case Opcode::kLoadPoppedPhase:
+    case Opcode::kLoadStackTop:
+    case Opcode::kSaveCurrentNode:
+    case Opcode::kLoadCurrentNode:
+    case Opcode::kSavePhase:
+    case Opcode::kLoadPhase:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
     case Opcode::kXDecref:
@@ -845,10 +851,21 @@ bool isPassthrough(const Instr& instr) {
     case Opcode::kOptimizedYieldFrom:
     case Opcode::kInlineIter:
     case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
-    case Opcode::kStateStackPush:
-    case Opcode::kStateStackPop:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
+      return false;
+    // State machine instructions that handle their own refcounting.
+    // Instructions with no inputs and NOT passthrough - they create new values.
+    case Opcode::kStateStackPop:
+    case Opcode::kLoadPoppedPhase:
+    case Opcode::kLoadStackTop:
+    case Opcode::kLoadCurrentNode:
+    case Opcode::kLoadPhase:
+      return false;
+    // Instructions with inputs and no output - just write to GenDataFooter, no refcount effect.
+    case Opcode::kStateStackPush:
+    case Opcode::kSaveCurrentNode:
+    case Opcode::kSavePhase:
       return false;
 
     case Opcode::kBatchDecref:
