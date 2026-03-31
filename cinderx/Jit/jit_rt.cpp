@@ -2825,12 +2825,9 @@ void JITRT_SavePhase(int32_t phase) {
 }
 
 int32_t JITRT_LoadPhase() {
-  fprintf(stderr, "[SM] LoadPhase\n");
   jit::GenDataFooter* footer = getCurrentGenDataFooter();
   if (footer == nullptr) {
     return -1;
   }
-  int32_t result = footer->current_phase;
-  fprintf(stderr, "[SM] LoadPhase result=%d\n", result);
-  return result;
+  return footer->current_phase;
 }
