@@ -201,3 +201,18 @@
 - Corrective action:
   - apply a minimal local `const_cast<hir::BasicBlock&>(block).entrySnapshot()`
   - keep the scope narrow instead of adding a broader `const` overload to HIR in the middle of Phase 0
+
+## 2026-03-31 Remote verification round 3
+
+- Result:
+  - remote wheel build progressed past `gen_asm.cpp`
+  - new first failing compiler error is now in `cinderx/Jit/lir/generator.cpp`
+- Error:
+  - `hir_bb->entrySnapshot()` called through `const hir::BasicBlock*`
+- Interpretation:
+  - the previous fix was correct and unblocked the first site
+  - the same const-correctness pattern exists in the Phase 0 `bb_map` export path
+  - this is still shallow plumbing fallout from the new metadata scan, not yet a semantic OSR failure
+- Corrective action:
+  - apply the same minimal local fix in `lir/generator.cpp`
+  - rerun the same remote validation flow

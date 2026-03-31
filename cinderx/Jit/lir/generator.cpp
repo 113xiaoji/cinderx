@@ -339,7 +339,7 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
 
   env_->phase0_osr_entry_blocks.clear();
   for (const auto& [hir_bb, translated] : bb_map) {
-    auto* snapshot = hir_bb->entrySnapshot();
+    auto* snapshot = const_cast<hir::BasicBlock*>(hir_bb)->entrySnapshot();
     if (snapshot == nullptr) {
       continue;
     }
