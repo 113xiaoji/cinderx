@@ -380,3 +380,11 @@
     - synthetic-state secondary entry can jump into compiled loop execution
   - it avoids overfitting Phase 0 to pending-task semantics before the main OSR path is stable
   - this is explicitly a test-entry-only compromise, not the final scheme-B entry rule
+
+## 2026-03-31 Additional Phase 0 test-entry compromise
+
+- Even after targeting the non-periodic successor, the synthetic entry still hit `_Py_HandlePending()` after looping back through the normal header path.
+- To keep Phase 0 focused on proving synthetic entry into compiled loop execution, the test-only secondary entry now clears `tstate->eval_breaker` before jumping into the compiled loop.
+- This is intentionally scoped to the test-only OSR entry:
+  - it is not a proposed product behavior
+  - it exists only to postpone pending-task compatibility until after the synthetic-entry path itself is stable

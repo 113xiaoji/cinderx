@@ -2707,6 +2707,9 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
       as_->add(x86::rsp, padding);
     }
     saveCallerRegisters(frame_info, x86::r11);
+    as_->mov(
+        x86::qword_ptr(x86::r11, offsetof(PyThreadState, eval_breaker)),
+        0);
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_rsi;
     for (const auto& mapping : mappings) {
@@ -2738,6 +2741,7 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
     (void)allocateHeaderAndSpillSpace(frame_info);
     frame_asm_.generateLinkFrame(a64::x0, a64::x11, save_regs);
     saveCallerRegisters(frame_info, a64::x11);
+    as_->str(a64::xzr, arch::ptr_offset(a64::x11, offsetof(PyThreadState, eval_breaker)));
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_x1;
     for (const auto& mapping : mappings) {
