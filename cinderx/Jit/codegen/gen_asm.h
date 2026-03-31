@@ -144,6 +144,7 @@ class NativeGenerator {
   void emitAarch64CallTargetLiteralPool();
   Py_ssize_t giJITDataOffset();
   void generateResumeEntry(const FrameInfo& frame_info);
+  void generatePhase0OSREntries(const FrameInfo& frame_info);
   void generateStaticMethodTypeChecks(asmjit::Label setup_frame);
   void generateStaticEntryPoint(
       const FrameInfo& frame_info,

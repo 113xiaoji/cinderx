@@ -19,6 +19,7 @@
 #include "cinderx/Common/py-portability.h"
 #include "cinderx/Common/util.h"
 #include "cinderx/Interpreter/interpreter.h"
+#include "cinderx/Jit/bytecode.h"
 #include "cinderx/Jit/codegen/arch.h"
 #include "cinderx/Jit/codegen/autogen.h"
 
@@ -53,6 +54,7 @@
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 using namespace asmjit;
@@ -64,6 +66,49 @@ using namespace jit::util;
 namespace jit::codegen {
 
 namespace {
+
+std::unordered_set<int> collectLoopHeaderOffsets(BorrowedRef<PyCodeObject> code) {
+  std::unordered_set<int> offsets;
+  BytecodeInstructionBlock instrs{code};
+  for (const BytecodeInstruction& instr : instrs) {
+    switch (instr.opcode()) {
+      case JUMP_BACKWARD:
+      case JUMP_BACKWARD_NO_INTERRUPT:
+        offsets.emplace(instr.getJumpTarget().value());
+        break;
+      default:
+        break;
+    }
+  }
+  return offsets;
+}
+
+void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
+  auto loop_headers = collectLoopHeaderOffsets(func.code);
+  for (const auto& block : func.cfg.blocks) {
+    auto* snapshot = block.entrySnapshot();
+    if (snapshot == nullptr) {
+      continue;
+    }
+    auto* frame = snapshot->frameState();
+    if (frame == nullptr) {
+      continue;
+    }
+    if (
+        frame->parent != nullptr || !frame->block_stack.isEmpty() ||
+        !frame->stack.isEmpty()) {
+      continue;
+    }
+    BCOffset bc_offset = frame->cur_instr_offs;
+    if (!loop_headers.contains(bc_offset.value())) {
+      continue;
+    }
+    if (code_rt->lookupOSREntry(bc_offset) != nullptr) {
+      continue;
+    }
+    code_rt->addOSREntry(OSREntryMetadata{bc_offset, 0});
+  }
+}
 
 uint64_t getAarch64HotCallTarget(const Instruction& instr) {
 #if defined(CINDER_AARCH64)
@@ -1261,6 +1306,7 @@ void* NativeGenerator::getVectorcallEntry() {
   env_.ctx = getContext();
   env_.code_rt = env_.ctx->allocateCodeRuntime(
       func->code.get(), func->builtins.get(), func->globals.get());
+  recordPhase0LoopHeaders(*func, env_.code_rt);
 #if defined(ENABLE_LIGHTWEIGHT_FRAMES) && PY_VERSION_HEX >= 0x030E0000
   env_.code_rt->setReifier(func->reifier);
 #endif
@@ -2587,6 +2633,92 @@ void NativeGenerator::generateResumeEntry(const FrameInfo& frame_info) {
 #endif
 }
 
+void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
+  for (auto& osr_block : env_.phase0_osr_entry_blocks) {
+    osr_block.test_entry_label = as_->newLabel();
+    as_->bind(osr_block.test_entry_label);
+    generateFunctionEntry();
+
+#if defined(CINDER_X86_64)
+    std::vector<std::pair<const arch::Reg&, const arch::Reg&>> save_regs;
+    save_regs.emplace_back(x86::rsi, x86::rsi);
+    if (GetFunction()->uses_runtime_func) {
+      save_regs.emplace_back(x86::rdi, x86::rdi);
+    }
+
+    int padding = allocateHeaderAndSpillSpace(frame_info);
+    frame_asm_.generateLinkFrame(x86::rdi, x86::r11, save_regs);
+    if (padding) {
+      as_->add(x86::rsp, padding);
+    }
+    saveCallerRegisters(frame_info, x86::r11);
+
+    std::optional<OSREntryMetadata::LocalMapping> deferred_rsi;
+    for (const auto& mapping : osr_block.local_bindings) {
+      auto loc = mapping.second->output()->getPhyRegOrStackSlot();
+      if (loc == RSI) {
+        deferred_rsi = OSREntryMetadata::LocalMapping{mapping.first, loc};
+        continue;
+      }
+      as_->mov(x86::rax, x86::ptr(x86::rsi, mapping.first * kPointerSize));
+      if (loc.is_register()) {
+        as_->mov(x86::gpq(loc.loc), x86::rax);
+      } else {
+        as_->mov(x86::ptr(x86::rbp, loc.loc), x86::rax);
+      }
+    }
+    if (deferred_rsi.has_value()) {
+      as_->mov(
+          x86::rsi,
+          x86::ptr(x86::rsi, deferred_rsi->local_index * kPointerSize));
+    }
+    as_->jmp(map_get(env_.block_label_map, osr_block.lir_block));
+#elif defined(CINDER_AARCH64)
+    std::vector<std::pair<const arch::Reg&, const arch::Reg&>> save_regs;
+    save_regs.emplace_back(a64::x1, a64::x1);
+    if (GetFunction()->uses_runtime_func) {
+      save_regs.emplace_back(a64::x0, a64::x0);
+    }
+
+    (void)allocateHeaderAndSpillSpace(frame_info);
+    frame_asm_.generateLinkFrame(a64::x0, a64::x11, save_regs);
+    saveCallerRegisters(frame_info, a64::x11);
+
+    std::optional<OSREntryMetadata::LocalMapping> deferred_x1;
+    for (const auto& mapping : osr_block.local_bindings) {
+      auto loc = mapping.second->output()->getPhyRegOrStackSlot();
+      if (loc == X1) {
+        deferred_x1 = OSREntryMetadata::LocalMapping{mapping.first, loc};
+        continue;
+      }
+      as_->ldr(
+          a64::x9,
+          arch::ptr_resolve(
+              as_, a64::x1, mapping.first * kPointerSize, arch::reg_scratch_0));
+      if (loc.is_register()) {
+        as_->mov(a64::x(loc.loc), a64::x9);
+      } else {
+        as_->str(
+            a64::x9,
+            arch::ptr_resolve(as_, arch::fp, loc.loc, arch::reg_scratch_0));
+      }
+    }
+    if (deferred_x1.has_value()) {
+      as_->ldr(
+          a64::x1,
+          arch::ptr_resolve(
+              as_,
+              a64::x1,
+              deferred_x1->local_index * kPointerSize,
+              arch::reg_scratch_0));
+    }
+    as_->b(map_get(env_.block_label_map, osr_block.lir_block));
+#else
+    CINDER_UNSUPPORTED
+#endif
+  }
+}
+
 void NativeGenerator::generateStaticEntryPoint(
     const FrameInfo& frame_info,
     Label finish_frame_setup,
@@ -2905,6 +3037,9 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
   if (GetFunction()->code->co_flags & kCoFlagsAnyGenerator) {
     generateResumeEntry(frame_info);
   }
+  if (!env_.phase0_osr_entry_blocks.empty()) {
+    generatePhase0OSREntries(frame_info);
+  }
 
   if (env_.static_arg_typecheck_failed_label.isValid()) {
     auto static_typecheck_cursor = as_->cursor();
@@ -2988,6 +3123,29 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
 
   vectorcall_entry_ = static_cast<char*>(code_start_) +
       codeholder.labelOffsetFromBase(vectorcall_entry_label);
+
+  for (const auto& osr_block : env_.phase0_osr_entry_blocks) {
+    auto* osr_entry = env_.code_rt->lookupOSREntry(osr_block.bc_offset);
+    if (osr_entry == nullptr) {
+      continue;
+    }
+    osr_entry->entry_address =
+        codeholder.baseAddress() +
+        codeholder.labelOffsetFromBase(
+            map_get(env_.block_label_map, osr_block.lir_block));
+    if (osr_block.test_entry_label.isValid()) {
+      osr_entry->test_entry_address =
+          codeholder.baseAddress() +
+          codeholder.labelOffsetFromBase(osr_block.test_entry_label);
+    }
+    osr_entry->local_mappings.clear();
+    for (const auto& [local_index, instr] : osr_block.local_bindings) {
+      osr_entry->local_mappings.push_back(OSREntryMetadata::LocalMapping{
+          local_index,
+          instr->output()->getPhyRegOrStackSlot(),
+      });
+    }
+  }
 
   for (auto& entry : env_.unresolved_gen_entry_labels) {
     entry.first->setResumeTarget(

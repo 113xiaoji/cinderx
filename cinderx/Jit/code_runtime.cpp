@@ -4,6 +4,8 @@
 
 #include "cinderx/Common/util.h"
 
+#include <algorithm>
+
 namespace jit {
 
 GenYieldPoint::GenYieldPoint(std::size_t deopt_idx, ptrdiff_t yield_from_offset)
@@ -102,6 +104,35 @@ const DeoptMetadata& CodeRuntime::getDeoptMetadata(std::size_t id) const {
 
 const std::vector<DeoptMetadata>& CodeRuntime::deoptMetadatas() const {
   return deopt_metadatas_;
+}
+
+OSREntryMetadata* CodeRuntime::addOSREntry(OSREntryMetadata&& osr_entry) {
+  osr_entries_.emplace_back(std::move(osr_entry));
+  return &osr_entries_.back();
+}
+
+OSREntryMetadata* CodeRuntime::lookupOSREntry(BCOffset bc_offset) {
+  auto it = std::find_if(
+      osr_entries_.begin(),
+      osr_entries_.end(),
+      [bc_offset](const OSREntryMetadata& entry) {
+        return entry.bc_offset == bc_offset;
+      });
+  return it == osr_entries_.end() ? nullptr : &*it;
+}
+
+const OSREntryMetadata* CodeRuntime::lookupOSREntry(BCOffset bc_offset) const {
+  auto it = std::find_if(
+      osr_entries_.begin(),
+      osr_entries_.end(),
+      [bc_offset](const OSREntryMetadata& entry) {
+        return entry.bc_offset == bc_offset;
+      });
+  return it == osr_entries_.end() ? nullptr : &*it;
+}
+
+const std::vector<OSREntryMetadata>& CodeRuntime::osrEntries() const {
+  return osr_entries_;
 }
 
 const RuntimeFrameState* CodeRuntime::frameState() const {

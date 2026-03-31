@@ -337,6 +337,50 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
 
   resolvePhiOperands(bb_map);
 
+  env_->phase0_osr_entry_blocks.clear();
+  for (const auto& [hir_bb, translated] : bb_map) {
+    auto* snapshot = hir_bb->entrySnapshot();
+    if (snapshot == nullptr) {
+      continue;
+    }
+    auto* frame = snapshot->frameState();
+    if (frame == nullptr) {
+      continue;
+    }
+    if (!frame->stack.isEmpty() || frame->parent != nullptr ||
+        !frame->block_stack.isEmpty()) {
+      continue;
+    }
+    BCOffset bc_offset = frame->cur_instr_offs;
+    if (env_->code_rt->lookupOSREntry(bc_offset) == nullptr) {
+      continue;
+    }
+    codegen::Environ::Phase0OSREntryBlock osr_block;
+    osr_block.bc_offset = bc_offset;
+    osr_block.lir_block = translated.first;
+    bool supported = true;
+    for (size_t i = 0; i < frame->localsplus.size(); ++i) {
+      auto* reg = frame->localsplus[i];
+      if (reg == nullptr) {
+        continue;
+      }
+      if (!(reg->type() <= TOptObject)) {
+        supported = false;
+        break;
+      }
+      auto it = env_->output_map.find(reg);
+      if (it == env_->output_map.end()) {
+        supported = false;
+        break;
+      }
+      osr_block.local_bindings.emplace_back(static_cast<int>(i), it->second);
+    }
+    if (!supported) {
+      continue;
+    }
+    env_->phase0_osr_entry_blocks.emplace_back(std::move(osr_block));
+  }
+
   return function;
 }
 

@@ -128,6 +128,13 @@ struct Environ {
   UnorderedMap<const hir::Register*, hir::Register*> copy_propagation_map;
 
   UnorderedMap<jit::lir::BasicBlock*, asmjit::Label> block_label_map;
+  struct Phase0OSREntryBlock {
+    BCOffset bc_offset;
+    jit::lir::BasicBlock* lir_block{nullptr};
+    std::vector<std::pair<int, jit::lir::Instruction*>> local_bindings;
+    asmjit::Label test_entry_label{};
+  };
+  std::vector<Phase0OSREntryBlock> phase0_osr_entry_blocks;
 
   UnorderedMap<const hir::BeginInlinedFunction*, lir::Instruction*>
       inline_frame_map;

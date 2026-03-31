@@ -70,6 +70,18 @@ class alignas(16) RuntimeFrameState {
   BorrowedRef<PyFunctionObject> func_;
 };
 
+struct OSREntryMetadata {
+  struct LocalMapping {
+    int local_index;
+    codegen::PhyLocation location;
+  };
+
+  BCOffset bc_offset;
+  uintptr_t entry_address{0};
+  uintptr_t test_entry_address{0};
+  std::vector<LocalMapping> local_mappings;
+};
+
 // Runtime data for a PyCodeObject object, containing caches and any other data
 // associated with a JIT-compiled function.
 class alignas(16) CodeRuntime {
@@ -121,6 +133,11 @@ class alignas(16) CodeRuntime {
   // Get all deopt metadatas for the given CodeRuntime.
   const std::vector<DeoptMetadata>& deoptMetadatas() const;
 
+  OSREntryMetadata* addOSREntry(OSREntryMetadata&& osr_entry);
+  OSREntryMetadata* lookupOSREntry(BCOffset bc_offset);
+  const OSREntryMetadata* lookupOSREntry(BCOffset bc_offset) const;
+  const std::vector<OSREntryMetadata>& osrEntries() const;
+
   // Get the top-level runtime frame state for this CodeRuntime's PyCodeObject.
   const RuntimeFrameState* frameState() const;
 
@@ -156,6 +173,8 @@ class alignas(16) CodeRuntime {
   // Metadata about deopt points.  Safe to use a vector as these are always
   // accessed by index.
   std::vector<DeoptMetadata> deopt_metadatas_;
+
+  std::vector<OSREntryMetadata> osr_entries_;
 
 #if PY_VERSION_HEX >= 0x030E0000 && defined(ENABLE_LIGHTWEIGHT_FRAMES)
   ThreadedRef<> reifier_;
