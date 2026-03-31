@@ -130,8 +130,9 @@ struct Environ {
   UnorderedMap<jit::lir::BasicBlock*, asmjit::Label> block_label_map;
   struct Phase0OSREntryBlock {
     BCOffset bc_offset;
-    jit::lir::BasicBlock* lir_block{nullptr};
-    std::vector<std::pair<int, jit::lir::Instruction*>> local_bindings;
+    jit::lir::BasicBlock* phi_lir_block{nullptr};
+    jit::lir::BasicBlock* entry_lir_block{nullptr};
+    std::vector<std::pair<int, const jit::hir::Register*>> local_bindings;
     asmjit::Label test_entry_label{};
   };
   std::vector<Phase0OSREntryBlock> phase0_osr_entry_blocks;

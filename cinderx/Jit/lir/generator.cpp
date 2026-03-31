@@ -393,14 +393,11 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
     }
     codegen::Environ::Phase0OSREntryBlock osr_block;
     osr_block.bc_offset = bc_offset;
-    osr_block.lir_block = bb_map.at(entry_hir_bb).first;
-    jit::hir::FrameState* entry_frame = getPhase0FrameState(entry_hir_bb);
-    if (entry_frame == nullptr) {
-      continue;
-    }
+    osr_block.phi_lir_block = bb_map.at(hir_bb).first;
+    osr_block.entry_lir_block = bb_map.at(entry_hir_bb).first;
     bool supported = true;
-    for (size_t i = 0; i < entry_frame->localsplus.size(); ++i) {
-      auto* reg = entry_frame->localsplus[i];
+    for (size_t i = 0; i < frame->localsplus.size(); ++i) {
+      auto* reg = frame->localsplus[i];
       if (reg == nullptr) {
         continue;
       }
@@ -408,12 +405,7 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
         supported = false;
         break;
       }
-      auto it = env_->output_map.find(reg);
-      if (it == env_->output_map.end()) {
-        supported = false;
-        break;
-      }
-      osr_block.local_bindings.emplace_back(static_cast<int>(i), it->second);
+      osr_block.local_bindings.emplace_back(static_cast<int>(i), reg);
     }
     if (!supported) {
       continue;

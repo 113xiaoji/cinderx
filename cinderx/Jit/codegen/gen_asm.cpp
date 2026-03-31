@@ -167,18 +167,36 @@ std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
   std::vector<OSREntryMetadata::LocalMapping> mappings;
   mappings.reserve(osr_block.local_bindings.size());
 
+  auto find_precise_location = [&](const hir::Register* reg)
+      -> std::optional<PhyLocation> {
+    if (osr_block.phi_lir_block == nullptr || reg == nullptr) {
+      return std::nullopt;
+    }
+    std::optional<PhyLocation> loc;
+    osr_block.phi_lir_block->foreachPhiInstr([&](const jit::lir::Instruction* instr) {
+      if (loc.has_value()) {
+        return;
+      }
+      const hir::Instr* origin = instr->origin();
+      if (origin == nullptr || !origin->IsPhi() || origin->output() != reg) {
+        return;
+      }
+      PhyLocation candidate = instr->output()->getPhyRegOrStackSlot();
+      if (candidate.is_register() || candidate.is_memory()) {
+        loc = candidate;
+      }
+    });
+    return loc;
+  };
+
   bool have_precise_bindings = !osr_block.local_bindings.empty();
-  for (const auto& [local_index, binding] : osr_block.local_bindings) {
-    if (binding == nullptr) {
+  for (const auto& [local_index, reg] : osr_block.local_bindings) {
+    auto loc = find_precise_location(reg);
+    if (!loc.has_value()) {
       have_precise_bindings = false;
       break;
     }
-    PhyLocation loc = binding->output()->getPhyRegOrStackSlot();
-    if (!loc.is_register() && !loc.is_memory()) {
-      have_precise_bindings = false;
-      break;
-    }
-    mappings.push_back(OSREntryMetadata::LocalMapping{local_index, loc});
+    mappings.push_back(OSREntryMetadata::LocalMapping{local_index, *loc});
   }
   if (have_precise_bindings) {
     return mappings;
@@ -2761,7 +2779,7 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
           x86::rsi,
           x86::ptr(x86::rsi, deferred_rsi->local_index * kPointerSize));
     }
-    as_->jmp(map_get(env_.block_label_map, osr_block.lir_block));
+    as_->jmp(map_get(env_.block_label_map, osr_block.entry_lir_block));
 #elif defined(CINDER_AARCH64)
     std::vector<std::pair<const arch::Reg&, const arch::Reg&>> save_regs;
     save_regs.emplace_back(a64::x1, a64::x1);
@@ -2810,7 +2828,7 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
               deferred_x1->local_index * kPointerSize,
               arch::reg_scratch_0));
     }
-    as_->b(map_get(env_.block_label_map, osr_block.lir_block));
+    as_->b(map_get(env_.block_label_map, osr_block.entry_lir_block));
 #else
     CINDER_UNSUPPORTED
 #endif
@@ -3230,7 +3248,7 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
     osr_entry->entry_address =
         codeholder.baseAddress() +
         codeholder.labelOffsetFromBase(
-            map_get(env_.block_label_map, osr_block.lir_block));
+            map_get(env_.block_label_map, osr_block.entry_lir_block));
     if (osr_block.test_entry_label.isValid()) {
       osr_entry->test_entry_address =
           codeholder.baseAddress() +
