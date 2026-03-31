@@ -320,3 +320,80 @@ assert triggered > 0  # 验证 pass 被触发
 | deopt 支持 | 中 | 当前 YieldValue 用复制的 FrameState，不支持 deopt 回退 |
 | 栈容量扩展 | 低 | 当前 16 entries（depth <= 12），可扩展到更大 |
 | 内联优化 | 低 | 将 C 运行时调用替换为内联汇编，减少函数调用开销 |
+
+---
+
+## 坑 7: hasArbitraryExecution 过度优化导致正确性失败
+
+### 现象
+
+将 kSavePhase/kLoadCurrentNode 等 opcode 的 `hasArbitraryExecution` 从 `true` 改为 `false` 后，`test_phase3_state_machine.py` 仍然输出 "pass 触发次数: 1" 且 exit 0。
+但实际遍历结果错误：depth=3 返回 `[1, 1, 1]`（只有左叶节点）而非正确的 `[1, 2, 1, 3, 1, 2, 1]`。
+
+### 根因
+
+`hasArbitraryExecution = false` 允许 HIR 优化器做以下优化：
+- **CSE（公共子表达式消除）**：多个 `LoadPhase` 被合并为一个，但状态机循环中每次 `SavePhase` 后 `current_phase` 已改变，后续 `LoadPhase` 必须重新读取
+- **DSE（死存储消除）**：`SavePhase` 的写入可能被判定为死存储而消除
+
+kSavePhase 是**写入操作**，标记为 `false` 后优化器消除了关键的状态转换 → 状态机永远停留在 kLeft phase → 只遍历左子树叶节点。
+
+### 为什么测试没发现
+
+**构建缓存问题**：首次提交时 `python setup.py build_ext --inplace` 编译成功，但 CMake 增量构建可能没有重新编译所有依赖文件。测试实际运行的是旧二进制（未应用 hasArbitraryExecution 改动），因此通过了。
+
+后续修改了其他文件（generator.cpp、autogen.cpp）触发完整重编译后，hasArbitraryExecution 的改动才真正生效，测试才暴露问题。
+
+### 修复
+
+只将**纯读取**操作标记为 `false`：
+- ✅ kLoadPhase：只读 GenDataFooter.current_phase
+- ✅ kLoadPoppedPhase：只读 GenDataFooter.popped_phase
+- ✅ kLoadStackTop：只读 GenDataFooter.stack_top
+
+写入和含副作用操作必须保留 `true`：
+- ❌ kSavePhase：写入 GenDataFooter，CSE/DSE 会破坏状态转换
+- ❌ kLoadCurrentNode：含 Py_INCREF，不能被消除
+- ❌ kSaveCurrentNode：含 Py_DECREF + Py_INCREF
+- ❌ kStateStackPush/Pop：含 refcount 操作
+
+### 教训
+
+1. **HIR 优化标记不能随意改** — `hasArbitraryExecution` 控制优化器的行为边界，写入操作必须标记为 `true`
+2. **增量构建不可靠** — 每次改动 HIR 层代码后应 clean build 验证
+3. **测试需要更全面** — 当前测试只检查最终遍历结果，缺少：
+   - 循环迭代稳定性（多次 `list(t)` 同一棵树）
+   - 性能回归检测（ON/OFF 对比）
+   - 多深度连续测试（d1→d12 循环）
+
+---
+
+## 坑 8: translate 函数寄存器冲突（从未执行的代码路径）
+
+### 现象
+
+将 StateStackPush/Pop 从 C 调用改为原生 LIR 指令后，depth≥3 时 SIGSEGV。
+
+### 根因
+
+`autogen.cpp` 中 `translateStateStackPush` 的 AArch64 实现有寄存器冲突：
+
+```cpp
+// Step 1: 加载 stack_top 到 w12（x12 低 32 位）
+as->ldr(a64::w12, ptr_resolve(...));
+
+// Step 2: mov x12, offset  ← 覆盖了 w12！stack_top 值丢失！
+as->mov(arch::reg_scratch_0, stack_base_offset);  // reg_scratch_0 = x12
+as->add(arch::reg_scratch_0, arch::fp, arch::reg_scratch_0);
+as->lsl(a64::x13, a64::x12, 4);  // x12 已被覆盖，不是 stack_top
+```
+
+`x12`（reg_scratch_0）和 `w12` 是同一寄存器。Step 2 的 `mov` 覆盖了 Step 1 加载的 stack_top。
+
+### 为什么一直没发现
+
+LIR generator 一直用 `appendInvokeInstruction`（创建 `kCall` LIR 指令），走标准 C 函数调用路径。BEGIN_RULES 中的 `CALL_C(translateStateStackPush)` 虽然存在，但 opcode `kStateStackPush` 的指令从未被生成过 → translate 函数从未执行 → bug 从未触发。
+
+### 教训
+
+**未执行代码不等于正确代码** — BEGIN_RULES 中有 translate 函数不代表它被使用过。验证方式：在 translate 函数中加 `JIT_ABORT` 断言，如果 C 调用路径在用，不应触发。
