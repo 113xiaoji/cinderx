@@ -314,6 +314,22 @@
     - generated synthetic-state stubs
     - exported debug metadata
 
+## Current open question
+
+- After switching to deopt-derived mappings, the exported Phase 0 entry still shows:
+  - `test_entry_address = 0`
+  - `local_count = 0`
+- This strongly suggests a remaining offset-alignment issue:
+  - the Phase 0 exported `bc_offset`
+  - and the deopt metadata `cause_instr_idx`
+  are not yet matching on the same semantic bytecode point.
+- Next debug step:
+  - expose deopt metadata summaries through a tiny debug API
+  - compare:
+    - OSR `bc_offset`
+    - deopt `cause_instr_idx`
+  on the exact same compiled `hot` loop function
+
 ## 2026-03-31 Remote verification round 6
 
 - Result:

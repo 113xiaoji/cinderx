@@ -39,6 +39,7 @@ try:
         get_compile_after_n_calls,
         get_compiled_functions,
         get_compiled_size,
+        get_deopt_entries,
         get_osr_entries,
         get_compiled_spill_stack_size,
         get_compiled_stack_size,
@@ -146,6 +147,9 @@ except ImportError:
         return 0
 
     def get_osr_entries(func: FuncAny) -> list[dict[str, int]]:
+        return []
+
+    def get_deopt_entries(func: FuncAny) -> list[dict[str, object]]:
         return []
 
     def get_compiled_spill_stack_size(func: FuncAny) -> int:

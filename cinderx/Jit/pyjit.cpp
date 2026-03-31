@@ -2440,6 +2440,44 @@ PyObject* get_osr_entries(PyObject* /* self */, PyObject* arg) {
   return result.release();
 }
 
+PyObject* get_deopt_entries(PyObject* /* self */, PyObject* arg) {
+  BorrowedRef<PyFunctionObject> func = get_func_arg("get_deopt_entries", arg);
+  if (func == nullptr) {
+    return nullptr;
+  }
+  auto result = Ref<>::steal(PyList_New(0));
+  if (result == nullptr || jitCtx() == nullptr) {
+    return result.release();
+  }
+  CompiledFunction* compiled_func = jitCtx()->lookupFunc(func);
+  if (compiled_func == nullptr) {
+    return result.release();
+  }
+
+  for (const DeoptMetadata& meta : compiled_func->runtime()->deoptMetadatas()) {
+    auto item = Ref<>::steal(PyDict_New());
+    if (item == nullptr) {
+      return nullptr;
+    }
+    auto reason =
+        Ref<>::steal(PyUnicode_FromString(deoptReasonName(meta.reason)));
+    auto depth = Ref<>::steal(PyLong_FromLong(meta.inline_depth()));
+    auto cause = Ref<>::steal(
+        PyLong_FromLong(meta.outermostFrame().cause_instr_idx.value()));
+    if (reason == nullptr || depth == nullptr || cause == nullptr) {
+      return nullptr;
+    }
+    if (PyDict_SetItemString(item, "reason", reason) < 0 ||
+        PyDict_SetItemString(item, "inline_depth", depth) < 0 ||
+        PyDict_SetItemString(item, "cause_instr_idx", cause) < 0 ||
+        PyList_Append(result, item) < 0) {
+      return nullptr;
+    }
+  }
+
+  return result.release();
+}
+
 PyObject* run_osr_test_entry(PyObject* /* self */, PyObject* args) {
   PyObject* func_obj;
   PyObject* locals_obj;
@@ -3098,6 +3136,10 @@ PyMethodDef jit_methods[] = {
      get_osr_entries,
      METH_O,
      PyDoc_STR("Get exported phase0 OSR entry metadata for a compiled function.")},
+    {"get_deopt_entries",
+     get_deopt_entries,
+     METH_O,
+     PyDoc_STR("Get deopt metadata summaries for a compiled function.")},
     {"run_osr_test_entry",
      run_osr_test_entry,
      METH_VARARGS,
