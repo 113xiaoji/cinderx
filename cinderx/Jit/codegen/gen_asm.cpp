@@ -2759,6 +2759,26 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
     as_->mov(
         x86::qword_ptr(x86::r11, offsetof(PyThreadState, eval_breaker)),
         0);
+    auto frame_loc = env_.asm_interpreter_frame->output()->getPhyRegOrStackSlot();
+    auto frame_reg = x86::r10;
+    if (frame_loc.is_register()) {
+      as_->mov(frame_reg, x86::gpq(frame_loc.loc));
+    } else {
+      as_->mov(frame_reg, x86::ptr(x86::rbp, frame_loc.loc));
+    }
+    auto prev_instr_ptr = reinterpret_cast<uint64_t>(
+        func_->code->co_code_adaptive + osr_block.bc_offset.value());
+#if PY_VERSION_HEX >= 0x030E0000
+    as_->mov(x86::rax, prev_instr_ptr);
+    as_->mov(
+        x86::ptr(frame_reg, offsetof(_PyInterpreterFrame, instr_ptr)),
+        x86::rax);
+#else
+    as_->mov(x86::rax, prev_instr_ptr);
+    as_->mov(
+        x86::ptr(frame_reg, offsetof(_PyInterpreterFrame, prev_instr)),
+        x86::rax);
+#endif
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_rsi;
     for (const auto& mapping : mappings) {
@@ -2799,6 +2819,23 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
           arch::ptr_resolve(as_, arch::fp, tstate_loc.loc, arch::reg_scratch_0));
     }
     as_->str(a64::xzr, arch::ptr_offset(a64::x11, offsetof(PyThreadState, eval_breaker)));
+    auto frame_loc = env_.asm_interpreter_frame->output()->getPhyRegOrStackSlot();
+    auto frame_reg = a64::x10;
+    if (frame_loc.is_register()) {
+      as_->mov(frame_reg, a64::x(frame_loc.loc));
+    } else {
+      as_->ldr(
+          frame_reg,
+          arch::ptr_resolve(as_, arch::fp, frame_loc.loc, arch::reg_scratch_0));
+    }
+    auto prev_instr_ptr = reinterpret_cast<uint64_t>(
+        func_->code->co_code_adaptive + osr_block.bc_offset.value());
+    as_->mov(a64::x9, prev_instr_ptr);
+#if PY_VERSION_HEX >= 0x030E0000
+    as_->str(a64::x9, arch::ptr_offset(frame_reg, offsetof(_PyInterpreterFrame, instr_ptr)));
+#else
+    as_->str(a64::x9, arch::ptr_offset(frame_reg, offsetof(_PyInterpreterFrame, prev_instr)));
+#endif
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_x1;
     for (const auto& mapping : mappings) {
