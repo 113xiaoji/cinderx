@@ -139,6 +139,16 @@
     - a Phase 0 entry stub can populate those output locations directly before branching to the loop-header label
   - implication:
     - the prototype can skip a larger CFG rewrite and still test real block-entry execution
+- Verification-strategy adjustment after remote build/debugging:
+  - the current OSS remote entry builds the wheel and runs `test_arm_runtime.py`
+  - it does not build or execute `cinderx/RuntimeTests`
+  - because of that, the C++ `RuntimeTests` added for Phase 0 are still useful as design-time regression tests, but they are not sufficient for the required remote validation loop
+  - decision:
+    - add a very narrow debug API in `cinderjit` / `cinderx.jit`
+    - expose:
+      - exported OSR metadata
+      - the Phase 0 synthetic-state test entry
+    - then validate via targeted Python tests invoked through the same standard remote script
 - Local verification blocker encountered:
   - this desktop environment currently does not have `cmake`, `python`, or `py` available in `PATH`
   - a quick local search during this round also did not find `cmake.exe`, `python.exe`, or `ninja.exe` in the workspace or common install paths that were checked
@@ -216,3 +226,14 @@
 - Corrective action:
   - apply the same minimal local fix in `lir/generator.cpp`
   - rerun the same remote validation flow
+
+## Next verification step
+
+- Once the new debug API compiles:
+  - keep using `scripts/arm/remote_update_build_test.sh`
+  - skip the branch's unrelated default `test_arm_runtime.py` failures via:
+    - `ARM_RUNTIME_SKIP_TESTS=test_`
+  - run only the new targeted Phase 0 tests via:
+    - `EXTRA_TEST_CMD=python -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_arm_runtime.py -k phase0_loop_osr -v`
+  - stop before default pyperformance gates via:
+    - `SKIP_DEFAULT_PYPERF_GATES=1`

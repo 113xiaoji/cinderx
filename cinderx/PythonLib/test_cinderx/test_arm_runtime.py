@@ -71,6 +71,35 @@ class ArmRuntimeTests(unittest.TestCase):
         interp1 = cinderx.jit.count_interpreted_calls(f)
         self.assertEqual(interp1, interp0)
 
+    def test_phase0_loop_osr_exports_entries(self) -> None:
+        cinderx.jit.enable()
+
+        def hot(n: int, acc: int) -> int:
+            while n > 0:
+                acc = acc + n
+                n = n - 1
+            return acc
+
+        self.assertTrue(cinderx.jit.force_compile(hot))
+        entries = cinderx.jit.get_osr_entries(hot)
+        self.assertTrue(entries, entries)
+        self.assertEqual(entries[0]["local_count"], 2, entries)
+        self.assertGreater(entries[0]["entry_address"], 0, entries)
+        self.assertGreater(entries[0]["test_entry_address"], 0, entries)
+
+    def test_phase0_loop_osr_test_entry_executes_loop(self) -> None:
+        cinderx.jit.enable()
+
+        def hot(n: int, acc: int) -> int:
+            while n > 0:
+                acc = acc + n
+                n = n - 1
+            return acc
+
+        self.assertTrue(cinderx.jit.force_compile(hot))
+        result = cinderx.jit.run_osr_test_entry(hot, (3, 10))
+        self.assertEqual(result, 16)
+
     def test_load_global_mutable_large_int_avoids_repeated_deopts(self) -> None:
         # Regression guard:
         # a mutable global int outside the small-int cache should not keep a

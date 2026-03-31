@@ -39,6 +39,7 @@ try:
         get_compile_after_n_calls,
         get_compiled_functions,
         get_compiled_size,
+        get_osr_entries,
         get_compiled_spill_stack_size,
         get_compiled_stack_size,
         get_function_compilation_time,
@@ -58,6 +59,7 @@ try:
         page_in_profiler_dependencies,
         precompile_all,
         read_jit_list,
+        run_osr_test_entry,
         set_max_code_size,
     )
 
@@ -143,6 +145,9 @@ except ImportError:
     def get_compiled_size(func: FuncAny) -> int:
         return 0
 
+    def get_osr_entries(func: FuncAny) -> list[dict[str, int]]:
+        return []
+
     def get_compiled_spill_stack_size(func: FuncAny) -> int:
         return 0
 
@@ -198,6 +203,9 @@ except ImportError:
         return False
 
     def read_jit_list(path: str) -> None:
+        return None
+
+    def run_osr_test_entry(func: FuncAny, locals_seq: tuple[object, ...]) -> object:
         return None
 
     def set_max_code_size(max_code_size: int) -> None:

@@ -2382,6 +2382,94 @@ PyObject* get_compiled_spill_stack_size(PyObject* /* self */, PyObject* func) {
   return PyLong_FromLong(size);
 }
 
+PyObject* get_osr_entries(PyObject* /* self */, PyObject* arg) {
+  BorrowedRef<PyFunctionObject> func = get_func_arg("get_osr_entries", arg);
+  if (func == nullptr) {
+    return nullptr;
+  }
+  auto result = Ref<>::steal(PyList_New(0));
+  if (result == nullptr || jitCtx() == nullptr) {
+    return result.release();
+  }
+
+  CompiledFunction* compiled_func = jitCtx()->lookupFunc(func);
+  if (compiled_func == nullptr) {
+    return result.release();
+  }
+
+  for (const OSREntryMetadata& entry : compiled_func->runtime()->osrEntries()) {
+    auto item = Ref<>::steal(PyDict_New());
+    if (item == nullptr) {
+      return nullptr;
+    }
+    auto bc_offset = Ref<>::steal(PyLong_FromLong(entry.bc_offset.value()));
+    auto entry_addr = Ref<>::steal(PyLong_FromUnsignedLongLong(entry.entry_address));
+    auto test_entry_addr =
+        Ref<>::steal(PyLong_FromUnsignedLongLong(entry.test_entry_address));
+    auto local_count =
+        Ref<>::steal(PyLong_FromLong(entry.local_mappings.size()));
+    if (bc_offset == nullptr || entry_addr == nullptr ||
+        test_entry_addr == nullptr || local_count == nullptr) {
+      return nullptr;
+    }
+    if (PyDict_SetItemString(item, "bc_offset", bc_offset) < 0 ||
+        PyDict_SetItemString(item, "entry_address", entry_addr) < 0 ||
+        PyDict_SetItemString(item, "test_entry_address", test_entry_addr) < 0 ||
+        PyDict_SetItemString(item, "local_count", local_count) < 0 ||
+        PyList_Append(result, item) < 0) {
+      return nullptr;
+    }
+  }
+
+  return result.release();
+}
+
+PyObject* run_osr_test_entry(PyObject* /* self */, PyObject* args) {
+  PyObject* func_obj;
+  PyObject* locals_obj;
+  Py_ssize_t entry_index = 0;
+  if (!PyArg_ParseTuple(args, "OO|n:run_osr_test_entry", &func_obj, &locals_obj, &entry_index)) {
+    return nullptr;
+  }
+
+  BorrowedRef<PyFunctionObject> func = get_func_arg("run_osr_test_entry", func_obj);
+  if (func == nullptr) {
+    return nullptr;
+  }
+  if (jitCtx() == nullptr) {
+    PyErr_SetString(PyExc_RuntimeError, "JIT is not initialized");
+    return nullptr;
+  }
+
+  CompiledFunction* compiled_func = jitCtx()->lookupFunc(func);
+  if (compiled_func == nullptr) {
+    PyErr_SetString(PyExc_RuntimeError, "function is not jit compiled");
+    return nullptr;
+  }
+
+  const auto& entries = compiled_func->runtime()->osrEntries();
+  if (entry_index < 0 ||
+      static_cast<size_t>(entry_index) >= entries.size()) {
+    PyErr_SetString(PyExc_IndexError, "osr entry index out of range");
+    return nullptr;
+  }
+  const OSREntryMetadata& entry = entries[entry_index];
+  if (entry.test_entry_address == 0) {
+    PyErr_SetString(PyExc_RuntimeError, "osr test entry is not available");
+    return nullptr;
+  }
+
+  auto fast_locals = Ref<>::steal(PySequence_Fast(
+      locals_obj, "run_osr_test_entry expects a sequence of locals"));
+  if (fast_locals == nullptr) {
+    return nullptr;
+  }
+  Py_ssize_t nargs = PySequence_Fast_GET_SIZE(fast_locals);
+  auto stack = PySequence_Fast_ITEMS(fast_locals.get());
+  auto osr_entry = reinterpret_cast<vectorcallfunc>(entry.test_entry_address);
+  return osr_entry(reinterpret_cast<PyObject*>(func.get()), stack, nargs, nullptr);
+}
+
 PyObject* jit_frame_mode(PyObject* /* self */, PyObject*) {
   return PyLong_FromLong(static_cast<int>(getConfig().frame_mode));
 }
@@ -2990,6 +3078,14 @@ PyMethodDef jit_methods[] = {
      PyDoc_STR(
          "Return stack size in bytes used for register spills for a "
          "JIT-compiled function.")},
+    {"get_osr_entries",
+     get_osr_entries,
+     METH_O,
+     PyDoc_STR("Get exported phase0 OSR entry metadata for a compiled function.")},
+    {"run_osr_test_entry",
+     run_osr_test_entry,
+     METH_VARARGS,
+     PyDoc_STR("Invoke a phase0 OSR test entry using a synthetic locals sequence.")},
     {"jit_suppress",
      jit_suppress,
      METH_O,
