@@ -361,9 +361,37 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
     if (env_->code_rt->lookupOSREntry(bc_offset) == nullptr) {
       continue;
     }
+    const hir::BasicBlock* entry_hir_bb = hir_bb;
+    auto* terminator = hir_bb->GetTerminator();
+    auto find_first_effective_instr = [](const hir::BasicBlock* bb)
+        -> const hir::Instr* {
+      for (const auto& instr : *bb) {
+        if (instr.IsPhi() || instr.IsSnapshot()) {
+          continue;
+        }
+        return &instr;
+      }
+      return nullptr;
+    };
+    const hir::Instr* first_instr = find_first_effective_instr(hir_bb);
+    if (first_instr != nullptr && first_instr->IsLoadEvalBreaker() &&
+        terminator != nullptr && terminator->IsCondBranch()) {
+      auto* branch = static_cast<const hir::CondBranch*>(terminator);
+      const hir::Instr* true_first = find_first_effective_instr(branch->true_bb());
+      const hir::Instr* false_first =
+          find_first_effective_instr(branch->false_bb());
+      if (true_first != nullptr && true_first->IsRunPeriodicTasks() &&
+          (false_first == nullptr || !false_first->IsRunPeriodicTasks())) {
+        entry_hir_bb = branch->false_bb();
+      } else if (
+          false_first != nullptr && false_first->IsRunPeriodicTasks() &&
+          (true_first == nullptr || !true_first->IsRunPeriodicTasks())) {
+        entry_hir_bb = branch->true_bb();
+      }
+    }
     codegen::Environ::Phase0OSREntryBlock osr_block;
     osr_block.bc_offset = bc_offset;
-    osr_block.lir_block = translated.first;
+    osr_block.lir_block = bb_map.at(entry_hir_bb).first;
     bool supported = true;
     for (size_t i = 0; i < frame->localsplus.size(); ++i) {
       auto* reg = frame->localsplus[i];

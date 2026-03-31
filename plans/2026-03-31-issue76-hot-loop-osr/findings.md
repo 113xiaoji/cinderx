@@ -363,3 +363,20 @@
 - Why this is acceptable in Phase 0:
   - the current prototype is locals-only and test-only
   - the goal is to prove a runnable synthetic secondary entry path, not to finalize the long-term OSR header semantics
+
+## 2026-03-31 Synthetic entry crash root-cause direction
+
+- `gdb --batch` on ARM showed the synthetic entry crashing after entering the loop and reaching pending-task handling:
+  - fatal path went through `_Py_HandlePending`
+  - then aborted in `drop_gil_impl`
+- Interpretation:
+  - for the Phase 0 test-only path, entering the raw loop-header block is still too ambitious because that block starts with periodic/eval-breaker handling
+  - the fresh linked frame from the synthetic entry is good enough for ordinary compiled execution, but not yet for this exact periodic branch shape
+- Phase 0 corrective decision:
+  - when the exported HIR loop header starts with `LoadEvalBreaker` and branches to a dedicated `RunPeriodicTasks` block,
+  - make the test-only secondary entry target the non-periodic successor block instead of the raw periodic header
+- Why this is acceptable in Phase 0:
+  - it preserves the core proof target:
+    - synthetic-state secondary entry can jump into compiled loop execution
+  - it avoids overfitting Phase 0 to pending-task semantics before the main OSR path is stable
+  - this is explicitly a test-entry-only compromise, not the final scheme-B entry rule
