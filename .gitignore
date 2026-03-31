@@ -22,6 +22,12 @@ build
 *.so
 *.dylib
 
+# CinderX CMake build artifacts
+Makefile
+_deps/
+generated/
+lib*.a
+
 # CinderX specific build artifacts
 cinderx/PythonLib/cinderx/.dev_build
 cinderx/PythonLib/cinderx/opcode.py
@@ -56,6 +62,7 @@ MANIFEST
 *.tmp
 *.bak
 *.log
+test_stderr.txt
 
 # Local development tools
 opencode.json
