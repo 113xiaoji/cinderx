@@ -1383,19 +1383,23 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         break;
       }
       case Opcode::kSaveCurrentNode: {
-        bbb.appendInvokeInstruction(JITRT_SaveCurrentNode, i.GetOperand(0));
+        // Plan B: 创建原生 LIR 指令而非 kCall，允许 codegen 内联
+        bbb.appendInstr(Instruction::kSaveCurrentNode, i.GetOperand(0));
         break;
       }
       case Opcode::kLoadCurrentNode: {
-        bbb.appendCallInstruction(i.output(), JITRT_LoadCurrentNode);
+        // Plan B: 创建原生 LIR 指令
+        bbb.appendInstr(i.output(), Instruction::kLoadCurrentNode);
         break;
       }
       case Opcode::kSavePhase: {
-        bbb.appendInvokeInstruction(JITRT_SavePhase, i.GetOperand(0));
+        // Plan B: 创建原生 LIR 指令
+        bbb.appendInstr(Instruction::kSavePhase, i.GetOperand(0));
         break;
       }
       case Opcode::kLoadPhase: {
-        bbb.appendCallInstruction(i.output(), JITRT_LoadPhase);
+        // Plan B: 创建原生 LIR 指令
+        bbb.appendInstr(i.output(), Instruction::kLoadPhase);
         break;
       }
       case Opcode::kAssign: {
