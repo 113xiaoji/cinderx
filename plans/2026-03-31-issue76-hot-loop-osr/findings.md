@@ -396,3 +396,17 @@
 - New corrective hypothesis:
   - Phase 0 secondary entry must restore at least the allocated LIR location for `env_.asm_tstate`
   - then the existing `LoadEvalBreaker` / `_Py_HandlePending` path has a chance to run with a coherent thread-state binding
+
+## 2026-03-31 Direct probe status
+
+- A direct ARM probe now succeeds end-to-end:
+  - `jit.force_compile(hot)` -> `True`
+  - `jit.get_osr_entries(hot)` -> non-empty
+  - `jit.run_osr_test_entry(hot, (3, 10))` -> `16`
+  - process exits cleanly
+- Interpretation:
+  - the core Phase 0 synthetic-state happy path is now proven
+  - remaining instability seen in the remote helper came from the unittest-discovery execution shape, not from the minimal probe itself
+- Verification decision:
+  - use a dedicated direct probe script as the canonical remote Phase 0 verification gate
+  - keep the Python unittest cases as regression tests, but not as the only remote truth source for this phase
