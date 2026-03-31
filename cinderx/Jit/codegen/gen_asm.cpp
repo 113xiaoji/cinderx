@@ -120,11 +120,11 @@ std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
     CodeRuntime* code_rt,
     BCOffset bc_offset) {
   for (const DeoptMetadata& meta : code_rt->deoptMetadatas()) {
-    if (meta.frame_meta.empty()) {
+    if (meta.frame_meta.size() == 0) {
       continue;
     }
     const DeoptFrameMetadata& frame = meta.outermostFrame();
-    if (frame.cause_instr_idx != bc_offset) {
+    if (frame.cause_instr_idx.value() != bc_offset.value()) {
       continue;
     }
     std::vector<OSREntryMetadata::LocalMapping> mappings;

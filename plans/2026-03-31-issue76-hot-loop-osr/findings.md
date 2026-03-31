@@ -313,3 +313,20 @@
   - use those locations both for:
     - generated synthetic-state stubs
     - exported debug metadata
+
+## 2026-03-31 Remote verification round 6
+
+- Result:
+  - rebuild failed in the new `derivePhase0LocalMappings()` helper
+- Errors:
+  - `FrozenList<...>` has no `.empty()`
+  - direct comparison between `BCIndex` and `BCOffset` is ambiguous
+- Root cause:
+  - the helper was written against standard STL container / offset assumptions
+  - the actual JIT metadata types here are:
+    - `FrozenList`
+    - `BCIndex`
+    - `BCOffset`
+- Corrective action:
+  - use `.size() == 0`
+  - compare offsets by their integer `.value()`
