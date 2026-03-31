@@ -204,31 +204,6 @@ Plan B 直接通过 FP 偏移量访问字段，消除所有 C 调用开销。
 
 ---
 
-## pyperformance bm_generators 实测
-
-使用 pyperformance bm_generators 用例（`Tree.__iter__` + 100000 节点二叉树）验证：
-
-**前提**: 需要 `jit.compile_after_n_calls(1)` 主动触发 JIT 编译，否则生成器函数不被编译。
-
-### macOS ARM64
-
-| 节点数 | SM OFF | SM ON | 加速比 |
-|--------|--------|-------|--------|
-| 100 | 0.03ms | 0.01ms | 3x |
-| 1,000 | 0.33ms | 0.06ms | 5.5x |
-| 4,000 | 2.07ms | 0.26ms | 8x |
-| 10,000 | 5.80ms | 0.63ms | 9.2x |
-| 50,000 | 31.6ms | 3.36ms | 9.4x |
-| **100,000** | **65.1ms** | **6.64ms** | **9.8x** |
-
-### 适用范围
-
-当前状态机仅匹配 `yield from self.left/right` 的二叉树递归模式。
-在 pyperformance benchmarks 中，只有 `bm_generators` 受益；
-`bm_async_generators` 使用 `async for` + `__aiter__`，模式不同，不受影响。
-
----
-
 ## 后续优化方向
 
 ### 短期
@@ -236,8 +211,8 @@ Plan B 直接通过 FP 偏移量访问字段，消除所有 C 调用开销。
 
 ### 中期
 - deopt 支持（当前 YieldValue 用复制的 FrameState）
-- hasArbitraryExecution 优化（减少不必要的 clobber 标记）— 预期 5-15%
-- StateStackPush/Pop 改为内联 codegen（目前仍为 C 调用）— 预期 10-20%
+- hasArbitraryExecution 部分优化 — 纯读取操作（kLoadPhase/kLoadPoppedPhase/kLoadStackTop）可标记为 false；写入操作（kSavePhase/kSaveCurrentNode）和含 refcount 操作必须保留 true，否则 HIR 优化器会消除关键指令导致正确性失败
+- StateStackPush/Pop 内联 codegen — autogen.cpp 的 translate 函数有寄存器冲突 bug（x12/w12 同寄存器被覆盖），需重写后才能启用
 
 ### 长期
 - 栈容量动态扩展（当前固定 16 entries）
@@ -248,4 +223,4 @@ Plan B 直接通过 FP 偏移量访问字段，消除所有 C 调用开销。
 
 **更新人**: Claude Code
 **日期**: 2026-03-31
-**状态**: Phase 3.2 ✅ 完成，bm_generators 实测 9.8x 加速
+**状态**: Phase 3.2 ✅ 完成，hasArbitraryExecution 保守优化已应用
