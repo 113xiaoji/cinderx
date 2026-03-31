@@ -342,7 +342,7 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
     jit::hir::FrameState* frame = nullptr;
     for (auto& instr : *hir_bb) {
       if (instr.IsSnapshot()) {
-        frame = static_cast<Snapshot&>(instr).frameState();
+        frame = static_cast<const Snapshot&>(instr).frameState();
         break;
       }
       if (auto* deopt = instr.asDeoptBase()) {

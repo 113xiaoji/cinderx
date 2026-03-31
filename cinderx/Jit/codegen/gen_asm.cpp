@@ -89,7 +89,7 @@ void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
     hir::FrameState* frame = nullptr;
     for (auto& instr : block) {
       if (instr.IsSnapshot()) {
-        frame = static_cast<hir::Snapshot&>(instr).frameState();
+        frame = static_cast<const hir::Snapshot&>(instr).frameState();
         break;
       }
       if (auto* deopt = instr.asDeoptBase()) {

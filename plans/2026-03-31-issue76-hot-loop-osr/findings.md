@@ -261,3 +261,18 @@
     - `Snapshot`
     - else first `DeoptBase`
   - keep all other heuristics unchanged for this iteration
+
+## 2026-03-31 Remote verification round 5
+
+- Result:
+  - wheel build still fails in `gen_asm.cpp`
+- Error:
+  - `static_cast` from `const jit::hir::Instr` to non-const `hir::Snapshot&`
+- Root cause:
+  - after switching the scan to use the first framed instruction, the loop now iterates over `const Instr&`
+  - `Snapshot::frameState()` is callable through a `const Snapshot&`
+  - so the failing cast is unnecessary and over-constrains constness
+- Corrective action:
+  - cast to `const Snapshot&` in both:
+    - `cinderx/Jit/codegen/gen_asm.cpp`
+    - `cinderx/Jit/lir/generator.cpp`
