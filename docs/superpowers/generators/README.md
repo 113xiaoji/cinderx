@@ -2,16 +2,16 @@
 
 **目标**: 消除 CinderX JIT 编译递归生成器（Tree.__iter__ 模式）中的性能回退
 
-**当前状态**: Phase 3.2 T1-T4 完成，T5 待实现 🚧
+**当前状态**: Phase 3.2 ✅ 完成，Plan B 内联 codegen 完成 🚀
 
-**最新进展**:
+**最新成果**:
 - ✅ Phase 3.1: 逃逸分析完成 (2026-03-25)
-- 🚧 Phase 3.2: 状态机内联 T1-T4 完成 (2026-03-26) ⭐
-  - StateStackPush/Pop 全链路（HIR → LIR → x86_64/ARM64 codegen）
-  - GenDataFooter 栈数组扩展（16 条目 x 16 字节 = 256 字节）
-  - 待完成：T5 状态机逻辑（11 个占位符）
+- ✅ Phase 3.2: 状态机内联完成 (2026-03-31) ⭐
+  - 16 基本块 GenDataFooter 驱动状态机
+  - 内联 AArch64/x86_64 codegen（消除 C 函数调用开销）
+  - **4-12x 超越原始 yield-from 性能**
 
-- **最新提交**: `d4d38af1` (Phase 3.2 T4: StateStackPush/Pop 全链路实现)
+- **最新提交**: `6f17073a` (Phase 3.2 - 修复 macOS JIT 启用问题和探针测试)
 
 ---
 
@@ -22,7 +22,7 @@
 | Phase 0 | 基线分析 | ✅ 完成 | - | 性能剖析 |
 | Phase 1 | OptimizedYieldFrom | ✅ 完成 | ~1% | Entry point 缓存 |
 | Phase 2 | InlineIter | ✅ 完成 | 3-32% | 逃逸分析 + HIR 内联 |
-| **Phase 3.2** | **状态机内联** | **🚧 进行中** | **4-6x (目标)** | **GenDataFooter 栈 + codegen** |
+| **Phase 3.2** | **状态机内联** | **✅ 完成** | **4-12x** | **GenDataFooter 状态机 + 内联 codegen** |
 | Phase 3.3 | 去虚拟化 | 📋 计划中 | 额外 2-3x | 类型推断 + 直接访问 |
 
 ---
@@ -44,13 +44,12 @@ generators/
 
 ## 快速导航
 
-### ⭐ Phase 3.2（状态机内联 - 进行中）
-- **[实施计划](./plans/2026-03-26-phase3.2-state-machine-inlining-implementation-plan.md)** ⭐ 最新
-  - T1-T7 任务分解、11 个占位符清单、实施顺序
+### ⭐ Phase 3.2（状态机内联 - 已完成）
+- **[状态更新](./2026-03-25-phase3-status-update.md)** ⭐ 最新（含 Plan B 内联 codegen）
+- **[经验教训](./2026-03-30-tree-iter-state-machine-lessons-learned.md)** — 引用计数、SSA、clobber 等关键教训
 - **[设计文档](./specs/2026-03-25-phase3.2-state-machine-inlining-design.md)**
-  - 状态机 HIR 结构、数据结构、测试策略、成功标准
+- **[实施计划](./plans/2026-03-26-phase3.2-state-machine-inlining-implementation-plan.md)**
 - **[Task 4 栈操作决策](./decisions/2026-03-26-phase3.2-task4-stack-implementation-decision.md)**
-  - 方案 A（GenDataFooter 栈数组）选择理由和实施细节
 
 ### Phase 3.1（逃逸分析 - 已完成）
 - [完成报告](./diagnostics/2026-03-25-generators-phase3.1-escape-analysis-completion.md)
@@ -70,7 +69,7 @@ generators/
 | OptimizedYieldFrom | ✅ 完成 | ~1% 改进 | 2026-03-21 |
 | InlineIter (Phase 1) | ✅ 完成 | 3-32% 改进 | 2026-03-23 |
 | 逃逸分析 (Phase 3.1) | ✅ 完成 | 0.6% 改进 | 2026-03-25 |
-| **状态机内联 (Phase 3.2)** | **🚧 40%** | **4-6x (目标)** | **2026-03-26** |
+| **状态机内联 (Phase 3.2)** | **✅ 完成** | **4-12x 加速** | **2026-03-31** |
 
 ---
 
@@ -119,4 +118,4 @@ PYTHONJITHUGEPAGES=0 PYTHONJIT=1 PYTHONJIT_ARM_INLINE_YIELD_FROM=1 .venv/bin/pyt
 ---
 
 **维护者**: Claude Code Agent
-**最后更新**: 2026-03-26
+**最后更新**: 2026-03-31
