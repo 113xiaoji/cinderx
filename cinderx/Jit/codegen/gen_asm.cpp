@@ -116,7 +116,7 @@ void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
   }
 }
 
-std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
+std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappingsFromDeopt(
     CodeRuntime* code_rt,
     BCOffset bc_offset) {
   auto make_mappings = [](const DeoptMetadata& meta) {
@@ -159,6 +159,31 @@ std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
     return make_mappings(*nearest);
   }
   return {};
+}
+
+std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
+    const Environ::Phase0OSREntryBlock& osr_block,
+    CodeRuntime* code_rt) {
+  std::vector<OSREntryMetadata::LocalMapping> mappings;
+  mappings.reserve(osr_block.local_bindings.size());
+
+  bool have_precise_bindings = !osr_block.local_bindings.empty();
+  for (const auto& [local_index, binding] : osr_block.local_bindings) {
+    if (binding == nullptr) {
+      have_precise_bindings = false;
+      break;
+    }
+    PhyLocation loc = binding->output()->getPhyRegOrStackSlot();
+    if (!loc.is_register() && !loc.is_memory()) {
+      have_precise_bindings = false;
+      break;
+    }
+    mappings.push_back(OSREntryMetadata::LocalMapping{local_index, loc});
+  }
+  if (have_precise_bindings) {
+    return mappings;
+  }
+  return derivePhase0LocalMappingsFromDeopt(code_rt, osr_block.bc_offset);
 }
 
 uint64_t getAarch64HotCallTarget(const Instruction& instr) {
@@ -2686,7 +2711,7 @@ void NativeGenerator::generateResumeEntry(const FrameInfo& frame_info) {
 
 void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
   for (auto& osr_block : env_.phase0_osr_entry_blocks) {
-    auto mappings = derivePhase0LocalMappings(env_.code_rt, osr_block.bc_offset);
+    auto mappings = derivePhase0LocalMappings(osr_block, env_.code_rt);
     if (mappings.empty()) {
       continue;
     }
@@ -3211,8 +3236,7 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
           codeholder.baseAddress() +
           codeholder.labelOffsetFromBase(osr_block.test_entry_label);
     }
-    osr_entry->local_mappings = derivePhase0LocalMappings(
-        env_.code_rt, osr_block.bc_offset);
+    osr_entry->local_mappings = derivePhase0LocalMappings(osr_block, env_.code_rt);
   }
 
   for (auto& entry : env_.unresolved_gen_entry_labels) {

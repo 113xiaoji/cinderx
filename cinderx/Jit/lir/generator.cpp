@@ -62,6 +62,18 @@ namespace jit::lir {
 
 namespace {
 
+jit::hir::FrameState* getPhase0FrameState(const jit::hir::BasicBlock* hir_bb) {
+  for (auto& instr : *hir_bb) {
+    if (instr.IsSnapshot()) {
+      return static_cast<const Snapshot&>(instr).frameState();
+    }
+    if (auto* deopt = instr.asDeoptBase()) {
+      return deopt->frameState();
+    }
+  }
+  return nullptr;
+}
+
 #ifndef Py_GIL_DISABLED
 constexpr size_t kRefcountOffset = offsetof(PyObject, ob_refcnt);
 #endif
@@ -339,17 +351,7 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
 
   env_->phase0_osr_entry_blocks.clear();
   for (const auto& [hir_bb, translated] : bb_map) {
-    jit::hir::FrameState* frame = nullptr;
-    for (auto& instr : *hir_bb) {
-      if (instr.IsSnapshot()) {
-        frame = static_cast<const Snapshot&>(instr).frameState();
-        break;
-      }
-      if (auto* deopt = instr.asDeoptBase()) {
-        frame = deopt->frameState();
-        break;
-      }
-    }
+    jit::hir::FrameState* frame = getPhase0FrameState(hir_bb);
     if (frame == nullptr) {
       continue;
     }
@@ -392,9 +394,13 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
     codegen::Environ::Phase0OSREntryBlock osr_block;
     osr_block.bc_offset = bc_offset;
     osr_block.lir_block = bb_map.at(entry_hir_bb).first;
+    jit::hir::FrameState* entry_frame = getPhase0FrameState(entry_hir_bb);
+    if (entry_frame == nullptr) {
+      continue;
+    }
     bool supported = true;
-    for (size_t i = 0; i < frame->localsplus.size(); ++i) {
-      auto* reg = frame->localsplus[i];
+    for (size_t i = 0; i < entry_frame->localsplus.size(); ++i) {
+      auto* reg = entry_frame->localsplus[i];
       if (reg == nullptr) {
         continue;
       }
