@@ -524,6 +524,12 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kWaitHandleLoadWaiter:
     case Opcode::kWaitHandleRelease:
     case Opcode::kXIncref:
+    // Phase 3.2: 纯内存操作，不触发任意 Python 代码
+    case Opcode::kLoadPhase:
+    case Opcode::kSavePhase:
+    case Opcode::kLoadCurrentNode:   // Py_INCREF 但不触发 finalizer
+    case Opcode::kLoadStackTop:
+    case Opcode::kLoadPoppedPhase:
       return false;
 
     /*
@@ -603,14 +609,9 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kOptimizedYieldFrom:
     case Opcode::kInlineIter:
     case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
-    case Opcode::kStateStackPush:
-    case Opcode::kStateStackPop:
-    case Opcode::kLoadPoppedPhase:
-    case Opcode::kLoadStackTop:
-    case Opcode::kSaveCurrentNode:
-    case Opcode::kLoadCurrentNode:
-    case Opcode::kSavePhase:
-    case Opcode::kLoadPhase:
+    case Opcode::kStateStackPush:    // Py_INCREF — 可能触发 finalizer
+    case Opcode::kStateStackPop:     // Py_DECREF — 可能触发 finalizer
+    case Opcode::kSaveCurrentNode:   // Py_DECREF + Py_INCREF — 可能触发 finalizer
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return true;

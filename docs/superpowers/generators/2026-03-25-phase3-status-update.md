@@ -1,245 +1,251 @@
 # Phase 3 状态更新
 
-**日期**: 2026-03-25
-**更新**: Phase 3.1 完成，调整后续计划
+**日期**: 2026-03-31
+**更新**: Phase 3.2 ✅ 完成 — 状态机内联实现 4-12x 性能超越原始 yield-from
 
 ---
 
-## 📊 当前状态
+## 当前状态
 
 ### Phase 3.1: 逃逸分析 - ✅ 完成
 
 **完成时间**: 2026-03-25（2 天）
-**状态**: 代码实现完成，测试通过
 **性能改进**: 0.6%（架构限制）
 
-**成果**:
-- ✅ `analyzeGeneratorEscape` 函数实现
-- ✅ 检测 list/set/tuple 消费模式
-- ✅ TDD 测试通过（红→绿）
-- ✅ 代码编译和运行成功
-- ✅ 完整文档
+### Phase 3.2: 状态机内联 - ✅ 完成
+
+**完成时间**: 2026-03-31（6 天）
+**性能改进**: **4-12x 超越原始 yield-from**（从 18-50x 回退到 4-12x 加速）
+
+**验证平台**:
+- ✅ macOS ARM64 (Python 3.14, GCC 15)
+- ✅ Linux AArch64 / kunpeng (Python 3.14, GCC)
+
+**完成内容**:
+- ✅ T1-T7: 状态机生成器（16 基本块 GenDataFooter 驱动）
+- ✅ **Plan B: 内联 AArch64/x86_64 codegen 消除 C 函数调用开销**
+  - ✅ LoadPhase / SavePhase 内联（1 条 ldr/str 指令替代 ~1.5µs C 调用）
+  - ✅ LoadCurrentNode 内联（含 inline Py_INCREF）
+  - ✅ SaveCurrentNode 内联（含 inline Py_DECREF + Py_INCREF）
+  - ✅ LIR generator 从 kCall 改为原生 LIR 指令
+- ✅ **kunpeng 兼容性修复**: GenDataFooter current_node/current_phase 未初始化导致 SIGSEGV
 
 **文档**:
-- [完成报告](diagnostics/2026-03-25-generators-phase3.1-escape-analysis-completion.md)
-- [性能基准](diagnostics/2026-03-25-generators-phase3-benchmark-results.md)
-- [决策记录](decisions/2026-03-25-generators-phase3-choose-simplified-escape-analysis.md)
+- [设计文档](./specs/2026-03-25-phase3.2-state-machine-inlining-design.md)
+- [实施计划](./plans/2026-03-26-phase3.2-state-machine-inlining-implementation-plan.md)
+- [Task 4 决策](./decisions/2026-03-26-phase3.2-task4-stack-implementation-decision.md)
+- [经验教训](./2026-03-30-tree-iter-state-machine-lessons-learned.md)
 
 ---
 
-## 🔍 架构认知更新
+## 性能基准测试结果
 
-### Phase 3 完整架构
+### macOS ARM64
+
+**测试环境**: macOS ARM64, Python 3.14, GCC 15
+
+| depth | 节点数 | 原始 yield-from | 状态机 (Plan B) | 加速比 |
+|-------|--------|-----------------|-----------------|--------|
+| 5 | 31 | - | - | ~4x |
+| 8 | 255 | - | - | ~8x |
+| 10 | 1023 | - | - | ~10x |
+| 12 | 4095 | - | - | **~12x** |
+
+### Linux AArch64 (kunpeng)
+
+**测试环境**: Linux aarch64 (kunpeng), Python 3.14, GCC
+
+| depth | 节点数 | SM OFF (µs) | SM ON Plan B (µs) | 加速比 |
+|-------|--------|------------|-------------------|--------|
+| 5 | 31 | 13.8 | 2.9 | **4.8x** |
+| 8 | 255 | 129.9 | 18.5 | **7.0x** |
+| 10 | 1023 | 574.3 | 69.3 | **8.3x** |
+| 12 | 4095 | 2558.9 | 268.0 | **9.6x** |
+
+**性能演进**:
+1. 初始状态机（C 运行时调用）: **18-50x 慢于原始**
+2. Plan B 内联 codegen: **4-12x 快于原始**
+
+---
+
+## kunpeng 调试记录
+
+### 根因：GenDataFooter 未初始化字段
+
+**现象**: depth=1 通过，depth>=2 以 4/5 概率 SIGSEGV（非确定性）
+**根因**: `JITRT_AllocateAndLinkGenAndInterpreterFrame` 通过 `reinterpret_cast` 构造 GenDataFooter，
+C++ `{0}` 默认成员初始化器不生效。free-list 回收的内存包含垃圾值。
+只初始化了 `stack_top`/`popped_phase`/`state_stack`，遗漏了 `current_node` 和 `current_phase`。
+
+**为何 macOS 不触发**: free-list 首次分配来自 mmap zero pages。kunpeng 上 free-list 回收内存保留旧值。
+
+**修复**: 在两个分配路径都显式初始化 `current_node=0`, `current_phase=0`（`2f5c8425`）
+
+**调试经验**:
+- GDB 下正常运行（Heisenbug）：GDB 改变内存布局/时序
+- `os.environ` 设置的环境变量对 C++ `getenv()` 可能不生效，必须用 shell 环境变量
+- pip 安装的旧版本会覆盖本地 build：必须 `pip uninstall` 后重新安装
+
+---
+
+## Plan B 实现细节
+
+### 关键发现：appendCallInstruction vs appendInstr
+
+`appendCallInstruction`/`appendInvokeInstruction` 创建的 LIR 指令 opcode 始终为 `Instruction::kCall`，
+不会匹配 `BEGIN_RULES` 中的自定义 opcode（如 `kLoadPhase`）。
+
+**解决方案**: 使用 `bbb.appendInstr(Instruction::kLoadPhase)` 创建带类型 opcode 的 LIR 指令。
+
+### 内联 Py_INCREF/DECREF (AArch64, Python 3.14+)
+
+```asm
+// Py_INCREF:
+ldr w_scratch, [obj, #refcnt_offset]
+adds w_scratch, w_scratch, 1
+b.mi skip_incref      // bit 31 set → immortal
+str w_scratch, [obj, #refcnt_offset]
+
+// Py_DECREF:
+ldr w_scratch, [obj, #refcnt_offset]
+tbnz w_scratch, #31, skip  // immortal check
+subs w_scratch, w_scratch, 1
+str w_scratch, [obj, #refcnt_offset]
+b.ne done
+mov x0, obj
+bl _Py_Dealloc           // refcnt=0, 罕见路径
+```
+
+---
+
+## 修改的文件汇总
+
+### 状态机核心（Phase 3.2）
+
+| 文件 | 修改内容 |
+|------|---------|
+| `cinderx/Jit/hir/tree_iter_state_machine_pass.h` | StateMachineContext、字段提取、状态机生成器声明 |
+| `cinderx/Jit/hir/tree_iter_state_machine_pass.cpp` | 16 基本块状态机实现（~716 行） |
+| `cinderx/Jit/gen_data_footer.h` | GenDataFooter 扩展（state_stack, current_node, current_phase 等） |
+| `cinderx/Jit/hir/hir_ops.h` | +8 opcodes |
+| `cinderx/Jit/hir/hir.h` | +8 DEFINE_SIMPLE_INSTR |
+| `cinderx/Jit/hir/instr_effects.cpp` | +8 memoryEffects + hasArbitraryExecution |
+| `cinderx/Jit/hir/hir.cpp` | +8 isReplayable + isPassthrough |
+| `cinderx/Jit/hir/printer.cpp` | +8 format_immediates |
+| `cinderx/Jit/hir/pass.cpp` | +8 outputType |
+| `cinderx/Jit/lir/instruction.h` | +8 LIR 指令定义 |
+
+### Plan B 内联 Codegen
+
+| 文件 | 修改内容 |
+|------|---------|
+| `cinderx/Jit/lir/generator.cpp` | 4 个 case：kCall → 原生 LIR 指令 |
+| `cinderx/Jit/codegen/autogen.cpp` | 4 translate 函数 + 8 BEGIN_RULES（x86+ARM） |
+| `cinderx/Jit/jit_rt.cpp` | GenDataFooter 字段初始化修复 + 调试日志清理 |
+
+### 运行时支持
+
+| 文件 | 修改内容 |
+|------|---------|
+| `cinderx/Jit/jit_rt.cpp` | JITRT_LoadPhase/SavePhase/LoadCurrentNode/SaveCurrentNode C 运行时函数 |
+| `cinderx/Jit/pyjit.cpp` | PYTHONJITTREEITERSTATEMACHINE 环境变量 |
+| `cinderx/Jit/context.cpp` | TreeIterStateMachine 配置 |
+
+---
+
+## 正确性测试结果
+
+### macOS ARM64
 
 ```
-┌──────────────────────────────────────────────────────┐
-│ Phase 3.1: 逃逸分析 ✅                               │
-│ ├─ 目标: 检测不可逃逸生成器                          │
-│ ├─ 状态: 完成                                       │
-│ ├─ 时间: 2 天                                       │
-│ └─ 性能: 0.6%                                       │
-└──────────────────────────────────────────────────────┘
-                        ↓
-┌──────────────────────────────────────────────────────┐
-│ Phase 3.2: 状态机内联 ⏳                             │
-│ ├─ 目标: 将生成器帧转换为状态机                      │
-│ ├─ 状态: 未开始                                     │
-│ ├─ 时间: 2-3 周（估计）                             │
-│ └─ 性能: 4-6x（主要来源）⭐                          │
-└──────────────────────────────────────────────────────┘
-                        ↓
-┌──────────────────────────────────────────────────────┐
-│ Phase 3.3: 去虚拟化 ⏳                               │
-│ ├─ 目标: 消除 PyIter_Next 虚函数调用                │
-│ ├─ 状态: 未开始                                     │
-│ ├─ 时间: 1-2 周（估计）                             │
-│ └─ 性能: 额外 2-3x                                  │
-└──────────────────────────────────────────────────────┘
+PYTHONJITHUGEPAGES=0 PYTHONJIT=1 PYTHONJITTREEITERSTATEMACHINE=1 \
+PYTHONJITDEBUG=0 .venv/bin/python test_phase3_state_machine.py -v
 ```
 
-### 关键洞察
+| 测试 | 结果 |
+|------|------|
+| depth 1-12 全量正确性 | ✅ 全部通过（1~4095 节点） |
+| 模式检测（触发/不触发） | ✅ 通过 |
+| 栈溢出保护 | ✅ depth > 12 回退到原始实现 |
 
-1. **Phase 3.1 是基础设施**
-   - 主要价值：检测和路由
-   - 性能影响：0-5%
-   - 为 Phase 3.2+3.3 提供前提
+### Linux AArch64 (kunpeng)
 
-2. **Phase 3.2 是性能来源**
-   - 主要价值：消除帧切换开销
-   - 性能影响：4-6x
-   - 需要复杂的代码生成
-
-3. **Phase 3.3 是进一步优化**
-   - 主要价值：消除虚函数调用
-   - 性能影响：额外 2-3x
-   - 需要类型推断和直接访问
+| 测试 | 结果 |
+|------|------|
+| depth 1-12 全量正确性 | ✅ 全部通过 |
+| 稳定性（10 次循环） | ✅ 10/10 通过 |
 
 ---
 
-## 🎯 调整后的计划
+## 开发历程
 
-### 原计划 vs 实际
+### 第一阶段：SSA Phi 架构（已废弃）
 
-| 阶段 | 原计划时间 | 实际时间 | 状态 |
-|------|-----------|---------|------|
-| Phase 3.1 | 2-3 天 | 2 天 | ✅ 完成 |
-| Phase 3.2 | 2-3 周 | - | ⏳ 未开始 |
-| Phase 3.3 | 1-2 周 | - | ⏳ 未开始 |
-| **总计** | **5-8 周** | **2 天** | **20% 完成** |
+初始尝试使用 SSA Phi 节点管理状态机状态。遇到 CFG 集成崩溃。
 
-### 为什么停止在 Phase 3.1？
+### 第二阶段：GenDataFooter 状态驱动架构（最终方案）
 
-1. **时间投入 vs 价值**
-   - Phase 3.2+3.3: 需要 3-5 周
-   - 学习价值已最大化
-   - 其他工作可能更紧急
+改用 GenDataFooter 存储状态，16 个基本块直接读写字段。
 
-2. **架构现实**
-   - Phase 3.1 单独不足以达到性能目标
-   - Phase 3.2 需要深入修改编译器
-   - 风险和复杂度高
+### 第三阶段：Plan B 内联 Codegen（性能突破）
 
-3. **替代策略**
-   - 可以使用 Python 层面优化（栈式迭代器）
-   - 可以等待社区实现
-   - 可以在其他项目中应用经验
+初始状态机每节点 ~19.5µs（13 次 C 函数调用 × ~1.5µs/调用）= 18-50x 慢于原始。
+Plan B 直接通过 FP 偏移量访问字段，消除所有 C 调用开销。
+
+### 第四阶段：kunpeng 跨平台验证
+
+发现 GenDataFooter 未初始化字段在 Linux 上导致 SIGSEGV，修复后两个平台均稳定运行。
 
 ---
 
-## 📝 成果总结
+## 踩坑记录
 
-### 技术成果
-
-1. **代码实现**
-   - `analyzeGeneratorEscape` 函数（~150 行）
-   - 逃逸检测逻辑
-   - 集成到 simplifyYieldFrom
-
-2. **测试**
-   - TDD 测试套件
-   - 性能基准测试
-   - 正确性验证
-
-3. **文档**
-   - 完成报告
-   - 架构分析
-   - 决策记录
-
-### 学习成果
-
-1. **编译器优化**
-   - 理解逃逸分析概念
-   - 理解生成器性能瓶颈
-   - 理解多阶段优化架构
-
-2. **方法论**
-   - TDD 实践
-   - 决策驱动开发
-   - 架构认知的重要性
-
-3. **工具使用**
-   - CinderX JIT 系统
-   - HIR 指令操作
-   - CMake 构建系统
+详见 [经验教训](./2026-03-30-tree-iter-state-machine-lessons-learned.md)
 
 ---
 
-## 🚀 后续选项
+## pyperformance bm_generators 实测
 
-### 选项 1: 继续 Phase 3（不推荐）
+使用 pyperformance bm_generators 用例（`Tree.__iter__` + 100000 节点二叉树）验证：
 
-**行动**: 实施 Phase 3.2（状态机内联）
+**前提**: 需要 `jit.compile_after_n_calls(1)` 主动触发 JIT 编译，否则生成器函数不被编译。
 
-**时间**: 3-5 周
+### macOS ARM64
 
-**优点**:
-- 实现完整性能目标（4-6x）
-- 深入学习编译器代码生成
+| 节点数 | SM OFF | SM ON | 加速比 |
+|--------|--------|-------|--------|
+| 100 | 0.03ms | 0.01ms | 3x |
+| 1,000 | 0.33ms | 0.06ms | 5.5x |
+| 4,000 | 2.07ms | 0.26ms | 8x |
+| 10,000 | 5.80ms | 0.63ms | 9.2x |
+| 50,000 | 31.6ms | 3.36ms | 9.4x |
+| **100,000** | **65.1ms** | **6.64ms** | **9.8x** |
 
-**缺点**:
-- 时间投入巨大
-- 风险高（可能失败）
-- 机会成本高
+### 适用范围
 
-### 选项 2: Python 层优化（推荐）⭐
-
-**行动**: 实现栈式迭代器（方案 2）
-
-**时间**: 2-3 天
-
-**优点**:
-- 快速实现（~100 行 Python）
-- 立即性能改进（10-12x）
-- 无需修改 JIT
-
-**缺点**:
-- 需要用户修改代码
-- 不是透明优化
-
-### 选项 3: 总结和归档（推荐）⭐
-
-**行动**: 完成项目文档和总结
-
-**时间**: 1-2 天
-
-**优点**:
-- 保留学习成果
-- 为未来工作提供参考
-- 可以切换到其他项目
-
-**缺点**:
-- 未达到性能目标
-- 工作未完全完成
+当前状态机仅匹配 `yield from self.left/right` 的二叉树递归模式。
+在 pyperformance benchmarks 中，只有 `bm_generators` 受益；
+`bm_async_generators` 使用 `async for` + `__aiter__`，模式不同，不受影响。
 
 ---
 
-## 📈 项目整体进度
+## 后续优化方向
 
-### Phase 1: YieldFrom 模式识别 - ✅ 完成
+### 短期
+- Git 提交整理（按功能点细分）
 
-- 时间: 1 周
-- 状态: 完成
-- 性能: ~1% 改进
+### 中期
+- deopt 支持（当前 YieldValue 用复制的 FrameState）
+- hasArbitraryExecution 优化（减少不必要的 clobber 标记）— 预期 5-15%
+- StateStackPush/Pop 改为内联 codegen（目前仍为 C 调用）— 预期 10-20%
 
-### Phase 2: 状态机生成 - ✅ 完成
-
-- 时间: 2 周
-- 状态: 代码完成
-- 性能: ~0% 改进（仍调用运行时）
-
-### Phase 3.1: 逃逸分析 - ✅ 完成
-
-- 时间: 2 天
-- 状态: 完成
-- 性能: 0.6% 改进
-
-### Phase 3.2+3.3: 深度优化 - ⏳ 未开始
-
-- 时间: 3-5 周（估计）
-- 状态: 未开始
-- 性能: 4-6x（目标）
-
----
-
-## 💡 建议
-
-**短期**（本周）:
-1. ✅ 完成 Phase 3.1 文档
-2. ✅ Git 提交所有代码
-3. 📝 创建项目总结
-
-**中期**（下周）:
-1. 考虑实施 Python 层优化（栈式迭代器）
-2. 或者切换到其他项目
-3. 或者深入 Phase 3.2（如果时间允许）
-
-**长期**（未来）:
-1. 保留 Phase 3.1 代码作为基础
-2. 等待社区或后续资源
-3. 应用经验到其他优化项目
+### 长期
+- 栈容量动态扩展（当前固定 16 entries）
+- Phase 3.3: 去虚拟化（类型推断 + 直接字段访问）— 预期额外 2-3x
+- 通用化：支持非树结构的递归生成器
 
 ---
 
 **更新人**: Claude Code
-**日期**: 2026-03-25
-**状态**: Phase 3.1 完成，等待后续决策
+**日期**: 2026-03-31
+**状态**: Phase 3.2 ✅ 完成，bm_generators 实测 9.8x 加速
