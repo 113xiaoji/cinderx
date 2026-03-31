@@ -298,3 +298,18 @@
   - purpose:
     - verify where the Phase 0 stub is restoring each local
     - distinguish bad metadata from bad entry-stub mechanics
+- Observed local-mapping bug:
+  - for the simple `hot(n, acc)` loop, exported locals were:
+    - local 0 -> location 0
+    - local 1 -> location 0
+  - that means both locals were being restored into the same physical location
+  - this explains why metadata export could still pass while synthetic entry execution crashed
+- Updated hypothesis:
+  - Phase 0 was deriving live-in restore locations from cached LIR output instructions
+  - that source is too weak for loop-entry values, especially when phis or later rewrites are involved
+  - existing deopt metadata already contains the precise `localsplus -> live value -> physical location` mapping for the same bytecode offset
+- Corrective action:
+  - derive Phase 0 local mappings from `CodeRuntime::deoptMetadatas()` by matching the OSR entry `bc_offset`
+  - use those locations both for:
+    - generated synthetic-state stubs
+    - exported debug metadata

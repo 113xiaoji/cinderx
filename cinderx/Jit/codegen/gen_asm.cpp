@@ -116,6 +116,33 @@ void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
   }
 }
 
+std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
+    CodeRuntime* code_rt,
+    BCOffset bc_offset) {
+  for (const DeoptMetadata& meta : code_rt->deoptMetadatas()) {
+    if (meta.frame_meta.empty()) {
+      continue;
+    }
+    const DeoptFrameMetadata& frame = meta.outermostFrame();
+    if (frame.cause_instr_idx != bc_offset) {
+      continue;
+    }
+    std::vector<OSREntryMetadata::LocalMapping> mappings;
+    for (size_t i = 0; i < frame.localsplus.size(); ++i) {
+      int live_idx = frame.localsplus[i];
+      if (live_idx < 0) {
+        continue;
+      }
+      mappings.push_back(OSREntryMetadata::LocalMapping{
+          static_cast<int>(i),
+          meta.live_values.at(live_idx).location,
+      });
+    }
+    return mappings;
+  }
+  return {};
+}
+
 uint64_t getAarch64HotCallTarget(const Instruction& instr) {
 #if defined(CINDER_AARCH64)
   if (instr.isCall() && instr.getNumInputs() > 0 && instr.getInput(0)->isImm()) {
@@ -2641,6 +2668,10 @@ void NativeGenerator::generateResumeEntry(const FrameInfo& frame_info) {
 
 void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
   for (auto& osr_block : env_.phase0_osr_entry_blocks) {
+    auto mappings = derivePhase0LocalMappings(env_.code_rt, osr_block.bc_offset);
+    if (mappings.empty()) {
+      continue;
+    }
     osr_block.test_entry_label = as_->newLabel();
     as_->bind(osr_block.test_entry_label);
     generateFunctionEntry();
@@ -2660,13 +2691,13 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
     saveCallerRegisters(frame_info, x86::r11);
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_rsi;
-    for (const auto& mapping : osr_block.local_bindings) {
-      auto loc = mapping.second->output()->getPhyRegOrStackSlot();
+    for (const auto& mapping : mappings) {
+      auto loc = mapping.location;
       if (loc == RSI) {
-        deferred_rsi = OSREntryMetadata::LocalMapping{mapping.first, loc};
+        deferred_rsi = mapping;
         continue;
       }
-      as_->mov(x86::rax, x86::ptr(x86::rsi, mapping.first * kPointerSize));
+      as_->mov(x86::rax, x86::ptr(x86::rsi, mapping.local_index * kPointerSize));
       if (loc.is_register()) {
         as_->mov(x86::gpq(loc.loc), x86::rax);
       } else {
@@ -2691,16 +2722,16 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
     saveCallerRegisters(frame_info, a64::x11);
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_x1;
-    for (const auto& mapping : osr_block.local_bindings) {
-      auto loc = mapping.second->output()->getPhyRegOrStackSlot();
+    for (const auto& mapping : mappings) {
+      auto loc = mapping.location;
       if (loc == X1) {
-        deferred_x1 = OSREntryMetadata::LocalMapping{mapping.first, loc};
+        deferred_x1 = mapping;
         continue;
       }
       as_->ldr(
           a64::x9,
           arch::ptr_resolve(
-              as_, a64::x1, mapping.first * kPointerSize, arch::reg_scratch_0));
+              as_, a64::x1, mapping.local_index * kPointerSize, arch::reg_scratch_0));
       if (loc.is_register()) {
         as_->mov(a64::x(loc.loc), a64::x9);
       } else {
@@ -3144,13 +3175,8 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
           codeholder.baseAddress() +
           codeholder.labelOffsetFromBase(osr_block.test_entry_label);
     }
-    osr_entry->local_mappings.clear();
-    for (const auto& [local_index, instr] : osr_block.local_bindings) {
-      osr_entry->local_mappings.push_back(OSREntryMetadata::LocalMapping{
-          local_index,
-          instr->output()->getPhyRegOrStackSlot(),
-      });
-    }
+    osr_entry->local_mappings = derivePhase0LocalMappings(
+        env_.code_rt, osr_block.bc_offset);
   }
 
   for (auto& entry : env_.unresolved_gen_entry_labels) {
