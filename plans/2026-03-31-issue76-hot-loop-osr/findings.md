@@ -186,3 +186,18 @@
 - Decision:
   - fix only this exact compile error first
   - rerun the same remote validation flow before making any broader changes
+
+## 2026-03-31 Remote verification round 2
+
+- Result:
+  - remote wheel build: `FAIL` again at the same source line
+- Updated root cause after local re-check:
+  - changing `for (const auto& block ...)` to `for (auto& block ...)` was not sufficient
+  - `recordPhase0LoopHeaders()` still takes `const hir::Function&`
+  - therefore iterating `func.cfg.blocks` still yields `const BasicBlock&`
+  - the real mismatch is:
+    - `const hir::Function&` -> `const BasicBlock&`
+    - calling non-`const` `entrySnapshot()`
+- Corrective action:
+  - apply a minimal local `const_cast<hir::BasicBlock&>(block).entrySnapshot()`
+  - keep the scope narrow instead of adding a broader `const` overload to HIR in the middle of Phase 0

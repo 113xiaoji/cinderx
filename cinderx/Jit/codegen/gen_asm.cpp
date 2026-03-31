@@ -86,7 +86,7 @@ std::unordered_set<int> collectLoopHeaderOffsets(BorrowedRef<PyCodeObject> code)
 void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
   auto loop_headers = collectLoopHeaderOffsets(func.code);
   for (auto& block : func.cfg.blocks) {
-    auto* snapshot = block.entrySnapshot();
+    auto* snapshot = const_cast<hir::BasicBlock&>(block).entrySnapshot();
     if (snapshot == nullptr) {
       continue;
     }
