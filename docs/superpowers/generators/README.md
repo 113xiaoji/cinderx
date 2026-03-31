@@ -2,16 +2,18 @@
 
 **目标**: 消除 CinderX JIT 编译递归生成器（Tree.__iter__ 模式）中的性能回退
 
-**当前状态**: Phase 3.2 ✅ 完成，Plan B 内联 codegen 完成 🚀
+**当前状态**: Phase 3.2 ✅ 完成，双平台验证通过 🚀
 
 **最新成果**:
 - ✅ Phase 3.1: 逃逸分析完成 (2026-03-25)
 - ✅ Phase 3.2: 状态机内联完成 (2026-03-31) ⭐
   - 16 基本块 GenDataFooter 驱动状态机
   - 内联 AArch64/x86_64 codegen（消除 C 函数调用开销）
-  - **4-12x 超越原始 yield-from 性能**
+  - **macOS ARM64: 4-12x 加速**
+  - **Linux AArch64 (kunpeng): 4.8-9.6x 加速**
+  - **kunpeng 兼容性修复**: GenDataFooter 未初始化字段 SIGSEGV
 
-- **最新提交**: `6f17073a` (Phase 3.2 - 修复 macOS JIT 启用问题和探针测试)
+- **最新提交**: `2f5c8425` (fix: 初始化 GenDataFooter current_node/current_phase 消除 kunpeng SIGSEGV)
 
 ---
 
