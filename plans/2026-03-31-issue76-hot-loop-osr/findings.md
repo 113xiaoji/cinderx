@@ -155,3 +155,34 @@
   - added RuntimeTests for:
     - synthetic-state loop execution
     - synthetic-state OSR followed by deopt back to the interpreter
+
+## 2026-03-31 Remote verification round 1
+
+- Entry used:
+  - `scripts/push_to_arm.ps1`
+  - parameters:
+    - `-RepoPath C:\work\code\cinderx1\cinderx`
+    - `-UpstreamBranch bench-cur-7c361dce`
+    - `-WorkBranch bench-cur-7c361dce`
+    - `-ArmHost 124.70.162.35`
+    - `-SkipPyperformance`
+- Reason for setting both upstream/work branch to the bench branch:
+  - keep the standard remote flow
+  - avoid rebasing this temporary verification commit onto `main`
+- Result:
+  - remote source sync: `PASS`
+  - remote wheel build: `FAIL`
+- First failing compiler error:
+  - file:
+    - `cinderx/Jit/codegen/gen_asm.cpp`
+  - error:
+    - calling `BasicBlock::entrySnapshot()` on `const jit::hir::BasicBlock`
+  - compiler location from ARM log:
+    - `gen_asm.cpp:89`
+- Root cause:
+  - `recordPhase0LoopHeaders()` iterated `func.cfg.blocks` with `const auto& block`
+  - `entrySnapshot()` currently has only a non-`const` overload
+  - so the failure is a const-correctness mismatch in the new metadata scan, not a deeper OSR design problem
+- Decision:
+  - fix only this exact compile error first
+  - rerun the same remote validation flow before making any broader changes
