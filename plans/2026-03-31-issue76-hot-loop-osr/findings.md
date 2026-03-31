@@ -237,3 +237,27 @@
     - `EXTRA_TEST_CMD=python -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_arm_runtime.py -k phase0_loop_osr -v`
   - stop before default pyperformance gates via:
     - `SKIP_DEFAULT_PYPERF_GATES=1`
+
+## 2026-03-31 Remote verification round 4
+
+- Result:
+  - wheel build completed
+  - default ARM runtime suite still fails on unrelated historical tests
+  - our new targeted test was also executed in that default suite and failed:
+    - `test_phase0_loop_osr_exports_entries`
+  - observed symptom:
+    - `get_osr_entries(hot) == []`
+- Root cause investigation:
+  - direct remote reproduction with `PYTHONJITDUMPFINALHIR=1` showed:
+    - the hot loop function was compiled successfully
+    - the loop was present in final HIR
+    - but the exported OSR metadata list stayed empty
+  - final HIR for the simple `while` loop showed the relevant loop-state `FrameState` attached to the first deopt-bearing instruction blocks after periodic-activity insertion, not to an entry `Snapshot`
+  - therefore the original Phase 0 scan was using the wrong anchor:
+    - it searched for `entrySnapshot()`
+    - but for this shape the usable state lives on the first `Snapshot` or `DeoptBase` instruction in the block
+- Decision:
+  - change Phase 0 discovery/export to scan each block for its first available frame state source:
+    - `Snapshot`
+    - else first `DeoptBase`
+  - keep all other heuristics unchanged for this iteration

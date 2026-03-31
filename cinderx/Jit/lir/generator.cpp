@@ -339,11 +339,17 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
 
   env_->phase0_osr_entry_blocks.clear();
   for (const auto& [hir_bb, translated] : bb_map) {
-    auto* snapshot = const_cast<hir::BasicBlock*>(hir_bb)->entrySnapshot();
-    if (snapshot == nullptr) {
-      continue;
+    jit::hir::FrameState* frame = nullptr;
+    for (auto& instr : *hir_bb) {
+      if (instr.IsSnapshot()) {
+        frame = static_cast<Snapshot&>(instr).frameState();
+        break;
+      }
+      if (auto* deopt = instr.asDeoptBase()) {
+        frame = deopt->frameState();
+        break;
+      }
     }
-    auto* frame = snapshot->frameState();
     if (frame == nullptr) {
       continue;
     }
