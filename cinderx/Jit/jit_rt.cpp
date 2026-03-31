@@ -786,7 +786,9 @@ JITRT_AllocateAndLinkGenAndInterpreterFrame(
             original_frame_pointer) +
         1);
 
-  // Phase 3.2: 初始化状态机栈字段（free-list 回收的内存不保证清零）
+  // Phase 3.2: 初始化状态机字段（free-list 回收的内存不保证清零）
+  footer->current_node = 0;
+  footer->current_phase = 0;
   footer->stack_top = 0;
   footer->popped_phase = 0;
   memset(footer->state_stack, 0, sizeof(footer->state_stack));
@@ -1939,6 +1941,12 @@ static inline PyObject* make_gen_object(
   footer->state = Ci_JITGenState_JustStarted;
   footer->gen = gen;
   footer->code_rt = code_rt;
+  // Phase 3.2: 初始化状态机字段（free-list 回收的内存不保证清零）
+  footer->current_node = 0;
+  footer->current_phase = 0;
+  footer->stack_top = 0;
+  footer->popped_phase = 0;
+  memset(footer->state_stack, 0, sizeof(footer->state_stack));
 
   gen->gi_jit_data = reinterpret_cast<Ci_JITGenData*>(footer);
 
