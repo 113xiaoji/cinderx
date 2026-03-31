@@ -2707,6 +2707,12 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
       as_->add(x86::rsp, padding);
     }
     saveCallerRegisters(frame_info, x86::r11);
+    auto tstate_loc = env_.asm_tstate->output()->getPhyRegOrStackSlot();
+    if (tstate_loc.is_register()) {
+      as_->mov(x86::gpq(tstate_loc.loc), x86::r11);
+    } else {
+      as_->mov(x86::ptr(x86::rbp, tstate_loc.loc), x86::r11);
+    }
     as_->mov(
         x86::qword_ptr(x86::r11, offsetof(PyThreadState, eval_breaker)),
         0);
@@ -2741,6 +2747,14 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
     (void)allocateHeaderAndSpillSpace(frame_info);
     frame_asm_.generateLinkFrame(a64::x0, a64::x11, save_regs);
     saveCallerRegisters(frame_info, a64::x11);
+    auto tstate_loc = env_.asm_tstate->output()->getPhyRegOrStackSlot();
+    if (tstate_loc.is_register()) {
+      as_->mov(a64::x(tstate_loc.loc), a64::x11);
+    } else {
+      as_->str(
+          a64::x11,
+          arch::ptr_resolve(as_, arch::fp, tstate_loc.loc, arch::reg_scratch_0));
+    }
     as_->str(a64::xzr, arch::ptr_offset(a64::x11, offsetof(PyThreadState, eval_breaker)));
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_x1;

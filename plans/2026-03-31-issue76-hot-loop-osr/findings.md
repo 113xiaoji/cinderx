@@ -388,3 +388,11 @@
 - This is intentionally scoped to the test-only OSR entry:
   - it is not a proposed product behavior
   - it exists only to postpone pending-task compatibility until after the synthetic-entry path itself is stable
+
+## Current runtime hypothesis
+
+- The remaining synthetic-entry crash likely is not just about locals restoration.
+- The test-only entry also bypasses the normal entry block's pre-bound runtime values, especially `tstate`.
+- New corrective hypothesis:
+  - Phase 0 secondary entry must restore at least the allocated LIR location for `env_.asm_tstate`
+  - then the existing `LoadEvalBreaker` / `_Py_HandlePending` path has a chance to run with a coherent thread-state binding
