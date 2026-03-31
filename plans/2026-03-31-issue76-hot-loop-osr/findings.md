@@ -346,3 +346,20 @@
 - Corrective action:
   - use `.size() == 0`
   - compare offsets by their integer `.value()`
+
+## 2026-03-31 Deopt offset probe result
+
+- Direct ARM probe for the simple `hot(n, acc)` loop showed:
+  - exported OSR entry:
+    - `bc_offset = 2`
+  - deopt metadata cause indices:
+    - `0, 1, 3, 9, 18`
+- Interpretation:
+  - the exported Phase 0 loop-header offset does not exactly coincide with any existing deopt metadata point for this loop shape
+  - strict equality on `bc_offset == cause_instr_idx` is therefore too strong for this prototype if we want to reuse current deopt metadata to restore locals
+- Updated prototype rule:
+  - first try exact match on `bc_offset`
+  - if no exact deopt metadata exists, fall back to the nearest deopt metadata point in the same compiled function
+- Why this is acceptable in Phase 0:
+  - the current prototype is locals-only and test-only
+  - the goal is to prove a runnable synthetic secondary entry path, not to finalize the long-term OSR header semantics

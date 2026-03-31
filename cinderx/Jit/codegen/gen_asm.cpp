@@ -119,14 +119,8 @@ void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
 std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
     CodeRuntime* code_rt,
     BCOffset bc_offset) {
-  for (const DeoptMetadata& meta : code_rt->deoptMetadatas()) {
-    if (meta.frame_meta.size() == 0) {
-      continue;
-    }
+  auto make_mappings = [](const DeoptMetadata& meta) {
     const DeoptFrameMetadata& frame = meta.outermostFrame();
-    if (frame.cause_instr_idx.value() != bc_offset.value()) {
-      continue;
-    }
     std::vector<OSREntryMetadata::LocalMapping> mappings;
     for (size_t i = 0; i < frame.localsplus.size(); ++i) {
       int live_idx = frame.localsplus[i];
@@ -139,6 +133,30 @@ std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
       });
     }
     return mappings;
+  };
+
+  const DeoptMetadata* nearest = nullptr;
+  int nearest_distance = std::numeric_limits<int>::max();
+  for (const DeoptMetadata& meta : code_rt->deoptMetadatas()) {
+    if (meta.frame_meta.size() == 0) {
+      continue;
+    }
+    const DeoptFrameMetadata& frame = meta.outermostFrame();
+    if (frame.cause_instr_idx.value() != bc_offset.value()) {
+      int distance = frame.cause_instr_idx.value() - bc_offset.value();
+      if (distance < 0) {
+        distance = -distance;
+      }
+      if (distance < nearest_distance) {
+        nearest_distance = distance;
+        nearest = &meta;
+      }
+      continue;
+    }
+    return make_mappings(meta);
+  }
+  if (nearest != nullptr) {
+    return make_mappings(*nearest);
   }
   return {};
 }
