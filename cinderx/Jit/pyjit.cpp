@@ -2399,6 +2399,7 @@ PyObject* get_osr_entries(PyObject* /* self */, PyObject* arg) {
 
   for (const OSREntryMetadata& entry : compiled_func->runtime()->osrEntries()) {
     auto item = Ref<>::steal(PyDict_New());
+    auto locals = Ref<>::steal(PyList_New(0));
     if (item == nullptr) {
       return nullptr;
     }
@@ -2409,12 +2410,27 @@ PyObject* get_osr_entries(PyObject* /* self */, PyObject* arg) {
     auto local_count =
         Ref<>::steal(PyLong_FromLong(entry.local_mappings.size()));
     if (bc_offset == nullptr || entry_addr == nullptr ||
-        test_entry_addr == nullptr || local_count == nullptr) {
+        test_entry_addr == nullptr || local_count == nullptr ||
+        locals == nullptr) {
       return nullptr;
+    }
+    for (const auto& mapping : entry.local_mappings) {
+      auto local_item = Ref<>::steal(PyDict_New());
+      auto local_index = Ref<>::steal(PyLong_FromLong(mapping.local_index));
+      auto location = Ref<>::steal(PyLong_FromLong(mapping.location.loc));
+      if (local_item == nullptr || local_index == nullptr || location == nullptr) {
+        return nullptr;
+      }
+      if (PyDict_SetItemString(local_item, "local_index", local_index) < 0 ||
+          PyDict_SetItemString(local_item, "location", location) < 0 ||
+          PyList_Append(locals, local_item) < 0) {
+        return nullptr;
+      }
     }
     if (PyDict_SetItemString(item, "bc_offset", bc_offset) < 0 ||
         PyDict_SetItemString(item, "entry_address", entry_addr) < 0 ||
         PyDict_SetItemString(item, "test_entry_address", test_entry_addr) < 0 ||
+        PyDict_SetItemString(item, "locals", locals) < 0 ||
         PyDict_SetItemString(item, "local_count", local_count) < 0 ||
         PyList_Append(result, item) < 0) {
       return nullptr;

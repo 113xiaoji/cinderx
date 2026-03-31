@@ -276,3 +276,25 @@
   - cast to `const Snapshot&` in both:
     - `cinderx/Jit/codegen/gen_asm.cpp`
     - `cinderx/Jit/lir/generator.cpp`
+
+## 2026-03-31 Targeted remote verification status
+
+- Using the standard remote helper in targeted mode:
+  - `ARM_RUNTIME_SKIP_TESTS=test_`
+  - `EXTRA_TEST_CMD=... -k phase0_loop_osr -v`
+  - `SKIP_DEFAULT_PYPERF_GATES=1`
+- Current targeted status:
+  - `test_phase0_loop_osr_exports_entries`: `PASS`
+  - `test_phase0_loop_osr_test_entry_executes_loop`: process crash during `run_osr_test_entry()`
+- Confirmed via direct remote repro:
+  - `jit.force_compile(hot)` returns `True`
+  - `jit.get_osr_entries(hot)` returns one entry with:
+    - `bc_offset = 2`
+    - non-zero `entry_address`
+    - non-zero `test_entry_address`
+  - crash happens only when invoking the synthetic-state secondary entry
+- Additional observability decision:
+  - extend `get_osr_entries()` to expose per-local physical locations
+  - purpose:
+    - verify where the Phase 0 stub is restoring each local
+    - distinguish bad metadata from bad entry-stub mechanics
