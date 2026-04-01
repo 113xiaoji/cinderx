@@ -242,6 +242,35 @@ void Context::clearDeoptStats() {
   deopt_stats_.clear();
 }
 
+void Context::recordOSR(CodeRuntime* code_runtime, BCOffset bc_offset) {
+#ifdef Py_GIL_DISABLED
+  std::lock_guard<std::mutex> lock(osr_stats_mutex_);
+#endif
+  OSRStat& stat = osr_stats_[code_runtime][bc_offset];
+  stat.count++;
+}
+
+const OSRStat* Context::osrStat(
+    const CodeRuntime* code_runtime,
+    BCOffset bc_offset) const {
+  auto map_it = osr_stats_.find(code_runtime);
+  if (map_it == osr_stats_.end()) {
+    return nullptr;
+  }
+  auto stat_it = map_it->second.find(bc_offset);
+  if (stat_it == map_it->second.end()) {
+    return nullptr;
+  }
+  return &stat_it->second;
+}
+
+void Context::clearOSRStats() {
+#ifdef Py_GIL_DISABLED
+  std::lock_guard<std::mutex> lock(osr_stats_mutex_);
+#endif
+  osr_stats_.clear();
+}
+
 InlineCacheStats Context::getAndClearLoadMethodCacheStats() {
   InlineCacheStats stats;
   for (auto& cache : load_method_caches_) {

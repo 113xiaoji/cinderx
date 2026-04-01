@@ -2334,6 +2334,38 @@ Ref<> make_deopt_stats() {
   return stats;
 }
 
+Ref<> make_osr_stats() {
+  CompilerContext<Compiler>* ctx = jitCtx();
+  auto stats = Ref<>::steal(check(PyList_New(0)));
+
+  for (auto& pair : jitCtx()->compiledCodes()) {
+    const CompiledFunction& compiled_func = *pair.second;
+    const CodeRuntime* code_runtime = compiled_func.runtime();
+
+    for (const OSREntryMetadata& entry : code_runtime->osrEntries()) {
+      ctx->ifOSRStat(code_runtime, entry.bc_offset, [&](const auto& stat) {
+        auto item = Ref<>::steal(check(PyDict_New()));
+        auto normal = Ref<>::steal(check(PyDict_New()));
+        auto int_dict = Ref<>::steal(check(PyDict_New()));
+        auto qualname = Ref<>::steal(check(PyUnicode_FromString(
+            PyUnicode_AsUTF8(code_runtime->frameState()->code()->co_qualname))));
+        auto bc_offset = Ref<>::steal(PyLong_FromLong(entry.bc_offset.value()));
+        auto count = Ref<>::steal(PyLong_FromUnsignedLongLong(stat.count));
+        check(PyDict_SetItemString(normal, "func_qualname", qualname));
+        check(PyDict_SetItemString(normal, "bc_offset", bc_offset));
+        check(PyDict_SetItemString(item, "normal", normal));
+        check(PyDict_SetItemString(int_dict, "count", count));
+        check(PyDict_SetItemString(item, "int", int_dict));
+        check(PyList_Append(stats, item));
+      });
+    }
+  }
+
+  ctx->clearOSRStats();
+
+  return stats;
+}
+
 PyObject* get_and_clear_runtime_stats(PyObject* /* self */, PyObject*) {
   auto stats = Ref<>::steal(PyDict_New());
   if (stats == nullptr) {
@@ -2343,6 +2375,8 @@ PyObject* get_and_clear_runtime_stats(PyObject* /* self */, PyObject*) {
   try {
     Ref<> deopt_stats = make_deopt_stats();
     check(PyDict_SetItemString(stats, "deopt", deopt_stats));
+    Ref<> osr_stats = make_osr_stats();
+    check(PyDict_SetItemString(stats, "osr", osr_stats));
   } catch (const CAPIError&) {
     return nullptr;
   }
@@ -2352,6 +2386,7 @@ PyObject* get_and_clear_runtime_stats(PyObject* /* self */, PyObject*) {
 
 PyObject* clear_runtime_stats(PyObject* /* self */, PyObject*) {
   jitCtx()->clearDeoptStats();
+  jitCtx()->clearOSRStats();
   Py_RETURN_NONE;
 }
 

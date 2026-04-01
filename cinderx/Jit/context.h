@@ -79,12 +79,19 @@ struct DeoptStat {
   FixedTypeProfiler<4> types;
 };
 
+struct OSRStat {
+  std::size_t count;
+};
+
 // Map from CodeRuntime to stats about each deopt point.
 //
 // Uses an unordered map to store the deopt stats for each code object as it's
 // meant to be sparse.  We expect most deopt points to be unused.
 using DeoptStats = jit::
     UnorderedMap<const CodeRuntime*, jit::UnorderedMap<std::size_t, DeoptStat>>;
+
+using OSRStats =
+    jit::UnorderedMap<const CodeRuntime*, jit::UnorderedMap<BCOffset, OSRStat>>;
 
 using InlineCacheStats = std::vector<CacheStats>;
 
@@ -327,6 +334,27 @@ class Context : public IJitContext {
   // Clear all deopt stats.
   void clearDeoptStats();
 
+  // Record that an OSR entry at the given bytecode offset was used.
+  void recordOSR(CodeRuntime* code_runtime, BCOffset bc_offset);
+
+  template <typename F>
+  bool ifOSRStat(
+      const CodeRuntime* code_runtime,
+      BCOffset bc_offset,
+      F&& f) const {
+#ifdef Py_GIL_DISABLED
+    std::lock_guard<std::mutex> lock(osr_stats_mutex_);
+#endif
+    const OSRStat* stat = osrStat(code_runtime, bc_offset);
+    if (stat == nullptr) {
+      return false;
+    }
+    f(*stat);
+    return true;
+  }
+
+  void clearOSRStats();
+
   // Get and clear inline cache stats.
   InlineCacheStats getAndClearLoadMethodCacheStats();
   InlineCacheStats getAndClearLoadTypeMethodCacheStats();
@@ -464,12 +492,20 @@ class Context : public IJitContext {
 #ifdef Py_GIL_DISABLED
   mutable std::mutex deopt_stats_mutex_;
 #endif
+  OSRStats osr_stats_;
+#ifdef Py_GIL_DISABLED
+  mutable std::mutex osr_stats_mutex_;
+#endif
 
   // Get the stat object for a given deopt.  It will not exist if the deopt has
   // never been hit.  Caller must hold deopt_stats_mutex_ when Py_GIL_DISABLED.
   const DeoptStat* deoptStat(
       const CodeRuntime* code_runtime,
       std::size_t deopt_idx) const;
+
+  const OSRStat* osrStat(
+      const CodeRuntime* code_runtime,
+      BCOffset bc_offset) const;
 
   GuardFailureCallback guard_failure_callback_;
 

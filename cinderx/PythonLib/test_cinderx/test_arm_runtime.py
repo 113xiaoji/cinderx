@@ -100,6 +100,61 @@ class ArmRuntimeTests(unittest.TestCase):
         result = cinderx.jit.run_osr_test_entry(hot, (3, 10))
         self.assertEqual(result, 16)
 
+    def test_phase1_once_call_hot_loop_enters_jit_same_activation(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def hot(n: int, acc: int) -> int:
+                while n > 0:
+                    acc = acc + n
+                    n = n - 1
+                return acc
+
+            jit.get_and_clear_runtime_stats()
+            result = hot(50000, 0)
+            stats = jit.get_and_clear_runtime_stats()
+            osr_entries = [
+                entry for entry in stats.get("osr", [])
+                if entry["normal"]["func_qualname"] == "hot"
+            ]
+
+            print(result)
+            print(len(osr_entries))
+            print(sum(entry["int"]["count"] for entry in osr_entries))
+            print(jit.is_jit_compiled(hot))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/phase1_once_call_hot_loop.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertEqual(int(lines[-4]), (50000 * 50001) // 2, proc.stdout)
+            self.assertGreater(int(lines[-3]), 0, proc.stdout)
+            self.assertGreater(int(lines[-2]), 0, proc.stdout)
+            self.assertEqual(lines[-1], "True", proc.stdout)
+
     def test_load_global_mutable_large_int_avoids_repeated_deopts(self) -> None:
         # Regression guard:
         # a mutable global int outside the small-int cache should not keep a
