@@ -1528,28 +1528,26 @@ void translateStateStackPush(Environ* env, const Instruction* instr) {
   auto stack_top_offset = offsetof(GenDataFooter, stack_top);
   auto stack_base_offset = offsetof(GenDataFooter, state_stack);
 
-  // 寄存器使用策略（避免寄存器冲突）:
-  // x12 (reg_scratch_0): 目标地址计算（会被 ptr_resolve 修改）
-  // x13 (reg_scratch_1): 临时保存 stack_top 或 phase/node 值
-  // x16 (reg_scratch_br): ptr_resolve 的 scratch（避免与 x12 冲突）
+  // 寄存器使用策略:
+  // reg_scratch_0 (x12): 目标地址计算
+  // x13: 临时值保存
+  // x16 (reg_scratch_br): ptr_resolve scratch
   //
   // 关键: ptr_resolve(fp, offset, scratch) 会修改 scratch 寄存器!
-  // 不能用 reg_scratch_0 (x12) 作为 ptr_resolve scratch，因为
-  // x12 同时持有 stack_top 值。
+  // 必须在每次 ptr_resolve 调用前确保 scratch 寄存器不持有需要的值。
 
   const OperandBase* node_op = instr->getInput(0);
   const OperandBase* phase_op = instr->getInput(1);
 
-  // Step 1: 加载 stack_top 到 w12（用 x16 作为 ptr_resolve scratch）
+  // Step 1: 加载 stack_top 到 w13（用 x16 作为 ptr_resolve scratch）
   as->ldr(
-      a64::w12,
+      a64::w13,
       arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
 
   // Step 2: 计算 &state_stack[stack_top] 到 reg_scratch_0
-  // 此时 w12 = stack_top，x12 没有被 ptr_resolve 覆盖
-  as->mov(arch::reg_scratch_0, stack_base_offset);
-  as->add(arch::reg_scratch_0, arch::fp, arch::reg_scratch_0);
-  as->lsl(a64::x13, a64::x12, 4); // x13 = stack_top * 16
+  // x13 = stack_top * 16, reg_scratch_0 = fp + state_stack + x13
+  as->add(arch::reg_scratch_0, arch::fp, stack_base_offset);
+  as->lsl(a64::x13, a64::x13, 4); // x13 = stack_top * 16
   as->add(arch::reg_scratch_0, arch::reg_scratch_0, a64::x13);
 
   // Step 3: 存储 node
@@ -1559,7 +1557,7 @@ void translateStateStackPush(Environ* env, const Instruction* instr) {
     as->mov(a64::x13, static_cast<int64_t>(node_op->getConstant()));
     as->str(a64::x13, a64::ptr(arch::reg_scratch_0, 0));
   } else {
-    // Stack slot: ptr_resolve 会覆盖 reg_scratch_0，先保存到 x13
+    // Stack slot: 用 x13 保存地址，用 x16 作为 ptr_resolve scratch
     as->mov(a64::x13, arch::reg_scratch_0);
     as->ldr(
         a64::x16,
@@ -1590,11 +1588,49 @@ void translateStateStackPush(Environ* env, const Instruction* instr) {
     as->mov(arch::reg_scratch_0, a64::x13);
   }
 
-  // Step 5: stack_top++（用 x16 作为 ptr_resolve scratch）
-  as->add(a64::w12, a64::w12, 1);
-  as->str(
-      a64::w12,
+  // Step 5: Py_INCREF(node) — 栈持有引用，RefcountInsertion 会对输入 XDecref
+  // 关键: 只能使用 DISALLOWED_REGISTERS 中的寄存器 (x12/x13/x16)！
+  // x9/x10 是 allocable 寄存器，寄存器分配器可能将活跃值分配到这些寄存器，
+  // clobber 它们会导致使用这些值的后继指令读到垃圾值。
+  // 此时 reg_scratch_0 (x12) 已不再需要（node/phase 已存储到栈），
+  // 可以安全地用于 Py_INCREF。
+  {
+    if (node_op->isReg()) {
+      as->mov(arch::reg_scratch_0, AutoTranslator::getGp(node_op));
+    } else if (node_op->isImm()) {
+      as->mov(arch::reg_scratch_0, static_cast<int64_t>(node_op->getConstant()));
+    } else {
+      as->ldr(
+          arch::reg_scratch_0,
+          arch::ptr_resolve(
+              as, arch::fp, node_op->getStackSlot().loc, a64::x16));
+    }
+    // null check
+    Label skip_incref = as->newLabel();
+    as->cbz(arch::reg_scratch_0, skip_incref);
+    // load ob_refcnt (offset 0 on PyObject)
+    constexpr auto refcnt_offset = offsetof(PyObject, ob_refcnt);
+    as->ldr(
+        a64::w13,
+        arch::ptr_offset(arch::reg_scratch_0, refcnt_offset, arch::AccessSize::k32));
+    // check immortal (bit 31 set)
+    as->tbnz(a64::w13, 31, skip_incref);
+    // refcnt + 1
+    as->add(a64::w13, a64::w13, 1);
+    as->str(
+        a64::w13,
+        arch::ptr_offset(arch::reg_scratch_0, refcnt_offset, arch::AccessSize::k32));
+    as->bind(skip_incref);
+  }
+
+  // Step 6: stack_top++（重新加载 stack_top，因为上面的操作可能改变了 x13）
+  as->ldr(
+      a64::w13,
       arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
+  as->add(a64::w13, a64::w13, 1);
+  as->str(
+      a64::w13,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
 #else
   CINDER_UNSUPPORTED
 #endif

@@ -1362,24 +1362,23 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         break;
       }
       case Opcode::kStateStackPush: {
-        // void JITRT_StateStackPush(PyObject* node, int32_t phase)
-        bbb.appendInvokeInstruction(
-            JITRT_StateStackPush, i.GetOperand(0), i.GetOperand(1));
+        // Push 原生 LIR
+        bbb.appendInstr(Instruction::kStateStackPush, i.GetOperand(0), i.GetOperand(1));
         break;
       }
       case Opcode::kStateStackPop: {
-        // PyObject* JITRT_StateStackPop()
-        bbb.appendCallInstruction(i.output(), JITRT_StateStackPop);
+        // Pop 原生 LIR
+        bbb.appendInstr(i.output(), Instruction::kStateStackPop);
         break;
       }
       case Opcode::kLoadPoppedPhase: {
-        // int32_t JITRT_LoadPoppedPhase()
-        bbb.appendCallInstruction(i.output(), JITRT_LoadPoppedPhase);
+        // 原生 LIR 调查
+        bbb.appendInstr(i.output(), Instruction::kLoadPoppedPhase);
         break;
       }
       case Opcode::kLoadStackTop: {
-        // int32_t JITRT_LoadStackTop()
-        bbb.appendCallInstruction(i.output(), JITRT_LoadStackTop);
+        // Plan B: 原生 LIR 指令，codegen 内联
+        bbb.appendInstr(i.output(), Instruction::kLoadStackTop);
         break;
       }
       case Opcode::kSaveCurrentNode: {
