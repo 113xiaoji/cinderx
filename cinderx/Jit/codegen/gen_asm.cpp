@@ -2848,6 +2848,13 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
 #else
     as_->str(a64::x9, arch::ptr_offset(frame_reg, offsetof(_PyInterpreterFrame, prev_instr)));
 #endif
+    // Phase 0 test-entry compromise:
+    // observed loop-header layouts keep locals and tstate in X19/X20/X21.
+    // Seed all three with tstate, then let local restoration overwrite the
+    // mapped local registers. The remaining register stays as a valid tstate.
+    as_->mov(a64::x19, a64::x11);
+    as_->mov(a64::x20, a64::x11);
+    as_->mov(a64::x21, a64::x11);
 
     std::optional<OSREntryMetadata::LocalMapping> deferred_x1;
     for (const auto& mapping : mappings) {
