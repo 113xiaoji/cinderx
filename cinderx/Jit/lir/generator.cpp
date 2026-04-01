@@ -74,6 +74,17 @@ jit::hir::FrameState* getPhase0FrameState(const jit::hir::BasicBlock* hir_bb) {
   return nullptr;
 }
 
+const jit::hir::Register* canonicalizePhase0Binding(
+    const jit::codegen::Environ* env,
+    const jit::hir::Register* reg) {
+  auto it = env->copy_propagation_map.find(reg);
+  while (it != env->copy_propagation_map.end()) {
+    reg = it->second;
+    it = env->copy_propagation_map.find(reg);
+  }
+  return reg;
+}
+
 #ifndef Py_GIL_DISABLED
 constexpr size_t kRefcountOffset = offsetof(PyObject, ob_refcnt);
 #endif
@@ -405,7 +416,8 @@ std::unique_ptr<jit::lir::Function> LIRGenerator::TranslateFunction() {
         supported = false;
         break;
       }
-      osr_block.local_bindings.emplace_back(static_cast<int>(i), reg);
+      osr_block.local_bindings.emplace_back(
+          static_cast<int>(i), canonicalizePhase0Binding(env_, reg));
     }
     if (!supported) {
       continue;
