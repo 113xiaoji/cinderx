@@ -9346,14 +9346,42 @@
             }
             // _JIT
             {
+                _Py_CODEUNIT *start = this_instr;
+                int adaptive_oparg = oparg;
+                while (adaptive_oparg > 255) {
+                    adaptive_oparg >>= 8;
+                    start--;
+                }
+                _PyFrame_SetStackPointer(frame, stack_pointer);
+                PyObject *osr_result = NULL;
+                PyFunctionObject *osr_finalize_func = NULL;
+                int osr_entered =
+                    _PyJIT_TryHotLoopOSR(
+                        tstate,
+                        frame,
+                        this_instr,
+                        next_instr,
+                        &osr_result,
+                        &osr_finalize_func);
+                stack_pointer = _PyFrame_GetStackPointer(frame);
+                if (osr_entered < 0) {
+                    JUMP_TO_LABEL(error);
+                }
+                if (osr_entered > 0) {
+                    for (int _i = 0; _i < _PyFrame_GetCode(frame)->co_nlocalsplus; _i++) {
+                        frame->localsplus[_i] = PyStackRef_NULL;
+                    }
+                    if (osr_finalize_func != NULL) {
+                        _PyJIT_FinalizeHotLoopCompile(osr_finalize_func);
+                    }
+                    stack_pointer[0] = PyStackRef_FromPyObjectSteal(osr_result);
+                    stack_pointer += 1;
+                    assert(WITHIN_STACK_BOUNDS());
+                    goto TARGET_RETURN_VALUE;
+                }
                 #ifdef _Py_TIER2
                 _Py_BackoffCounter counter = this_instr[1].counter;
                 if (backoff_counter_triggers(counter) && this_instr->op.code == JUMP_BACKWARD_JIT) {
-                    _Py_CODEUNIT *start = this_instr;
-                    while (oparg > 255) {
-                        oparg >>= 8;
-                        start--;
-                    }
                     _PyExecutorObject *executor;
                     _PyFrame_SetStackPointer(frame, stack_pointer);
                     int optimized = _PyOptimizer_Optimize(frame, start, &executor, 0);

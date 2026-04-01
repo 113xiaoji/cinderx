@@ -19,6 +19,7 @@
 #include "cinderx/Common/extra-py-flags.h"
 #include "cinderx/Common/import.h"
 #include "cinderx/Common/log.h"
+#include "cinderx/Common/py-portability.h"
 #include "cinderx/Common/ref.h"
 #include "cinderx/Common/string.h"
 #include "cinderx/Common/type.h"
@@ -68,6 +69,8 @@ using namespace jit;
 
 namespace {
 
+hir::Preloader* preload(BorrowedRef<> unit);
+
 // RAII device for disabling GIL checking.
 class DisableGilCheck {
  public:
@@ -105,6 +108,45 @@ uint64_t countCalls(PyCodeObject* code) {
   auto extra = codeExtra(code);
   return extra != nullptr ? Ci_code_extra_get_calls(extra) : 0;
 #endif
+}
+
+BCOffset hotLoopBCOffset(_PyInterpreterFrame* frame, _Py_CODEUNIT* loop_start) {
+  auto* code = _PyFrame_GetCode(frame);
+#if PY_VERSION_HEX >= 0x030D0000
+  auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
+#else
+  auto* bytecode = _PyCode_CODE(code);
+#endif
+  return BCOffset{
+      static_cast<int>((loop_start - bytecode) * sizeof(_Py_CODEUNIT))};
+}
+
+struct Phase1OSRArgs {
+  std::vector<Ref<>> owned;
+  std::vector<PyObject*> raw;
+};
+
+std::optional<Phase1OSRArgs> buildPhase1OSRArgs(
+    _PyInterpreterFrame* frame,
+    const OSREntryMetadata& entry) {
+  int arg_count = 0;
+  for (const auto& mapping : entry.local_mappings) {
+    arg_count = std::max(arg_count, mapping.local_index + 1);
+  }
+
+  Phase1OSRArgs args;
+  args.raw.resize(arg_count, nullptr);
+  args.owned.reserve(arg_count);
+  for (const auto& mapping : entry.local_mappings) {
+    auto local = frame->localsplus[mapping.local_index];
+    if (PyStackRef_IsNull(local)) {
+      return std::nullopt;
+    }
+    PyObject* obj = PyStackRef_AsPyObjectBorrow(local);
+    args.owned.emplace_back(Ref<>::create(obj));
+    args.raw[mapping.local_index] = obj;
+  }
+  return args;
 }
 
 // If functions in the cinderx module get compiled, they will somehow keep the
@@ -1339,6 +1381,7 @@ void disable_jit_impl(bool deopt_all) {
 
   if (isJitUsable()) {
     getMutableConfig().state = State::kPaused;
+    PyInterpreterState_Get()->jit = 0;
     JIT_DLOG("Disabled the JIT");
   }
 }
@@ -1366,6 +1409,7 @@ bool enable_jit_impl() {
     return false;
   }
   if (isJitUsable()) {
+    PyInterpreterState_Get()->jit = 1;
     return true;
   }
 
@@ -1376,6 +1420,7 @@ bool enable_jit_impl() {
   }
 
   getMutableConfig().state = State::kRunning;
+  PyInterpreterState_Get()->jit = 1;
 
   JIT_DLOG("Re-enabled the JIT and re-optimized {} functions", count);
 
@@ -3550,7 +3595,131 @@ void unregisterFunctionCodes(BorrowedRef<PyFunctionObject> func) {
   notifyUnitDeletedDuringPreload(mod_state, func.getObj());
 }
 
+struct HotLoopCompiledState {
+  CompiledFunction* compiled_func{nullptr};
+  bool needs_finalize{false};
+  int status{0};
+};
+
+HotLoopCompiledState ensureCompiledForHotLoopOSR(
+    BorrowedRef<PyFunctionObject> func) {
+  if (CompiledFunction* compiled = jitCtx()->lookupFunc(func)) {
+    return {.compiled_func = compiled, .needs_finalize = false, .status = 0};
+  }
+
+  BorrowedRef<PyCodeObject> code{func->func_code};
+  BorrowedRef<PyDictObject> builtins{func->func_builtins};
+  BorrowedRef<PyDictObject> globals{func->func_globals};
+  if (CompiledFunction* compiled = jitCtx()->lookupCode(code, builtins, globals)) {
+    return {
+        .compiled_func = compiled,
+        .needs_finalize = !isJitCompiled(func),
+        .status = 0};
+  }
+
+  hir::IsolatedPreloaders ip;
+  trackEligibleCodeObjects(func, func->func_code, JitEligibility::Eligible);
+  hir::Preloader* preloader = preload(func);
+  if (preloader == nullptr) {
+    return {
+        .compiled_func = nullptr,
+        .needs_finalize = false,
+        .status = PyErr_Occurred() ? -1 : 0};
+  }
+
+  Result compile_result = compilePreloaderImpl(jitCtx(), *preloader, nullptr);
+  if (compile_result == Result::PYTHON_EXCEPTION) {
+    return {.compiled_func = nullptr, .needs_finalize = false, .status = -1};
+  }
+  if (compile_result != Result::OK) {
+    return {.compiled_func = nullptr, .needs_finalize = false, .status = 0};
+  }
+
+  CompiledFunction* compiled = jitCtx()->lookupCode(code, builtins, globals);
+  return {
+      .compiled_func = compiled,
+      .needs_finalize = compiled != nullptr && !isJitCompiled(func),
+      .status = 0};
+}
+
 } // namespace
+
+extern "C" int _PyJIT_TryHotLoopOSR(
+    PyThreadState* tstate,
+    _PyInterpreterFrame* frame,
+    _Py_CODEUNIT* this_instr,
+    _Py_CODEUNIT* loop_start,
+    PyObject** result_out,
+    PyFunctionObject** finalize_func_out) {
+  (void)this_instr;
+  (void)tstate;
+  *result_out = nullptr;
+  *finalize_func_out = nullptr;
+  if (!isJitUsable()) {
+    return 0;
+  }
+
+  PyObject* func_obj = frameFunction(frame);
+  if (func_obj == nullptr || !PyFunction_Check(func_obj)) {
+    return 0;
+  }
+  BorrowedRef<PyFunctionObject> func{func_obj};
+  BorrowedRef<PyCodeObject> code{_PyFrame_GetCode(frame)};
+  if ((code->co_flags & kCoFlagsAnyGenerator) != 0) {
+    return 0;
+  }
+
+  HotLoopCompiledState compile_state = ensureCompiledForHotLoopOSR(func);
+  if (compile_state.status < 0) {
+    return -1;
+  }
+  CompiledFunction* compiled_func = compile_state.compiled_func;
+  if (compiled_func == nullptr) {
+    return 0;
+  }
+
+  BCOffset bc_offset = hotLoopBCOffset(frame, loop_start);
+  const OSREntryMetadata* entry =
+      compiled_func->runtime()->lookupOSREntry(bc_offset);
+  if (entry == nullptr || entry->test_entry_address == 0) {
+    return 0;
+  }
+
+  auto args = buildPhase1OSRArgs(frame, *entry);
+  if (!args.has_value()) {
+    return 0;
+  }
+
+  auto osr_entry = reinterpret_cast<vectorcallfunc>(entry->test_entry_address);
+  PyObject* result = osr_entry(
+      reinterpret_cast<PyObject*>(func.get()),
+      args->raw.data(),
+      args->raw.size(),
+      nullptr);
+  if (result == nullptr) {
+    return -1;
+  }
+
+  jitCtx()->recordOSR(compiled_func->runtime(), bc_offset);
+  if (compile_state.needs_finalize) {
+    *finalize_func_out = func.get();
+  }
+  *result_out = result;
+  return 1;
+}
+
+extern "C" void _PyJIT_FinalizeHotLoopCompile(PyFunctionObject* func) {
+  if (func == nullptr || jitCtx() == nullptr || isJitCompiled(func)) {
+    return;
+  }
+
+  BorrowedRef<PyFunctionObject> borrowed_func{reinterpret_cast<PyObject*>(func)};
+  CompiledFunction* compiled = jitCtx()->lookupCode(
+      borrowed_func->func_code, borrowed_func->func_builtins, borrowed_func->func_globals);
+  if (compiled != nullptr) {
+    jitCtx()->finalizeFunc(borrowed_func, *compiled);
+  }
+}
 
 #if PY_VERSION_HEX < 0x030C0000
 

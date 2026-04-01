@@ -28,6 +28,15 @@
 
 #include "cinderx/Jit/generators_rt.h"
 
+int _PyJIT_TryHotLoopOSR(
+    PyThreadState* tstate,
+    _PyInterpreterFrame* frame,
+    _Py_CODEUNIT* this_instr,
+    _Py_CODEUNIT* loop_start,
+    PyObject** result,
+    PyFunctionObject** finalize_func);
+void _PyJIT_FinalizeHotLoopCompile(PyFunctionObject* func);
+
 #if !defined(ENABLE_LAZY_IMPORTS) && !defined(DK_KIND)
 #define DK_KIND(dk) (dk->dk_kind)
 #endif
