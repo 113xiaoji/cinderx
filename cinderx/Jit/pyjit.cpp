@@ -3668,6 +3668,10 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   if ((code->co_flags & kCoFlagsAnyGenerator) != 0) {
     return 0;
   }
+  if (code->co_exceptiontable != nullptr &&
+      PyBytes_GET_SIZE(code->co_exceptiontable) != 0) {
+    return 0;
+  }
 
   HotLoopCompiledState compile_state = ensureCompiledForHotLoopOSR(func);
   if (compile_state.status < 0) {

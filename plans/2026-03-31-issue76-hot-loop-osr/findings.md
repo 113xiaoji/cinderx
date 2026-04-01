@@ -410,3 +410,306 @@
 - Verification decision:
   - use a dedicated direct probe script as the canonical remote Phase 0 verification gate
   - keep the Python unittest cases as regression tests, but not as the only remote truth source for this phase
+
+## 2026-04-01 Current local head and intended next check
+
+- Latest local Phase 0 commits prepared for the next ARM round:
+  - `e8855339` `fix: prefer phase0 loop-entry bindings over deopt fallback`
+  - `bee598ce` `fix: resolve phase0 bindings from header phi outputs`
+  - `46f531f5` `fix: set phase0 test-entry frame to loop header bc offset`
+- Why the latest commit matters:
+  - it closes a semantic gap in the original Phase 0 plan
+  - the test-only OSR entry linked a fresh interpreter frame, but still left the frame's bytecode position at function entry instead of the loop header
+  - that omission is a plausible explanation for pending-task / `_Py_HandlePending()` instability when the test entry eventually re-enters periodic handling
+- Verification that still needs to happen once ARM is back:
+  - build/install `46f531f5` through `scripts/arm/remote_update_build_test.sh`
+  - rerun `scripts/arm/issue76_phase0_stability_probe.py`
+  - if the probe still hangs or crashes, attach `gdb` to capture the new stack with the bytecode-position fix in place
+
+## 2026-04-01 Infrastructure blocker
+
+- The ARM host became unreachable before the fresh verification round:
+  - `ssh root@124.70.162.35` timed out during banner exchange
+  - `Test-NetConnection 124.70.162.35 -Port 22` reported `TcpTestSucceeded : False`
+  - ICMP ping also timed out from the current client machine
+- Interpretation:
+  - this is currently a lab / host availability problem, not a new code-level result
+  - no honest claim can be made yet about whether `46f531f5` improves or fixes the Phase 0 stability probe
+
+## 2026-04-01 Root-cause refinement after ARM recovery
+
+- After the ARM host came back, the next targeted checks showed a sharper split between failure modes:
+  - helper-installed `defaults_probe_exit` initially passed for some register layouts but `stability_probe` still failed intermittently
+  - direct `gdb` on the older failing build showed GC traversing a corrupted `PyFunctionObject`
+  - inspecting the function fields showed:
+    - `func_defaults` had been corrupted
+    - `func_globals`, `func_builtins`, `func_name`, `func_doc` were still sane
+- This shifted the hypothesis from "pending-task shutdown only" to "the test entry is writing through a bad interpreter-frame pointer before finalization even begins".
+
+## 2026-04-01 Why `46f531f5` was incomplete
+
+- `46f531f5` tried to patch the linked interpreter frame's bytecode position to the loop-header `bc_offset`.
+- New evidence showed that `env_.asm_interpreter_frame` is normally materialized by `LoadFrame` in the standard entry path, but the Phase 0 test entry jumps straight into loop code and skips that setup.
+- Consequence:
+  - the test entry could write the bytecode-position update through an uninitialized frame pointer location
+  - this explains early corruption such as a smashed `func_defaults` field on the surrounding Python function object
+- Corrective action:
+  - `9f5bab50` now loads `PyThreadState.current_frame` explicitly into the allocated interpreter-frame location before writing `instr_ptr` / `prev_instr`
+
+## 2026-04-01 Why some register layouts still failed after that
+
+- After `9f5bab50`, `defaults_probe_exit` stopped corrupting `hot.__defaults__` for some layouts, but multi-run stability was still flaky.
+- The fresh evidence split by exported local mappings:
+  - successful layouts included:
+    - `(20, 19)`
+    - `(21, 20)`
+    - `(20, 21)`
+    - `(19, 20)`
+  - failing layouts still included:
+    - `(19, 21)`
+    - `(21, 19)`
+- A targeted LIR dump for a `locals = (19, 21)` compile showed:
+  - `v22` / `v23` really did live in `X19` / `X21`
+  - `tstate` lived in the remaining callee-saved register, `X20`
+- Engineering interpretation:
+  - the Phase 0 AArch64 entry still had too much hidden dependence on which of `X19/X20/X21` happened to carry `tstate` in that compile
+  - restoring only the exact exported local regs was not sufficient to make the remaining callee-saved live-in always coherent
+- Corrective action:
+  - `1b5f31f3` seeds `X19`, `X20`, and `X21` with `tstate` first, then overwrites the mapped local registers with the exported local values
+  - this is explicitly a test-entry-only compromise for Phase 0, not a proposed production OSR ABI
+
+## 2026-04-01 Fresh verification evidence
+
+- Standard remote helper with the short corruption check:
+  - command shape:
+    - `EXTRA_TEST_CMD='python -u /root/work/incoming/issue76_phase0_defaults_probe_exit.py'`
+  - result:
+    - `HELPER_RC=0`
+    - `force_compile True`
+    - `result 16`
+    - `after_defaults None`
+    - `after_kwdefaults None`
+- Direct remote stability check on the installed wheel:
+  - command:
+    - `ISSUE76_PHASE0_STABILITY_RUNS=8 /root/venv-cinderx314/bin/python -u scripts/arm/issue76_phase0_stability_probe.py`
+  - result:
+    - `stability_runs=8`
+    - `stability_failures=0`
+- Standard helper gate with the stability probe:
+  - command shape:
+    - `EXTRA_TEST_CMD='ISSUE76_PHASE0_STABILITY_RUNS=4 python -u scripts/arm/issue76_phase0_stability_probe.py'`
+  - result:
+    - `HELPER_RC=0`
+    - `stability_runs=4`
+    - `stability_failures=0`
+
+## 2026-04-01 Phase 0 status
+
+- For the current narrowed Phase 0 scope, the prototype is now behaving like a stable synthetic-state OSR entry:
+  - loop-header secondary entry exported
+  - direct entry returns the expected result `16`
+  - no observed corruption of `hot.__defaults__` in the dedicated corruption probe
+  - no failures in the 8-run direct stability check
+  - no failures in the 4-run helper-gated stability check
+- This is sufficient evidence to treat Scheme-B Phase 0 as landed for:
+  - one hot loop
+  - locals-only synthetic state
+  - current test-only secondary-entry path
+
+## 2026-04-01 Phase 1 RED verified
+
+- Added a new Python regression and remote probe for the true MVP goal:
+  - once-call hot loop
+  - same activation
+  - hot backedge driven
+- Fresh ARM helper result for the RED state:
+  - wheel build/install succeeded
+  - probe printed the correct arithmetic result
+  - probe failed with `no osr stats`
+- Interpretation:
+  - this was the expected failure mode before any interpreter-side OSR wiring
+  - the red test was therefore valid
+
+## 2026-04-01 Phase 1 plumbing milestone
+
+- Added minimal `osr` runtime stats plumbing:
+  - `Context` now has `OSRStat` / `OSRStats`
+  - `get_and_clear_runtime_stats()` now returns an `osr` list
+  - `clear_runtime_stats()` clears both `deopt` and `osr`
+- This did not make the probe pass by itself:
+  - the probe still failed with `osr_entries=[]`
+- Interpretation:
+  - stats transport was no longer the blocker
+  - the blocker moved to interpreter-side entry wiring
+
+## 2026-04-01 Why the first Phase 1 helper never fired
+
+- `gdb` with a pending breakpoint on `_PyJIT_TryHotLoopOSR` initially never hit.
+- New local code inspection found two missing pieces:
+  1. `jit.enable()` / `jit.disable()` were not maintaining `PyInterpreterState.jit`
+     - so `JUMP_BACKWARD` never specialized into `JUMP_BACKWARD_JIT`
+  2. the helper call had been placed inside `#ifdef _Py_TIER2`
+     - on the current ARM wheel, that made the helper effectively disappear from the runtime path we cared about
+- Corrective actions:
+  - set `PyInterpreterState_Get()->jit` in `enable_jit_impl()` / `disable_jit_impl()`
+  - move the helper call outside the `_Py_TIER2` block while preserving the existing tier2 optimizer path
+
+## 2026-04-01 Why the second Phase 1 helper still returned no OSR entry
+
+- After the helper started firing, `gdb` showed `_PyJIT_TryHotLoopOSR()` stopping at:
+  - `entry == nullptr`
+- Parameter inspection showed:
+  - `this_instr == loop_start`
+  - i.e. the helper was receiving the backedge instruction pointer, not the loop-header target
+- Interpretation:
+  - the helper was computing the wrong `BCOffset`
+  - therefore `lookupOSREntry(bc_offset)` could not match the exported loop-header metadata
+- Corrective action:
+  - pass `next_instr` after the backward jump as the loop-header pointer, not the backedge instruction pointer
+
+## 2026-04-01 Same-activation Phase 1 OSR now works functionally
+
+- After fixing:
+  - interpreter `jit` flag wiring
+  - helper placement
+  - loop-header pointer handoff
+- the Phase 1 probe started printing:
+  - `result=1250025000`
+  - `osr_entries=[{'normal': {'func_qualname': 'hot', 'bc_offset': 2}, 'int': {'count': 1}}]`
+- A dedicated `os._exit(0)` probe variant additionally showed:
+  - `compiled True`
+  - `defaults None`
+  - `kwdefaults None`
+- Interpretation:
+  - the core same-activation hot-loop OSR behavior is functioning
+  - the current activation does enter the compiled loop path and record an OSR hit
+  - the path no longer shows the early function-object corruption that Phase 0 previously exposed
+
+## 2026-04-01 Current Phase 1 blocker
+
+- Despite the successful same-activation OSR hit, the normal Phase 1 probe still exits with `RC=139`.
+- This reproduces under the standard ARM helper even when the probe output itself is already correct.
+- The strongest discriminator collected so far:
+  - `os._exit(0)` probe variants are stable
+  - normal interpreter shutdown still segfaults
+- This means:
+  - the functional OSR entry path is no longer the primary problem
+  - the remaining bug is in teardown / return-path correctness after same-activation hot-loop compile+OSR
+- Additional refinement:
+  - an earlier attempt to delay `finalizeFunc()` until after the current frame was popped did not remove the crash
+  - so the remaining fault is not yet proven to be only about early `vectorcall` finalization
+
+## 2026-04-01 Recommended next debug direction
+
+- Treat the current state as:
+  - "Phase 1 semantic milestone reached, process-exit safety still failing"
+- Next likely root-cause areas:
+  - the interpreter-frame return/cleanup sequence used after an OSR-taken backedge
+  - invariants around the current frame's stack / `return_offset` / recursion bookkeeping at the point we jump out of `JUMP_BACKWARD_JIT`
+- Practical next step:
+  - inspect the normal return path after the helper hit, rather than the OSR entry itself
+  - compare the helper success path against the exact invariants assumed by `RETURN_VALUE` / `INTERPRETER_EXIT`
+
+## 2026-04-01 Additional Phase 1 root-cause findings
+
+- A pending breakpoint on `_PyJIT_TryHotLoopOSR` first showed that the helper was not being called at all.
+- Two distinct issues caused that:
+  1. `jit.enable()` / `jit.disable()` were not synchronizing `PyInterpreterState.jit`
+  2. the helper call sat inside `#ifdef _Py_TIER2`, which excluded it from the effective ARM runtime path
+- After fixing both, `gdb` showed the helper being called but returning `entry == nullptr`.
+- The next breakpoint revealed:
+  - `this_instr == loop_start`
+  - so the helper was computing `BCOffset` from the backward-jump instruction instead of the loop-header target
+- Passing `next_instr` after the jump fixed the metadata lookup mismatch and produced the first real same-activation `osr` stat.
+
+## 2026-04-01 Why the helper smoke initially regressed
+
+- Once `JUMP_BACKWARD_JIT` started calling the helper for ordinary interpreted loops, the standard ARM helper's own smoke workload also exercised the new path.
+- That exposed a compile-time assumption in `ensureCompiledForHotLoopOSR()`:
+  - calling `compilePreloaderImpl(..., nullptr)` without first registering the function/code through `trackEligibleCodeObjects()`
+  - later hit the assertion:
+    - `func != nullptr || jitCtx()->codeOuterFunctions().contains(preloader.code())`
+- Corrective action:
+  - explicitly call `trackEligibleCodeObjects(func, func->func_code, JitEligibility::Eligible)` before `preload(func)` inside `ensureCompiledForHotLoopOSR()`
+- Result:
+  - the standard ARM helper smoke resumed passing while the Phase 1 probe remained active
+
+## 2026-04-01 Current Phase 1 happy-path evidence
+
+- Direct remote probe:
+  - command:
+    - `/root/venv-cinderx314/bin/python -u /root/work/incoming/issue76_phase1_probe.py`
+  - result:
+    - `result=1250025000`
+    - `osr_entries=[{'normal': {'func_qualname': 'hot', 'bc_offset': 2}, 'int': {'count': 1}}]`
+    - exit code `0`
+- State probe after same-activation OSR:
+  - `before_compiled False`
+  - `after_compiled True`
+  - `after_entries` non-empty
+  - `stats['osr']` non-empty
+- Standard remote helper:
+  - `PHASE1_GREEN_RC=0`
+  - helper tail included both:
+    - Phase 1 probe success output
+    - normal JIT smoke success: `jit-effective-ok compiled_size 984 interp_calls 10`
+- Interpretation:
+  - the Phase 1 MVP happy path is now working under the standard ARM verification entry, not only under ad-hoc standalone scripts
+
+## 2026-04-01 Current Phase 1 scope status
+
+- Completed for the main MVP path:
+  - once-call hot loop
+  - same activation
+  - `JUMP_BACKWARD_JIT` driven
+  - OSR stat recorded
+  - function finalized as compiled for future calls
+- Not yet completed:
+  - explicit negative tests and guard-rail behavior for unsupported shapes
+  - cleanup/refinement of the temporary Phase 1 implementation path that still routes through the Phase 0 secondary-entry machinery
+
+## 2026-04-01 Conservative unsupported-shape guard
+
+- A standalone unsupported-shape probe for:
+  - `try/finally`
+  - hot loop inside the `try`
+  initially still entered OSR and returned:
+  - `osr_count=1`
+  - `compiled=True`
+- This confirmed the current helper was too permissive for the MVP.
+- Rather than trying to detect only the currently-active exception region immediately, the first hardening step was intentionally conservative:
+  - if `code->co_exceptiontable` is non-empty, `_PyJIT_TryHotLoopOSR()` returns `0`
+- Fresh ARM helper evidence after this change:
+  - `result=12502501`
+  - `osr_count=0`
+  - `compiled=False`
+- Interpretation:
+  - the MVP now correctly declines at least one of the explicitly unsupported shapes from the design doc
+  - the guard is broader than the long-term target, but appropriate for the first productionizable slice
+
+## 2026-04-01 Fresh Phase 1 verification summary
+
+- Main happy-path helper gate:
+  - `PHASE1_GREEN_RC=0`
+  - probe output:
+    - `result=1250025000`
+    - `osr_entries=[{'normal': {'func_qualname': 'hot', 'bc_offset': 2}, 'int': {'count': 1}}]`
+  - helper smoke also passed:
+    - `jit-effective-ok compiled_size 984 interp_calls 10`
+- Direct standalone Phase 1 probe:
+  - same output as above
+  - exit code `0`
+- State probe:
+  - `before_compiled False`
+  - `after_compiled True`
+  - `after_entries` non-empty
+  - `stats['osr']` non-empty
+
+## 2026-04-01 Remaining follow-up risk
+
+- A tiny custom unittest runner that imports `test_arm_runtime.py` and runs the new Phase 1 tests reports:
+  - the test body itself passes (`ok`)
+  - but the runner process may still segfault on exit
+- Important boundary:
+  - the standard remote helper path and the standalone probe both exit cleanly now
+  - the remaining issue appears specific to the ad-hoc test-runner process shape, not to the main Phase 1 runtime path already validated above

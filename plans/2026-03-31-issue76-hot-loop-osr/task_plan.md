@@ -80,3 +80,14 @@
 - `plans/2026-03-31-issue76-hot-loop-osr/deliverable.md`
 - `plans/2026-03-31-issue76-hot-loop-osr/findings.md`
 - `plans/2026-03-31-issue76-hot-loop-osr/task_plan.md`
+- `plans/2026-03-31-issue76-hot-loop-osr/phase0_plan.md`
+- `plans/2026-03-31-issue76-hot-loop-osr/phase1_plan.md`
+
+## Next Phase
+
+- [completed] Phase 0 prototype landed and verified
+- [completed] Phase 1 MVP slice agreed:
+  - `JUMP_BACKWARD_JIT` 驱动
+  - once-call hot loop
+  - outermost / object-only / no generator or active exception region
+- [in_progress] Phase 1 implementation planning
