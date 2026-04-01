@@ -2762,9 +2762,15 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
     auto frame_loc = env_.asm_interpreter_frame->output()->getPhyRegOrStackSlot();
     auto frame_reg = x86::r10;
     if (frame_loc.is_register()) {
+      as_->mov(
+          x86::gpq(frame_loc.loc),
+          x86::ptr(x86::r11, offsetof(PyThreadState, current_frame)));
       as_->mov(frame_reg, x86::gpq(frame_loc.loc));
     } else {
-      as_->mov(frame_reg, x86::ptr(x86::rbp, frame_loc.loc));
+      as_->mov(
+          frame_reg,
+          x86::ptr(x86::r11, offsetof(PyThreadState, current_frame)));
+      as_->mov(x86::ptr(x86::rbp, frame_loc.loc), frame_reg);
     }
     auto prev_instr_ptr = reinterpret_cast<uint64_t>(
         func_->code->co_code_adaptive + osr_block.bc_offset.value());
@@ -2822,9 +2828,15 @@ void NativeGenerator::generatePhase0OSREntries(const FrameInfo& frame_info) {
     auto frame_loc = env_.asm_interpreter_frame->output()->getPhyRegOrStackSlot();
     auto frame_reg = a64::x10;
     if (frame_loc.is_register()) {
+      as_->ldr(
+          a64::x(frame_loc.loc),
+          arch::ptr_offset(a64::x11, offsetof(PyThreadState, current_frame)));
       as_->mov(frame_reg, a64::x(frame_loc.loc));
     } else {
       as_->ldr(
+          frame_reg,
+          arch::ptr_offset(a64::x11, offsetof(PyThreadState, current_frame)));
+      as_->str(
           frame_reg,
           arch::ptr_resolve(as_, arch::fp, frame_loc.loc, arch::reg_scratch_0));
     }
