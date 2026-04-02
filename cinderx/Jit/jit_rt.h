@@ -183,45 +183,48 @@ PyObject* JITRT_LoadGlobalsDict(PyThreadState* tstate);
 PyObject* JITRT_ListSlice(PyObject* list, PyObject* start, PyObject* stop);
 
 /*
- * Concatenate two slice-like values. When both operands are exact lists, use a
- * direct exact-list concat path. Otherwise fall back to generic `+` semantics.
- */
-PyObject* JITRT_ListConcat(PyObject* left, PyObject* right);
-
-/*
- * Narrow helper for bm_raytrace.addColours(a, scale, b).
+ * Fast path for `list[:k+1] = list[k::-1]` on exact lists.
  *
- * Fast-path exact 3-tuples of exact ints/floats with an exact float scale.
- * Fall back to generic Python semantics for other shapes.
+ * Falls back to generic Python slicing semantics when operand types are not
+ * exact fast-path shapes. Returns 0 on success and -1 on error.
  */
-PyObject* JITRT_RaytraceAddColoursTupleFloatHelper(
-    PyObject* left,
-    PyObject* scale,
-    PyObject* right);
+int JITRT_ListPrefixReverseAssign(PyObject* list, PyObject* index);
 
+#if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
 /*
- * Narrow helper for bm_comprehensions.WidgetTray._is_big_spinny(widget).
+ * Exact-dict item lookup for try/except KeyError lowering.
  *
- * `big_kind` must be the module's `WidgetKind.BIG` singleton.
+ * Returns a new reference to the found value on hit, a private sentinel on
+ * miss without setting an exception, and NULL on real error.
  */
-PyObject* JITRT_ComprehensionsIsBigSpinnyHelper(
-    PyObject* widget,
-    PyObject* big_kind);
+PyObject* JITRT_GetDictItemOrSentinel(PyObject* dict, PyObject* key);
 
 /*
- * Narrow helper for bm_comprehensions.WidgetTray._any_knobby(widgets).
+ * Return the private sentinel object used by JITRT_GetDictItemOrSentinel().
+ * The returned object is borrowed and must only be used for identity checks.
  */
-PyObject* JITRT_ComprehensionsAnyKnobbyHelper(PyObject* widgets);
+PyObject* JITRT_GetDictItemMissSentinel(void);
 
 /*
- * Narrow helper for bm_comprehensions id_to_widget.get(key).
+ * Finish the miss path of copy._deepcopy_tuple() without raising KeyError.
+ *
+ * Returns either a new reference to `x` or a new tuple built from `y`.
  */
-PyObject* JITRT_ComprehensionsDictGetHelper(PyObject* dict, PyObject* key);
+PyObject* JITRT_DeepcopyTuplePostMiss(PyObject* x, PyObject* y);
 
 /*
- * Narrow helper for bm_comprehensions sortable_widgets.sort().
+ * Narrow helper for the stdlib pickle._Unpickler.load() stop path.
+ *
+ * Returns self.stack.pop() while preserving normal Python exceptions.
  */
-PyObject* JITRT_ComprehensionsListSortHelper(PyObject* list_obj);
+PyObject* JITRT_PickleUnpicklerPopStack(PyObject* self);
+
+/*
+ * Return 1 when key is the stdlib pickle STOP opcode byte string, else 0.
+ * This helper never sets a Python exception.
+ */
+int JITRT_PickleIsStopKey(PyObject* key);
+#endif
 
 /*
  * Helper to perform a Python call with dynamically determined arguments.
@@ -260,6 +263,16 @@ PyObject* JITRT_Call(
     PyObject* kwnames);
 
 /*
+ * Perform a method-shaped call where args[0] is the self-or-null value coming
+ * from a LoadMethod result.
+ */
+PyObject* JITRT_CallMethod(
+    PyObject* callable,
+    PyObject* const* args,
+    size_t nargsf,
+    PyObject* kwnames);
+
+/*
  * Performs a function call with a vectorcall. Will check and handle any
  * eval breaker events after the call.
  */
@@ -268,6 +281,25 @@ PyObject* JITRT_Vectorcall(
     PyObject* const* args,
     size_t nargsf,
     PyObject* kwnames);
+
+/*
+ * Performs a function call with a vectorcall when the callable is known to be
+ * an exact Python function object.
+ */
+PyObject* JITRT_VectorcallExactPyFunc(
+    PyObject* callable,
+    PyObject* const* args,
+    size_t nargsf,
+    PyObject* kwnames);
+
+/*
+ * Call an exact method descriptor with METH_FASTCALL and a single explicit
+ * argument, then handle periodic activities like JITRT_Vectorcall().
+ */
+PyObject* JITRT_CallMethodDescrFast1(
+    PyObject* callable,
+    PyObject* self,
+    PyObject* arg0);
 
 /*
  * Perform a method lookup on an object.
