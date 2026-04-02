@@ -2059,6 +2059,43 @@ JITRT_GenSendRes JITRT_GenSendHandleStopAsyncIteration(
   return res;
 }
 
+PyObject* JITRT_GetGenResumeEntry(
+    PyObject* gen,
+    PyObject* send_value,
+    uint64_t finish_yield_from) {
+  if (gen == nullptr) {
+    return nullptr;
+  }
+  // 检查生成器是否为 JIT 编译的生成器
+  jit::JitGenObject* jit_gen = jit::JitGenObject::cast(gen);
+  if (jit_gen == nullptr) {
+    // 生成器未 JIT 编译，回退到标准路径
+    return nullptr;
+  }
+
+  jit::GenDataFooter* footer = jit_gen->genDataFooter();
+  if (footer == nullptr) {
+    return nullptr;
+  }
+  GenResumeFunc resume_entry = footer->resumeEntry;
+  if (resume_entry == nullptr) {
+    return nullptr;
+  }
+
+  // 直接调用 resumeEntry，跳过 PyIter_Send 调用链
+  // 使用 PyThreadState_Get() 获取当前线程状态
+  PyThreadState* tstate = PyThreadState_Get();
+  PyObject* result =
+      resume_entry(gen, send_value, finish_yield_from, tstate);
+
+  if (result == nullptr && !_PyErr_Occurred(tstate)) {
+    // 子生成器正常结束（StopIteration），无异常
+    // caller 的 CheckExc 会处理此情况
+  }
+
+  return result;
+}
+
 PyObject* JITRT_FormatValue(
     PyThreadState* tstate,
     PyObject* fmt_spec,

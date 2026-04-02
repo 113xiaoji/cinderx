@@ -3730,6 +3730,16 @@ DEFINE_SIMPLE_INSTR(
     Operands<2>,
     DeoptBase);
 
+// OptimizedYieldFrom: 自引用委托优化指令
+// 绕过 JITRT_GenSend，直接调用子生成器入口点
+// 操作数: send_value, iter, target_entry
+DEFINE_SIMPLE_INSTR(
+    OptimizedYieldFrom,
+    (TObject, TOptObject),
+    HasOutput,
+    Operands<3>,
+    DeoptBase);
+
 // A more compact (in terms of emitted code) equivalent to YieldValue followed
 // by YieldFrom.
 DEFINE_SIMPLE_INSTR(

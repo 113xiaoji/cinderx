@@ -755,7 +755,8 @@ void emitStoreGenYieldPoint(
     arch::Gp scratch_r) {
   bool is_yield_from = yield->isYieldFrom() ||
       yield->isYieldFromSkipInitialSend() ||
-      yield->isYieldFromHandleStopAsyncIteration();
+      yield->isYieldFromHandleStopAsyncIteration() ||
+      yield->isOptimizedYieldFrom();
 
   auto calc_spill_offset = [&](size_t live_input_n) {
     PhyLocation mem = yield->getInput(live_input_n)->getStackSlot();
@@ -1231,6 +1232,121 @@ void translateYieldFrom(Environ* env, const Instruction* instr) {
 
   as->bind(done_label);
   emitLoadResumedYieldInputs(as, instr, yf_result_phys_reg, tstate_phys_reg);
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+void translateOptimizedYieldFrom(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  // Optimized yield-from: 直接调用子生成器的 resumeEntry，跳过 PyIter_Send。
+  // 如果子生成器未 JIT 编译或 resumeEntry 为空，回退到标准路径。
+  arch::Builder* as = env->as;
+
+  // 将 tstate 保存到 RBX（callee-saved）
+  PhyLocation tstate_loc = instr->getInput(0)->getStackSlot();
+  as->mov(x86::rbx, x86::qword_ptr(x86::rbp, tstate_loc.loc));
+
+  // === 设置 JITRT_GetGenResumeEntry 调用参数 ===
+  // RDI = 子生成器 (iter)
+  PhyLocation iter_loc = instr->getInput(2)->getStackSlot();
+  as->mov(x86::rdi, x86::qword_ptr(x86::rbp, iter_loc.loc));
+
+  // RSI = send_value（从栈槽加载）
+  PhyLocation send_value_loc = instr->getInput(1)->getStackSlot();
+  as->mov(x86::rsi, x86::qword_ptr(x86::rbp, send_value_loc.loc));
+
+  // RDX = finish_yield_from (0)
+  as->xor_(x86::rdx, x86::rdx);
+
+  // 调用 JITRT_GetGenResumeEntry
+  uint64_t func = reinterpret_cast<uint64_t>(JITRT_GetGenResumeEntry);
+  emitCall(*env, func, instr);
+  // 结果在 RAX
+
+  // === 检查结果 ===
+  // 如果 RAX != 0：yield 值，返回到调用者 epilogue
+  // 如果 RAX == 0：检查是否有异常
+  as->test(x86::rax, x86::rax);
+  asmjit::Label done_label = as->newLabel();
+  as->jnz(done_label);
+
+  // RAX == 0：检查 PyErr_Occurred
+  as->call(reinterpret_cast<uint64_t>(_PyErr_Occurred));
+  // _PyErr_Occurred 返回值在 RAX：非零=有异常，零=无异常
+  as->test(x86::rax, x86::rax);
+  // 如果有异常，跳转到 CheckExc 处理（通过 fallthrough 到原有 CheckExc）
+  // 如果无异常（正常结束），跳转到 done_label
+
+  // 如果有异常，跳转标签
+  asmjit::Label exc_label = as->newLabel();
+  as->jnz(exc_label);
+  // 无异常：正常结束，跳转到 done_label
+  as->jmp(done_label);
+
+  as->bind(exc_label);
+  // 有异常：跳转到 CheckExc（fallthrough 到下一个 CheckExc 指令）
+  // 不需要显式跳转，异常会通过 CheckExc 指令处理
+  // 此处 fallthrough
+
+  as->bind(done_label);
+  // 结果在 RAX，tstate 在 RBX
+  emitLoadResumedYieldInputs(as, instr, RAX, x86::rbx);
+
+#elif defined(CINDER_AARCH64)
+  // aarch64 实现：类似 x86_64
+  arch::Builder* as = env->as;
+
+  // 将 tstate 保存到 X19（callee-saved）
+  PhyLocation tstate_loc = instr->getInput(0)->getStackSlot();
+  as->ldr(
+      a64::x19,
+      arch::ptr_resolve(as, arch::fp, tstate_loc.loc, arch::reg_scratch_0));
+
+  // === 设置 JITRT_GetGenResumeEntry 调用参数 ===
+  // X0 = 子生成器 (iter)
+  PhyLocation iter_loc = instr->getInput(2)->getStackSlot();
+  as->ldr(
+      a64::x0,
+      arch::ptr_resolve(as, arch::fp, iter_loc.loc, arch::reg_scratch_0));
+
+  // X1 = send_value
+  PhyLocation send_value_loc = instr->getInput(1)->getStackSlot();
+  as->ldr(
+      a64::x1,
+      arch::ptr_resolve(as, arch::fp, send_value_loc.loc, arch::reg_scratch_0));
+
+  // X2 = finish_yield_from (0)
+  as->mov(a64::x2, a64::xzr);
+
+  // 调用 JITRT_GetGenResumeEntry
+  uint64_t func = reinterpret_cast<uint64_t>(JITRT_GetGenResumeEntry);
+  emitCall(*env, func, instr);
+  // 结果在 X0
+
+  // === 检查结果 ===
+  as->cmp(a64::x0, a64::xzr);
+  asmjit::Label done_label = as->newLabel();
+  as->b_ne(done_label);
+
+  // X0 == 0：检查 PyErr_Occurred
+  // tstate 已保存在 X19，加载到 X0 作为参数
+  as->mov(a64::x0, a64::x19);
+  emitCall(*env, reinterpret_cast<uint64_t>(_PyErr_Occurred), instr);
+  // _PyErr_Occurred 结果在 X0
+
+  as->cmp(a64::x0, a64::xzr);
+  asmjit::Label exc_label = as->newLabel();
+  as->b_ne(exc_label);
+  // 无异常：正常结束，跳转到 done_label
+  as->b(done_label);
+
+  as->bind(exc_label);
+  // 有异常：fallthrough 到 CheckExc
+
+  as->bind(done_label);
+  // 结果在 X0，tstate 在 X19
+  emitLoadResumedYieldInputs(as, instr, X0, a64::x19);
 #else
   CINDER_UNSUPPORTED
 #endif
@@ -1919,6 +2035,10 @@ END_RULES
 
 BEGIN_RULES(Instruction::kYieldFromHandleStopAsyncIteration)
   GEN(ANY, CALL_C(translateYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kOptimizedYieldFrom)
+  GEN(ANY, CALL_C(translateOptimizedYieldFrom))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)
@@ -3240,6 +3360,10 @@ END_RULES
 
 BEGIN_RULES(Instruction::kYieldFromHandleStopAsyncIteration)
   GEN(ANY, CALL_C(translateYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kOptimizedYieldFrom)
+  GEN(ANY, CALL_C(translateOptimizedYieldFrom))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)

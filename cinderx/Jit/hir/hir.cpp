@@ -532,6 +532,7 @@ bool Instr::isReplayable() const {
     case Opcode::kWaitHandleRelease:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
     case Opcode::kXDecref:
@@ -836,6 +837,7 @@ bool isPassthrough(const Instr& instr) {
     case Opcode::kWaitHandleLoadWaiter:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return false;

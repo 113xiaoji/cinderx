@@ -701,6 +701,13 @@ PyObject* JITRT_SwapCellItem(PyCellObject* cell, PyObject* new_value);
  */
 extern PyObject JITRT_IterDoneSentinel;
 
+// OptimizedYieldFrom: 直接获取 JIT 编译的生成器恢复入口点
+// 用于绕过 PyIter_Send 的帧切换开销
+PyObject* JITRT_GetGenResumeEntry(
+    PyObject* gen,
+    PyObject* send_value,
+    uint64_t finish_yield_from);
+
 /*
  * Invoke __next__ on iterator.
  * Returns the next value, or JITRT_IterDoneSentinel if the iterator is done.

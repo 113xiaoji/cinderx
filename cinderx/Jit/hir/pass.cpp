@@ -394,6 +394,7 @@ Type outputTypeWithRecursiveCoroHint(
     case Opcode::kWaitHandleLoadCoroOrResult:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return TObject;

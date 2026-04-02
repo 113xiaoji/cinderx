@@ -324,6 +324,7 @@ MemoryEffects memoryEffects(const Instr& inst) {
       return {true, AFuncArgs, {1, 1}, AAny};
 
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
 #if PY_VERSION_HEX >= 0x030C0000
       // In 3.12+ YieldFrom is actually YieldValue but has an additional arg for
       // the subiterator for use when querying yield-from.
@@ -553,6 +554,7 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kXDecref:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return true;

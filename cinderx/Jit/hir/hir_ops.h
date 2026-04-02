@@ -188,6 +188,7 @@ namespace jit::hir {
   V(YieldFrom)                         \
   V(YieldFromHandleStopAsyncIteration) \
   V(YieldValue)
+  V(OptimizedYieldFrom)
 
 enum class Opcode {
 #define DECLARE_OP(opname) k##opname,

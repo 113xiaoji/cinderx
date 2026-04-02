@@ -1004,6 +1004,7 @@ void stealInputs(
       switch (instr.opcode()) {
         case Opcode::kYieldValue:
         case Opcode::kYieldFrom:
+        case Opcode::kOptimizedYieldFrom:
         case Opcode::kYieldAndYieldFrom:
         case Opcode::kYieldFromHandleStopAsyncIteration:
         case Opcode::kInitialYield: {
