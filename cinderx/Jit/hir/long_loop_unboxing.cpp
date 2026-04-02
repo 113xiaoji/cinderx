@@ -341,6 +341,13 @@ Register* materializeInvariantRawLong(
     return it->second;
   }
 
+  if (!(reg->type() <= TCInt64) && !getBoxedLongConst(reg).has_value()) {
+    Instr* def_instr = reg->instr();
+    if (def_instr == nullptr || def_instr->block() != candidate.preheader) {
+      return nullptr;
+    }
+  }
+
   const FrameState* frame =
       candidate.preheader->GetTerminator()->getDominatingFrameState();
   if (frame == nullptr) {
