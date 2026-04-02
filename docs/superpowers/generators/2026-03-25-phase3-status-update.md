@@ -14,12 +14,12 @@
 
 ### Phase 3.2: 状态机内联 - ✅ 完成
 
-**完成时间**: 2026-03-31（6 天）
-**性能改进**: **4-12x 超越原始 yield-from**（从 18-50x 回退到 4-12x 加速）
+**完成时间**: 2026-04-02（8 天）
+**性能改进**: **11.9-14.1x**（pyperformance bm_generators 验证）
 
 **验证平台**:
-- ✅ macOS ARM64 (Python 3.14, GCC 15)
-- ✅ Linux AArch64 / kunpeng (Python 3.14, GCC)
+- ✅ macOS ARM64 (Python 3.14, GCC 15) — **11.9x**
+- ✅ Linux AArch64 / kunpeng (Python 3.14, GCC) — **14.1x**
 
 **完成内容**:
 - ✅ T1-T7: 状态机生成器（16 基本块 GenDataFooter 驱动）
@@ -28,7 +28,14 @@
   - ✅ LoadCurrentNode 内联（含 inline Py_INCREF）
   - ✅ SaveCurrentNode 内联（含 inline Py_DECREF + Py_INCREF）
   - ✅ LIR generator 从 kCall 改为原生 LIR 指令
+  - ✅ StateStackPush/Pop 内联（含 FP 偏移地址计算）
+  - ✅ LoadPoppedPhase/LoadStackTop 内联
+- ✅ **postalloc fold 安全性修复**:
+  - SaveCurrentNode 屏障（codegen 可调用 `_Py_Dealloc`，clobber caller-save 寄存器）
+  - MemoryIndirect base/index 寄存器扫描（`getNumInputs()` 不含间接操作数）
+  - 中间寄存器使用检查
 - ✅ **kunpeng 兼容性修复**: GenDataFooter current_node/current_phase 未初始化导致 SIGSEGV
+- ✅ **pyperformance bm_generators 端到端验证** (AUTO=2 + JITLIST, `--worker -l5 -w11 -n2`)
 
 **文档**:
 - [设计文档](./specs/2026-03-25-phase3.2-state-machine-inlining-design.md)
@@ -40,7 +47,20 @@
 
 ## 性能基准测试结果
 
-### macOS ARM64
+### pyperformance bm_generators（2026-04-02 最终验证）
+
+**测试方法**: `run_benchmark.py --worker -l5 -w11 -n2`, AUTO=2, JITLIST 限制编译范围
+**benchmark 内容**: 100K 节点平衡二叉树中序遍历，`yield from self.left; yield v; yield from self.right`
+
+| 平台 | 基线 (JIT, 无状态机) | 状态机优化 | **加速比** |
+|------|---------------------|-----------|-----------|
+| macOS ARM64 (M-series) | 324.7 ± 1.5 ms | 27.3 ± 0.2 ms | **11.9x** |
+| kunpeng AArch64 (ARM) | 83.7 ± 0.1 ms | 5.95 ± 0.01 ms | **14.1x** |
+
+> 注: macOS 使用直接计时（pyperf 与 JIT 不兼容），kunpeng 使用 pyperformance `--worker` 模式。
+> AUTO=50 (无 JITLIST) 结果: macOS 11.3x, kunpeng 12.7x — 一致性验证通过。
+
+### 开发期间性能 (手写脚本, macOS ARM64)
 
 **测试环境**: macOS ARM64, Python 3.14, GCC 15
 

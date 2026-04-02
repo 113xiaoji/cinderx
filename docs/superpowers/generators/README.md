@@ -2,18 +2,19 @@
 
 **目标**: 消除 CinderX JIT 编译递归生成器（Tree.__iter__ 模式）中的性能回退
 
-**当前状态**: Phase 3.2 ✅ 完成，双平台验证通过 🚀
+**当前状态**: Phase 3.2 ✅ 完成，pyperformance bm_generators 验证通过 🚀
 
 **最新成果**:
 - ✅ Phase 3.1: 逃逸分析完成 (2026-03-25)
-- ✅ Phase 3.2: 状态机内联完成 (2026-03-31) ⭐
+- ✅ Phase 3.2: 状态机内联完成 (2026-04-02) ⭐
   - 16 基本块 GenDataFooter 驱动状态机
-  - 内联 AArch64/x86_64 codegen（消除 C 函数调用开销）
-  - **macOS ARM64: 4-12x 加速**
-  - **Linux AArch64 (kunpeng): 4.8-9.6x 加速**
-  - **kunpeng 兼容性修复**: GenDataFooter 未初始化字段 SIGSEGV
+  - 8/8 操作原生 LIR codegen（含 Push/Pop）
+  - **pyperformance bm_generators (`--worker -l5 -w11 -n2`)**:
+    - macOS ARM64: **11.9x** 加速（324.7ms → 27.3ms）
+    - kunpeng AArch64: **14.1x** 加速（83.7ms → 5.95ms）
+  - postalloc fold 安全性修复（SaveCurrentNode 屏障 + MemoryIndirect 扫描）
 
-- **最新提交**: `2f5c8425` (fix: 初始化 GenDataFooter current_node/current_phase 消除 kunpeng SIGSEGV)
+- **最新提交**: `2af06899` (chore: 清理遗留调试文件)
 
 ---
 
@@ -24,7 +25,7 @@
 | Phase 0 | 基线分析 | ✅ 完成 | - | 性能剖析 |
 | Phase 1 | OptimizedYieldFrom | ✅ 完成 | ~1% | Entry point 缓存 |
 | Phase 2 | InlineIter | ✅ 完成 | 3-32% | 逃逸分析 + HIR 内联 |
-| **Phase 3.2** | **状态机内联** | **✅ 完成** | **4-12x** | **GenDataFooter 状态机 + 内联 codegen** |
+| **Phase 3.2** | **状态机内联** | **✅ 完成** | **11.9-14.1x** | **GenDataFooter 状态机 + 内联 codegen** |
 | Phase 3.3 | 去虚拟化 | 📋 计划中 | 额外 2-3x | 类型推断 + 直接访问 |
 
 ---
@@ -71,7 +72,7 @@ generators/
 | OptimizedYieldFrom | ✅ 完成 | ~1% 改进 | 2026-03-21 |
 | InlineIter (Phase 1) | ✅ 完成 | 3-32% 改进 | 2026-03-23 |
 | 逃逸分析 (Phase 3.1) | ✅ 完成 | 0.6% 改进 | 2026-03-25 |
-| **状态机内联 (Phase 3.2)** | **✅ 完成** | **4-12x 加速** | **2026-03-31** |
+| **状态机内联 (Phase 3.2)** | **✅ 完成** | **11.9-14.1x 加速** | **2026-04-02** |
 
 ---
 
@@ -111,13 +112,26 @@ export PYTHONJITDEBUG=0
 
 ```bash
 # Phase 3.2 状态机测试
-PYTHONJITHUGEPAGES=0 PYTHONJIT=1 PYTHONJITDEBUG=0 .venv/bin/python test_phase3_state_machine.py -v
+PYTHONJITHUGEPAGES=0 PYTHONJIT=1 PYTHONJITTREEITERSTATEMACHINE=1 PYTHONJITDEBUG=0 \
+  .venv/bin/python test_phase3_state_machine.py -v
 
-# Phase 2 InlineIter 基准测试
-PYTHONJITHUGEPAGES=0 PYTHONJIT=1 PYTHONJIT_ARM_INLINE_YIELD_FROM=1 .venv/bin/python test_inline_iter.py
+# pyperformance bm_generators 基准测试（kunpeng 示例）
+PYTHONJIT=1 PYTHONJITAUTO=2 \
+  PYTHONJITLISTFILE=/tmp/jitlist.txt PYTHONJITENABLEJITLISTWILDCARDS=1 \
+  PYTHONJITDEBUG=0 \
+  python3.14 /tmp/bench_generators_auto2.py --worker -l5 -w11 -n2
+
+# JITLIST 文件格式（每行 module:qualname）
+echo "__main__:Tree.__iter__" > /tmp/jitlist.txt
+echo "__main__:tree" >> /tmp/jitlist.txt
+echo "__main__:bench_generators" >> /tmp/jitlist.txt
 ```
+
+> **重要**: `PYTHONJITAUTO=N` 仅设置阈值，**不激活自动编译**。必须在脚本中调用
+> `cinderx.jit.compile_after_n_calls(N)` 或 `cinderx.jit.auto()` 才能激活。
+> 低 AUTO 阈值（如 2）会编译标准库函数导致 segfault，需配合 `PYTHONJITLISTFILE` 限制编译范围。
 
 ---
 
 **维护者**: Claude Code Agent
-**最后更新**: 2026-03-31
+**最后更新**: 2026-04-02

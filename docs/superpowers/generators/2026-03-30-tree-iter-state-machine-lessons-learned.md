@@ -313,13 +313,15 @@ assert triggered > 0  # 验证 pass 被触发
 
 ## 后续工作
 
-| 项目 | 优先级 | 说明 |
-|------|--------|------|
-| 性能基准测试 | 高 | 量化状态机 vs 原始生成器的加速比 |
-| 清理提交 | 高 | 整理代码，拆分合理提交 |
-| deopt 支持 | 中 | 当前 YieldValue 用复制的 FrameState，不支持 deopt 回退 |
-| 栈容量扩展 | 低 | 当前 16 entries（depth <= 12），可扩展到更大 |
-| 内联优化 | 低 | 将 C 运行时调用替换为内联汇编，减少函数调用开销 |
+| 项目 | 优先级 | 状态 | 说明 |
+|------|--------|------|------|
+| ~~性能基准测试~~ | ~~高~~ | ✅ 完成 | pyperformance bm_generators: macOS 11.9x, kunpeng 14.1x |
+| ~~清理提交~~ | ~~高~~ | ✅ 完成 | 10 commits, 合理拆分 |
+| ~~内联优化~~ | ~~低~~ | ✅ 完成 | 8/8 操作原生 LIR codegen |
+| deopt 支持 | 中 | 📋 待做 | 当前 YieldValue 用复制的 FrameState，不支持 deopt 回退 |
+| 栈容量扩展 | 低 | 📋 待做 | 当前 16 entries（depth <= 12），可扩展到更大 |
+| x86_64 验证 | 中 | 📋 待做 | translate 函数包含 x86_64 分支但未在 x86_64 平台测试 |
+| checked-in 回归测试 | 中 | 📋 待做 | 缺少 PYTHONJITTREEITERSTATEMACHINE=1 的 CI 回归测试 |
 
 ---
 
@@ -397,3 +399,70 @@ LIR generator 一直用 `appendInvokeInstruction`（创建 `kCall` LIR 指令）
 ### 教训
 
 **未执行代码不等于正确代码** — BEGIN_RULES 中有 translate 函数不代表它被使用过。验证方式：在 translate 函数中加 `JIT_ABORT` 断言，如果 C 调用路径在用，不应触发。
+
+---
+
+## 坑 9: PYTHONJITAUTO 环境变量不等于 auto() 激活
+
+### 现象
+
+使用 `PYTHONJIT=1 PYTHONJITAUTO=50 python run_benchmark.py --worker` 运行 pyperformance 基准测试，结果与无 JIT 完全相同（~36ms），"优化"和"基线"数据一致。
+
+### 根因
+
+`PYTHONJITAUTO=N` 仅设置编译阈值配置，**不激活自动编译功能**。必须显式调用以下之一：
+- `cinderx.jit.auto()` — 激活自动编译（默认阈值 1000）
+- `cinderx.jit.compile_after_n_calls(N)` — 激活自动编译（自定义阈值）
+
+pyperformance 的 `run_benchmark.py` 不会调用这些函数，因此即使设置了 `PYTHONJITAUTO=50`，JIT 也不会编译任何用户函数。
+
+### 验证方法
+
+```bash
+# 错误: 无 JIT 编译
+PYTHONJIT=1 PYTHONJITAUTO=50 python3.14 run_benchmark.py --worker -l5 -w11 -n2
+
+# 正确: 激活 JIT 编译
+python3.14 -c "
+import cinderx.jit
+cinderx.jit.compile_after_n_calls(50)
+exec(open('run_benchmark.py').read())
+"
+```
+
+### 教训
+
+**环境变量设置阈值 ≠ 激活编译**。必须在 Python 代码中调用 `auto()` 或 `compile_after_n_calls()` 才能激活。pyperformance 测试需要包装脚本。
+
+---
+
+## 坑 10: 低 AUTO 阈值编译标准库函数导致 segfault
+
+### 现象
+
+使用 `PYTHONJITAUTO=2`（或 10）+ `compile_after_n_calls(2)` 在 kunpeng 上运行基准测试，无论是否启用状态机优化，均 segfault。
+
+### 根因
+
+`compile_after_n_calls(2)` 激活自动编译后，**所有函数**（包括标准库）在调用 2 次后都会被 JIT 编译。kunpeng 上的编译路径中，`enum.Flag.__or__` 等标准库函数触发 `!stack_.empty()` 断言失败 → segfault。
+
+此 bug 与状态机优化无关，是 JIT 编译器自身的限制。
+
+### 解决方案
+
+使用 `PYTHONJITLISTFILE` 限制编译范围：
+
+```bash
+# 只编译目标函数
+echo "__main__:Tree.__iter__" > /tmp/jitlist.txt
+echo "__main__:tree" >> /tmp/jitlist.txt
+echo "__main__:bench_generators" >> /tmp/jitlist.txt
+
+PYTHONJIT=1 PYTHONJITAUTO=2 \
+  PYTHONJITLISTFILE=/tmp/jitlist.txt PYTHONJITENABLEJITLISTWILDCARDS=1 \
+  python3.14 run_benchmark.py --worker -l5 -w11 -n2
+```
+
+### 教训
+
+**低 AUTO 阈值需要 JITLIST 保护**。AUTO=2 编译所有函数（含 stdlib），某些函数会触发 JIT 编译器 bug。高 AUTO 阈值（≥50）通常安全，因为标准库函数很少单独被调用 50+ 次。
