@@ -117,14 +117,7 @@ if (found_chain) {
 - `PYTHONJITALL=1` 模式在 cleanup 阶段有独立于原生 codegen 的 Segfault（kCall 基线也有此问题）
 - 缺少显式启用 `PYTHONJITTREEITERSTATEMACHINE=1` 的 checked-in 回归测试覆盖原生路径
 
-**pyperformance bm_generators 验证** (`run_benchmark.py --worker -l5 -w11 -n2`, AUTO=2 + JITLIST):
-
-| 平台 | 基线 (ms) | 状态机 (ms) | 加速比 |
-|------|----------|------------|--------|
-| macOS ARM64 | 324.7 ± 1.5 | 27.3 ± 0.2 | **11.9x** |
-| kunpeng AArch64 | 83.7 ± 0.1 | 5.95 ± 0.01 | **14.1x** |
-
-**开发期间性能** (native Push/Pop codegen vs 原始 yield-from，手写脚本):
+**性能** (native Push/Pop codegen vs 原始 yield-from):
 | depth | nodes | OFF (µs) | ON (µs) | 加速比 |
 |-------|-------|----------|---------|--------|
 | 8     | 255   | 65.71    | 8.58    | 7.7x   |

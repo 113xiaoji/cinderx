@@ -2797,19 +2797,6 @@ void JITRT_SaveCurrentNode(PyObject* node) {
   footer->current_node = reinterpret_cast<int64_t>(node);
 }
 
-PyObject* JITRT_DebugLoadField(PyObject* node, int32_t offset, const char* name) {
-  fprintf(stderr, "[SM-DBG] DebugLoadField: node=%p offset=%d name=%s\n",
-          (void*)node, offset, name);
-  if (node == nullptr) {
-    fprintf(stderr, "[SM-DBG]   node is NULL!\n");
-    return nullptr;
-  }
-  PyObject* field = *reinterpret_cast<PyObject**>(
-      reinterpret_cast<char*>(node) + offset);
-  fprintf(stderr, "[SM-DBG]   field value=%p\n", (void*)field);
-  return field;
-}
-
 PyObject* JITRT_LoadCurrentNode() {
   jit::GenDataFooter* footer = getCurrentGenDataFooter();
   if (footer == nullptr) {

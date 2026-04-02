@@ -1065,7 +1065,11 @@ RewriteResult optimizeMoveSequence(BasicBlock* basicblock) {
               --scan_iter;
               auto scan = scan_iter->get();
 
-              if (scan->isCall() || scan->isVectorCall() || scan->isVarArgCall()) {
+              // SaveCurrentNode 的 codegen 可能调用 _Py_Dealloc，
+              // clobber caller-save 寄存器（含返回寄存器），
+              // 不能安全地跨过它做 fold。
+              if (scan->isCall() || scan->isVectorCall() ||
+                  scan->isVarArgCall() || scan->isSaveCurrentNode()) {
                 break;
               }
 
@@ -1095,20 +1099,61 @@ RewriteResult optimizeMoveSequence(BasicBlock* basicblock) {
             }
 
             if (found_chain) {
+              // 在 fold 之前保存中间寄存器号，用于检查中间使用
+              PhyLocation intermediate_reg = in->getPhyRegister();
               auto opnd = static_cast<Operand*>(in);
               auto data_type = opnd->dataType();
-              auto old_opnd = fmt::to_string(*opnd);
               opnd->setPhyRegister(ret_reg);
               JIT_CHECK(
                   bitSize(data_type) == bitSize(opnd->dataType()),
                   "Incorrectly changed data type from {} to {} in "
                   "{}",
-                  old_opnd,
+                  fmt::to_string(intermediate_reg),
                   *opnd,
                   *instr);
               changed = kChanged;
 
-              if (opnd->isLastUse()) {
+              // 检查中间寄存器（chain_iter 的输出）是否在 chain_iter
+              // 和当前指令之间被其他指令的输入使用。
+              // 如果被使用，不能删除 chain_iter，否则中间指令读到错误值。
+              // 同时检查 MemoryIndirect 操作数的 base/index 寄存器。
+              bool intermediate_used = false;
+              {
+                auto check_iter = chain_iter;
+                ++check_iter; // 跳过 chain_iter 本身
+                for (; check_iter != instr_iter; ++check_iter) {
+                  auto check_instr = check_iter->get();
+                  for (size_t ci = 0; ci < check_instr->getNumInputs(); ci++) {
+                    auto check_in = check_instr->getInput(ci);
+                    if (check_in->isReg() &&
+                        check_in->getPhyRegister() == intermediate_reg) {
+                      intermediate_used = true;
+                      break;
+                    }
+                    // 检查 MemoryIndirect 操作数中的 base/index 寄存器
+                    if (check_in->isInd()) {
+                      auto* ind = check_in->getMemoryIndirect();
+                      auto* base_op = ind->getBaseRegOperand();
+                      if (base_op != nullptr && base_op->isReg() &&
+                          base_op->getPhyRegister() == intermediate_reg) {
+                        intermediate_used = true;
+                        break;
+                      }
+                      auto* index_op = ind->getIndexRegOperand();
+                      if (index_op != nullptr && index_op->isReg() &&
+                          index_op->getPhyRegister() == intermediate_reg) {
+                        intermediate_used = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (intermediate_used) {
+                    break;
+                  }
+                }
+              }
+
+              if (opnd->isLastUse() && !intermediate_used) {
                 basicblock->instructions().erase(chain_iter);
               }
             }
