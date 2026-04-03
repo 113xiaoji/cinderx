@@ -394,6 +394,8 @@ Type outputTypeWithRecursiveCoroHint(
     case Opcode::kWaitHandleLoadCoroOrResult:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
+    case Opcode::kInlineIter:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return TObject;
@@ -625,6 +627,19 @@ Type outputTypeWithRecursiveCoroHint(
       return TBool;
     }
 
+    case Opcode::kStateStackPop:
+      return TObject;
+
+    case Opcode::kLoadPoppedPhase:
+    case Opcode::kLoadStackTop:
+      return TCInt32;
+
+    case Opcode::kLoadCurrentNode:
+      return TObject;
+
+    case Opcode::kLoadPhase:
+      return TCInt32;
+
     case Opcode::kPrimitiveBox: {
       // This duplicates the logic in Type::asBoxed(), but it has enough
       // special cases (for exactness/optionality/nullptr) that it's not worth
@@ -728,6 +743,9 @@ Type outputTypeWithRecursiveCoroHint(
     case Opcode::kSetCellItem:
     case Opcode::kSetFunctionAttr:
     case Opcode::kSnapshot:
+    case Opcode::kStateStackPush:
+    case Opcode::kSaveCurrentNode:
+    case Opcode::kSavePhase:
     case Opcode::kStoreArrayItem:
     case Opcode::kStoreAttr:
     case Opcode::kStoreAttrCached:

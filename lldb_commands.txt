@@ -1,0 +1,20 @@
+# lldb 调试配置文件
+
+# 设置断点
+b TreeIterStateMachinePass::Run
+b TreeIterStateMachinePass::isTreeIterGenerator
+b TreeIterStateMachinePass::collectYieldFromInstrs
+
+# 捕获崩溃
+bt
+frame variable
+
+# 运行程序
+run
+
+# 如果崩溃，显示调用栈
+bt
+frame variable
+
+# 退出
+quit

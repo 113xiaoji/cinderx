@@ -755,7 +755,8 @@ void emitStoreGenYieldPoint(
     arch::Gp scratch_r) {
   bool is_yield_from = yield->isYieldFrom() ||
       yield->isYieldFromSkipInitialSend() ||
-      yield->isYieldFromHandleStopAsyncIteration();
+      yield->isYieldFromHandleStopAsyncIteration() ||
+      yield->isOptimizedYieldFrom();
 
   auto calc_spill_offset = [&](size_t live_input_n) {
     PhyLocation mem = yield->getInput(live_input_n)->getStackSlot();
@@ -1043,14 +1044,20 @@ void translateYieldValue(Environ* env, const Instruction* instr) {
   a64::Builder* as = env->as;
 
   // Make sure tstate is in x2 for use in epilogue.
-  PhyLocation tstate = instr->getInput(0)->getStackSlot();
-  as->ldr(
-      a64::x2,
-      arch::ptr_resolve(as, arch::fp, tstate.loc, arch::reg_scratch_0));
+  if (instr->getInput(0)->isReg()) {
+    as->mov(a64::x2, AutoTranslator::getGp(instr->getInput(0)));
+  } else {
+    PhyLocation tstate = instr->getInput(0)->getStackSlot();
+    as->ldr(
+        a64::x2,
+        arch::ptr_resolve(as, arch::fp, tstate.loc, arch::reg_scratch_0));
+  }
 
   // Value to send goes to x0 so it can be yielded (returned) by epilogue.
   if (instr->getInput(1)->isImm()) {
     as->mov(a64::x0, instr->getInput(1)->getConstant());
+  } else if (instr->getInput(1)->isReg()) {
+    as->mov(a64::x0, AutoTranslator::getGp(instr->getInput(1)));
   } else {
     PhyLocation value_out = instr->getInput(1)->getStackSlot();
     as->ldr(
@@ -1235,6 +1242,832 @@ void translateYieldFrom(Environ* env, const Instruction* instr) {
   CINDER_UNSUPPORTED
 #endif
 }
+
+void translateOptimizedYieldFrom(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  // Optimized yield-from: 直接调用子生成器的 resumeEntry，跳过 PyIter_Send。
+  // 如果子生成器未 JIT 编译或 resumeEntry 为空，回退到标准路径。
+  arch::Builder* as = env->as;
+
+  // 将 tstate 保存到 RBX（callee-saved）
+  PhyLocation tstate_loc = instr->getInput(0)->getStackSlot();
+  as->mov(x86::rbx, x86::qword_ptr(x86::rbp, tstate_loc.loc));
+
+  // === 设置 JITRT_GetGenResumeEntry 调用参数 ===
+  // RDI = 子生成器 (iter)
+  PhyLocation iter_loc = instr->getInput(2)->getStackSlot();
+  as->mov(x86::rdi, x86::qword_ptr(x86::rbp, iter_loc.loc));
+
+  // RSI = send_value（从栈槽加载）
+  PhyLocation send_value_loc = instr->getInput(1)->getStackSlot();
+  as->mov(x86::rsi, x86::qword_ptr(x86::rbp, send_value_loc.loc));
+
+  // RDX = finish_yield_from (0)
+  as->xor_(x86::rdx, x86::rdx);
+
+  // 调用 JITRT_GetGenResumeEntry
+  uint64_t func = reinterpret_cast<uint64_t>(JITRT_GetGenResumeEntry);
+  emitCall(*env, func, instr);
+  // 结果在 RAX
+
+  // === 检查结果 ===
+  // 如果 RAX != 0：yield 值，返回到调用者 epilogue
+  // 如果 RAX == 0：检查是否有异常
+  as->test(x86::rax, x86::rax);
+  asmjit::Label done_label = as->newLabel();
+  as->jnz(done_label);
+
+  // RAX == 0：检查 PyErr_Occurred
+  as->call(reinterpret_cast<uint64_t>(_PyErr_Occurred));
+  // _PyErr_Occurred 返回值在 RAX：非零=有异常，零=无异常
+  as->test(x86::rax, x86::rax);
+  // 如果有异常，跳转到 CheckExc 处理（通过 fallthrough 到原有 CheckExc）
+  // 如果无异常（正常结束），跳转到 done_label
+
+  // 如果有异常，跳转标签
+  asmjit::Label exc_label = as->newLabel();
+  as->jnz(exc_label);
+  // 无异常：正常结束，跳转到 done_label
+  as->jmp(done_label);
+
+  as->bind(exc_label);
+  // 有异常：跳转到 CheckExc（fallthrough 到下一个 CheckExc 指令）
+  // 不需要显式跳转，异常会通过 CheckExc 指令处理
+  // 此处 fallthrough
+
+  as->bind(done_label);
+  // 结果在 RAX，tstate 在 RBX
+  emitLoadResumedYieldInputs(as, instr, RAX, x86::rbx);
+
+#elif defined(CINDER_AARCH64)
+  // aarch64 实现：类似 x86_64
+  arch::Builder* as = env->as;
+
+  // 将 tstate 保存到 X19（callee-saved）
+  PhyLocation tstate_loc = instr->getInput(0)->getStackSlot();
+  as->ldr(
+      a64::x19,
+      arch::ptr_resolve(as, arch::fp, tstate_loc.loc, arch::reg_scratch_0));
+
+  // === 设置 JITRT_GetGenResumeEntry 调用参数 ===
+  // X0 = 子生成器 (iter)
+  PhyLocation iter_loc = instr->getInput(2)->getStackSlot();
+  as->ldr(
+      a64::x0,
+      arch::ptr_resolve(as, arch::fp, iter_loc.loc, arch::reg_scratch_0));
+
+  // X1 = send_value
+  PhyLocation send_value_loc = instr->getInput(1)->getStackSlot();
+  as->ldr(
+      a64::x1,
+      arch::ptr_resolve(as, arch::fp, send_value_loc.loc, arch::reg_scratch_0));
+
+  // X2 = finish_yield_from (0)
+  as->mov(a64::x2, a64::xzr);
+
+  // 调用 JITRT_GetGenResumeEntry
+  uint64_t func = reinterpret_cast<uint64_t>(JITRT_GetGenResumeEntry);
+  emitCall(*env, func, instr);
+  // 结果在 X0
+
+  // === 检查结果 ===
+  as->cmp(a64::x0, a64::xzr);
+  asmjit::Label done_label = as->newLabel();
+  as->b_ne(done_label);
+
+  // X0 == 0：检查 PyErr_Occurred
+  // tstate 已保存在 X19，加载到 X0 作为参数
+  as->mov(a64::x0, a64::x19);
+  emitCall(*env, reinterpret_cast<uint64_t>(_PyErr_Occurred), instr);
+  // _PyErr_Occurred 结果在 X0
+
+  as->cmp(a64::x0, a64::xzr);
+  asmjit::Label exc_label = as->newLabel();
+  as->b_ne(exc_label);
+  // 无异常：正常结束，跳转到 done_label
+  as->b(done_label);
+
+  as->bind(exc_label);
+  // 有异常：fallthrough 到 CheckExc
+
+  as->bind(done_label);
+  // 结果在 X0，tstate 在 X19
+  emitLoadResumedYieldInputs(as, instr, X0, a64::x19);
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+void translateYieldFromInline(Environ* env, const Instruction* instr) {
+  // YieldFromInline: 内联的 yield-from，用于树遍历状态机
+  // 操作数: [tstate, iter, next_state, ...deopt_data]
+  // 输出: yield 的值
+  //
+  // 语义:
+  //   value = next(iter)
+  //   footer->currentState = next_state
+  //   yield value
+
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  // 1. 加载 iter (迭代器) 到 RDI
+  const OperandBase* iter_op = instr->getInput(1);
+  if (iter_op->isReg()) {
+    PhyLocation iter_loc = iter_op->getStackSlot();
+    as->mov(x86::rdi, x86::ptr(x86::rbp, iter_loc.loc));
+  } else {
+    as->mov(x86::rdi, x86::ptr(x86::rbp, iter_op->getStackSlot().loc));
+  }
+
+  // 2. 加载 next_state 到 RSI
+  const OperandBase* next_state_op = instr->getInput(2);
+  if (next_state_op->isReg()) {
+    PhyLocation next_state_loc = next_state_op->getStackSlot();
+    as->mov(x86::rsi, x86::ptr(x86::rbp, next_state_loc.loc));
+  } else {
+    as->mov(x86::rsi, x86::ptr(x86::rbp, next_state_op->getStackSlot().loc));
+  }
+
+  // 3. 保存 next_state 到 GenDataFooter->currentState
+  //    在调用辅助函数之前保存，这样即使 next() 失败状态也已更新
+#if PY_VERSION_HEX < 0x030E0000
+  // Python < 3.14: 保存到 GenDataFooter->currentState
+  auto currentStateOffset = offsetof(GenDataFooter, currentState);
+  as->mov(x86::dword_ptr(x86::rbp, currentStateOffset), x86::esi);
+#endif
+
+  // 4. 调用运行时辅助函数 JITRT_YieldFromInlineHelper(iter, next_state)
+  //    返回 yield 的值或 nullptr
+  uint64_t helper_func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
+  emitCall(*env, helper_func, instr);
+  // 结果在 RAX
+
+  // 5. 保存状态到 GenDataFooter 并跳转到 yield 退出点
+  //    类似于 translateYieldValue 的处理
+  auto scratch_r = x86::r9;
+  auto resume_label = as->newLabel();
+  emitStoreGenYieldPoint(as, env, instr, resume_label, x86::rbp, scratch_r);
+
+  // 6. 跳转到 yield 退出点
+  as->jmp(env->exit_for_yield_label);
+
+  // 7. 恢复执行入口（生成器恢复时从这里开始）
+  as->bind(resume_label);
+
+  // 8. 加载恢复的值（sent-in value）到输出
+  //    sent-in value 在 RSI，tstate 在 RCX
+  emitLoadResumedYieldInputs(as, instr, RSI, x86::rcx);
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  // 1. 加载 iter 到 X0
+  const OperandBase* iter_op = instr->getInput(1);
+  as->ldr(
+      a64::x0,
+      arch::ptr_resolve(as, arch::fp, iter_op->getStackSlot().loc, arch::reg_scratch_0));
+
+  // 2. 加载 next_state 到 X1
+  const OperandBase* next_state_op = instr->getInput(2);
+  as->ldr(
+      a64::x1,
+      arch::ptr_resolve(as, arch::fp, next_state_op->getStackSlot().loc, arch::reg_scratch_0));
+
+  // 3. 保存 next_state 到 GenDataFooter->currentState
+#if PY_VERSION_HEX < 0x030E0000
+  auto currentStateOffset = offsetof(GenDataFooter, currentState);
+  as->str(
+      a64::w1,
+      arch::ptr_resolve(as, arch::fp, currentStateOffset, arch::reg_scratch_0));
+#endif
+
+  // 4. 调用运行时辅助函数
+  uint64_t helper_func = reinterpret_cast<uint64_t>(JITRT_YieldFromInlineHelper);
+  emitCall(*env, helper_func, instr);
+  // 结果在 X0
+
+  // 5. 保存状态到 GenDataFooter 并跳转到 yield 退出点
+  auto scratch_r = arch::reg_scratch_0;
+  auto resume_label = as->newLabel();
+  emitStoreGenYieldPoint(as, env, instr, resume_label, arch::fp, scratch_r);
+
+  // 6. 跳转到 yield 退出点
+  as->b(env->exit_for_yield_label);
+
+  // 7. 恢复执行入口
+  as->bind(resume_label);
+
+  // 8. 加载恢复的值到输出
+  //    sent-in value 在 X1，tstate 在 X3
+  emitLoadResumedYieldInputs(as, instr, X1, a64::x3);
+
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+// Phase 3.2 Task 4: State machine stack operations codegen
+void translateStateStackPush(Environ* env, const Instruction* instr) {
+  // StateStackPush: 将 (node, phase) 压入 GenDataFooter.state_stack
+  // 操作数: [node, phase]
+  //
+  // 伪代码:
+  //   stack_top_offset = offsetof(GenDataFooter, stack_top)
+  //   stack_base_offset = offsetof(GenDataFooter, state_stack)
+  //   index = GenDataFooter.stack_top
+  //   GenDataFooter.state_stack[index].node = node
+  //   GenDataFooter.state_stack[index].phase = phase
+  //   GenDataFooter.stack_top++
+  //
+  // 关键：必须先读取输入操作数到 scratch 寄存器，
+  // 再使用任何固定寄存器，避免寄存器冲突。
+
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+
+  // 关键：先读取输入操作数到临时寄存器，再使用 RAX 加载 stack_top
+  // 避免寄存器分配器将 node/phase 分配到 RAX 后被 stack_top 读取覆盖
+
+  // Step 1: 读取 node 到 RDI
+  const OperandBase* node_op = instr->getInput(0);
+  if (node_op->isReg()) {
+    as->mov(x86::rdi, AutoTranslator::getGp(node_op));
+  } else if (node_op->isImm()) {
+    as->mov(x86::rdi, static_cast<int64_t>(node_op->getConstant()));
+  } else {
+    as->mov(x86::rdi, x86::qword_ptr(x86::rbp, node_op->getStackSlot().loc));
+  }
+
+  // Step 2: 读取 phase 到 ESI
+  const OperandBase* phase_op = instr->getInput(1);
+  if (phase_op->isReg()) {
+    as->mov(x86::esi, AutoTranslator::getGp(phase_op));
+  } else if (phase_op->isImm()) {
+    as->mov(x86::esi, static_cast<int32_t>(phase_op->getConstant()));
+  } else {
+    as->mov(x86::esi, x86::dword_ptr(x86::rbp, phase_op->getStackSlot().loc));
+  }
+
+  // Step 3: 加载 stack_top 到 RAX（现在 RDI/ESI 已经被保存）
+  as->mov(x86::eax, x86::dword_ptr(x86::rbp, stack_top_offset));
+
+  // Step 4: 存储 node 和 phase
+  as->mov(x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0), x86::rdi);
+  as->mov(x86::dword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 8), x86::esi);
+
+  // Step 5: stack_top++
+  as->inc(x86::dword_ptr(x86::rbp, stack_top_offset));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+
+  // 寄存器使用策略:
+  // reg_scratch_0 (x12): 目标地址计算
+  // x13: 临时值保存
+  // x16 (reg_scratch_br): ptr_resolve scratch
+  //
+  // 关键: ptr_resolve(fp, offset, scratch) 会修改 scratch 寄存器!
+  // 必须在每次 ptr_resolve 调用前确保 scratch 寄存器不持有需要的值。
+
+  const OperandBase* node_op = instr->getInput(0);
+  const OperandBase* phase_op = instr->getInput(1);
+
+  // Step 1: 加载 stack_top 到 w13（用 x16 作为 ptr_resolve scratch）
+  as->ldr(
+      a64::w13,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
+
+  // Step 2: 计算 &state_stack[stack_top] 到 reg_scratch_0
+  // x13 = stack_top * 16, reg_scratch_0 = fp + state_stack + x13
+  as->add(arch::reg_scratch_0, arch::fp, stack_base_offset);
+  as->lsl(a64::x13, a64::x13, 4); // x13 = stack_top * 16
+  as->add(arch::reg_scratch_0, arch::reg_scratch_0, a64::x13);
+
+  // Step 3: 存储 node
+  if (node_op->isReg()) {
+    as->str(AutoTranslator::getGp(node_op), a64::ptr(arch::reg_scratch_0, 0));
+  } else if (node_op->isImm()) {
+    as->mov(a64::x13, static_cast<int64_t>(node_op->getConstant()));
+    as->str(a64::x13, a64::ptr(arch::reg_scratch_0, 0));
+  } else {
+    // Stack slot: 用 x13 保存地址，用 x16 作为 ptr_resolve scratch
+    as->mov(a64::x13, arch::reg_scratch_0);
+    as->ldr(
+        a64::x16,
+        arch::ptr_resolve(
+            as, arch::fp, node_op->getStackSlot().loc, arch::reg_scratch_0));
+    as->str(a64::x16, a64::ptr(a64::x13, 0));
+    as->mov(arch::reg_scratch_0, a64::x13);
+  }
+
+  // Step 4: 存储 phase
+  if (phase_op->isReg()) {
+    as->str(AutoTranslator::getGp(phase_op).w(), a64::ptr(arch::reg_scratch_0, 8));
+  } else if (phase_op->isImm()) {
+    int32_t phase_val = static_cast<int32_t>(phase_op->getConstant());
+    if (phase_val == 0) {
+      as->str(a64::wzr, a64::ptr(arch::reg_scratch_0, 8));
+    } else {
+      as->mov(a64::w13, phase_val);
+      as->str(a64::w13, a64::ptr(arch::reg_scratch_0, 8));
+    }
+  } else {
+    as->mov(a64::x13, arch::reg_scratch_0);
+    as->ldr(
+        a64::w16,
+        arch::ptr_resolve(
+            as, arch::fp, phase_op->getStackSlot().loc, arch::reg_scratch_0));
+    as->str(a64::w16, a64::ptr(a64::x13, 8));
+    as->mov(arch::reg_scratch_0, a64::x13);
+  }
+
+  // Step 5: Py_INCREF(node) — 栈持有引用，RefcountInsertion 会对输入 XDecref
+  // 关键: 只能使用 DISALLOWED_REGISTERS 中的寄存器 (x12/x13/x16)！
+  // x9/x10 是 allocable 寄存器，寄存器分配器可能将活跃值分配到这些寄存器，
+  // clobber 它们会导致使用这些值的后继指令读到垃圾值。
+  // 此时 reg_scratch_0 (x12) 已不再需要（node/phase 已存储到栈），
+  // 可以安全地用于 Py_INCREF。
+  {
+    if (node_op->isReg()) {
+      as->mov(arch::reg_scratch_0, AutoTranslator::getGp(node_op));
+    } else if (node_op->isImm()) {
+      as->mov(arch::reg_scratch_0, static_cast<int64_t>(node_op->getConstant()));
+    } else {
+      as->ldr(
+          arch::reg_scratch_0,
+          arch::ptr_resolve(
+              as, arch::fp, node_op->getStackSlot().loc, a64::x16));
+    }
+    // null check
+    Label skip_incref = as->newLabel();
+    as->cbz(arch::reg_scratch_0, skip_incref);
+    // load ob_refcnt (offset 0 on PyObject)
+    constexpr auto refcnt_offset = offsetof(PyObject, ob_refcnt);
+    as->ldr(
+        a64::w13,
+        arch::ptr_offset(arch::reg_scratch_0, refcnt_offset, arch::AccessSize::k32));
+    // check immortal (bit 31 set)
+    as->tbnz(a64::w13, 31, skip_incref);
+    // refcnt + 1
+    as->add(a64::w13, a64::w13, 1);
+    as->str(
+        a64::w13,
+        arch::ptr_offset(arch::reg_scratch_0, refcnt_offset, arch::AccessSize::k32));
+    as->bind(skip_incref);
+  }
+
+  // Step 6: stack_top++（重新加载 stack_top，因为上面的操作可能改变了 x13）
+  as->ldr(
+      a64::w13,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
+  as->add(a64::w13, a64::w13, 1);
+  as->str(
+      a64::w13,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+void translateStateStackPop(Environ* env, const Instruction* instr) {
+  // StateStackPop: 从 GenDataFooter.state_stack 弹出 (node, phase)
+  // 输出: node (PyObject*)
+  // phase 存储到 GenDataFooter.popped_phase 字段
+  //
+  // 伪代码:
+  //   GenDataFooter.stack_top--
+  //   index = GenDataFooter.stack_top
+  //   node = GenDataFooter.state_stack[index].node
+  //   GenDataFooter.popped_phase = GenDataFooter.state_stack[index].phase
+  //   return node
+
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 1. stack_top--
+  as->dec(x86::dword_ptr(x86::rbp, stack_top_offset));
+
+  // 2. 加载新的 stack_top 到 RAX
+  as->mov(x86::eax, x86::dword_ptr(x86::rbp, stack_top_offset));
+
+  // 3. 加载 node 从 state_stack[eax].node 到 RDI
+  as->mov(x86::rdi, x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0));
+
+  // 4. 加载 phase 从 state_stack[eax].phase 到 ESI
+  as->mov(x86::esi, x86::dword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 8));
+
+  // 5. 存储 phase 到 GenDataFooter.popped_phase
+  as->mov(x86::dword_ptr(x86::rbp, popped_phase_offset), x86::esi);
+
+  // 6. 清空栈条目（避免悬挂指针）
+  as->mov(x86::qword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 0), 0);
+  as->mov(x86::dword_ptr(x86::rbp, stack_base_offset, x86::rax, 16, 8), 0);
+
+  // 7. 存储 node 到输出寄存器
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  as->mov(output, x86::rdi);
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+  auto stack_base_offset = offsetof(GenDataFooter, state_stack);
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 寄存器使用策略（避免 ptr_resolve 覆盖正在使用的值）:
+  // x12 (reg_scratch_0): 地址计算（会被 ptr_resolve 修改）
+  // x13 (reg_scratch_1): 保存 stack_top-1 / phase 值
+  // x16 (reg_scratch_br): ptr_resolve scratch / 临时值
+  //
+  // 关键: ptr_resolve(fp, offset, scratch) 会修改 scratch 寄存器!
+  // x12 和 w12 是同一个寄存器，所以 ptr_resolve 用 x12 作为 scratch
+  // 会覆盖 w12 中的值。必须用 x16 作为 ptr_resolve scratch。
+
+  // 1. 加载 stack_top 到 w12（用 x16 作为 scratch 避免冲突）
+  as->ldr(
+      a64::w12,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
+
+  // 2. stack_top--, 保存新值到 x13（str 的 ptr_resolve 会覆盖 x12）
+  as->sub(a64::w12, a64::w12, 1);
+  as->mov(a64::x13, a64::x12); // x13 = stack_top - 1（保存！）
+
+  // 3. 存储新 stack_top（用 w13 而非 w12，因为 ptr_resolve 会覆盖 x12）
+  as->str(
+      a64::w13,
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, a64::x16));
+
+  // 4. 计算 &state_stack[new_top]（使用保存在 x13 中的 stack_top-1）
+  as->mov(arch::reg_scratch_0, stack_base_offset);
+  as->add(arch::reg_scratch_0, arch::fp, arch::reg_scratch_0);
+  as->lsl(a64::x16, a64::x13, 4); // x16 = (stack_top-1) * 16
+  as->add(arch::reg_scratch_0, arch::reg_scratch_0, a64::x16);
+
+  as->ldr(a64::x16, a64::ptr(arch::reg_scratch_0, 0)); // node → x16
+  as->ldr(a64::w13, a64::ptr(arch::reg_scratch_0, 8)); // phase → w13
+
+  // 5. 存储 phase 到 popped_phase（reg_scratch_0 不再需要，可用于 ptr_resolve）
+  as->str(
+      a64::w13,
+      arch::ptr_resolve(as, arch::fp, popped_phase_offset, arch::reg_scratch_0));
+
+  // 6. 存储 node 到输出寄存器
+  a64::Gp output = AutoTranslator::getGpOutput(instr->output());
+  as->mov(output, a64::x16);
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+// Phase 3.2 Task 5: LoadPoppedPhase codegen
+// 从 GenDataFooter.popped_phase 加载 int32_t phase 值
+void translateLoadPoppedPhase(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 加载 popped_phase 到输出寄存器
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  as->mov(output, x86::dword_ptr(x86::rbp, popped_phase_offset));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto popped_phase_offset = offsetof(GenDataFooter, popped_phase);
+
+  // 直接加载到输出寄存器，不使用 x0 作为中间
+  auto output = AutoTranslator::getGpOutput(instr->output());
+  as->ldr(
+      output.w(),
+      arch::ptr_resolve(as, arch::fp, popped_phase_offset, arch::reg_scratch_0));
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+// Phase 3.2 Task 5: LoadStackTop codegen
+// 从 GenDataFooter.stack_top 加载 int32_t 栈顶指针
+void translateLoadStackTop(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  as->mov(output, x86::dword_ptr(x86::rbp, stack_top_offset));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+
+  auto stack_top_offset = offsetof(GenDataFooter, stack_top);
+
+  // 直接加载到输出寄存器，不使用 x0 作为中间
+  auto output = AutoTranslator::getGpOutput(instr->output());
+  as->ldr(
+      output.w(),
+      arch::ptr_resolve(as, arch::fp, stack_top_offset, arch::reg_scratch_0));
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+// Phase 3.2 Plan B: 内联 codegen — 直接通过 FP 访问 GenDataFooter 字段
+// 消除 C 函数调用开销（getCurrentGenDataFooter 的 TLS + 帧遍历链）
+
+void translateLoadPhase(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+  auto phase_offset = offsetof(GenDataFooter, current_phase);
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  as->mov(output, x86::dword_ptr(x86::rbp, phase_offset));
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+  auto phase_offset = offsetof(GenDataFooter, current_phase);
+  auto output = AutoTranslator::getGpOutput(instr->output());
+  as->ldr(
+      output.w(),
+      arch::ptr_resolve(as, arch::fp, phase_offset, arch::reg_scratch_0));
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+void translateSavePhase(Environ* env, const Instruction* instr) {
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+  auto phase_offset = offsetof(GenDataFooter, current_phase);
+  const OperandBase* input_op = instr->getInput(0);
+  if (input_op->isReg()) {
+    x86::Gp input = AutoTranslator::getGp(input_op);
+    as->mov(x86::dword_ptr(x86::rbp, phase_offset), input);
+  } else if (input_op->isImm()) {
+    int32_t val = static_cast<int32_t>(input_op->getConstant());
+    as->mov(x86::dword_ptr(x86::rbp, phase_offset), val);
+  } else {
+    // 栈槽
+    as->mov(
+        x86::gpd(arch::reg_scratch_0.getPhyRegister().loc),
+        x86::dword_ptr(x86::rbp, input_op->getStackSlot().loc));
+    as->mov(
+        x86::dword_ptr(x86::rbp, phase_offset),
+        x86::gpd(arch::reg_scratch_0.getPhyRegister().loc));
+  }
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+  auto phase_offset = offsetof(GenDataFooter, current_phase);
+  const OperandBase* input_op = instr->getInput(0);
+  if (input_op->isReg()) {
+    auto input = AutoTranslator::getGp(input_op);
+    as->str(input.w(), arch::ptr_resolve(as, arch::fp, phase_offset, arch::reg_scratch_0));
+  } else if (input_op->isImm()) {
+    int32_t val = static_cast<int32_t>(input_op->getConstant());
+    as->mov(a64::w12, val);
+    as->str(a64::w12, arch::ptr_resolve(as, arch::fp, phase_offset, arch::reg_scratch_0));
+  } else {
+    // 栈槽：先加载到 scratch，再存储到 GenDataFooter
+    as->ldr(
+        a64::w12,
+        arch::ptr_resolve(as, arch::fp, input_op->getStackSlot().loc, arch::reg_scratch_0));
+    as->str(a64::w12, arch::ptr_resolve(as, arch::fp, phase_offset, arch::reg_scratch_0));
+  }
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+void translateLoadCurrentNode(Environ* env, const Instruction* instr) {
+  // 加载 GenDataFooter.current_node 并 Py_INCREF（RefcountInsertion 会 XDecref）
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+  constexpr auto node_offset = offsetof(GenDataFooter, current_node);
+  constexpr auto refcnt_offset = offsetof(PyObject, ob_refcnt);
+
+  x86::Gp output = AutoTranslator::getGp(instr->output());
+  Label skip_incref = as->newLabel();
+
+  // 加载 current_node
+  as->mov(output, x86::ptr(x86::rbp, node_offset));
+  // null check
+  as->test(output, output);
+  as->jz(skip_incref);
+  // inline Py_INCREF(output)
+  as->mov(x86::gpd(arch::reg_scratch_0.getPhyRegister().loc),
+          x86::dword_ptr(output, refcnt_offset));
+  as->inc(x86::gpd(arch::reg_scratch_0.getPhyRegister().loc));
+#if PY_VERSION_HEX >= 0x030E0000
+  as->js(skip_incref);
+#else
+  Label not_immortal = as->newLabel();
+  as->jne(not_immortal);
+  as->bind(skip_incref);
+  as->jmp(not_immortal);  // 绕过下面的 store
+  as->bind(not_immortal);
+  // 回退：上面已经 bind skip_incref 了，重新处理
+#endif
+  as->mov(x86::dword_ptr(output, refcnt_offset),
+          x86::gpd(arch::reg_scratch_0.getPhyRegister().loc));
+  as->bind(skip_incref);
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+  constexpr auto node_offset = offsetof(GenDataFooter, current_node);
+  constexpr auto refcnt_offset = offsetof(PyObject, ob_refcnt);
+
+  auto output = AutoTranslator::getGpOutput(instr->output());
+  Label skip_incref = as->newLabel();
+
+  // 加载 current_node
+  as->ldr(output, arch::ptr_resolve(as, arch::fp, node_offset, arch::reg_scratch_0));
+  // null check
+  as->cbz(output, skip_incref);
+  // inline Py_INCREF(output)
+  // load ob_refcnt (32-bit), add 1, check immortal
+  as->ldr(
+      a64::w12,
+      arch::ptr_offset(output, refcnt_offset, arch::AccessSize::k32));
+  as->adds(a64::w12, a64::w12, 1);
+#if PY_VERSION_HEX >= 0x030E0000
+  as->b_mi(skip_incref);  // negative → immortal → skip store
+#else
+  Label store_incref = as->newLabel();
+  as->b_ne(store_incref);  // not zero → mortal → store
+  as->b(skip_incref);      // zero → immortal → skip
+  as->bind(store_incref);
+#endif
+  as->str(
+      a64::w12,
+      arch::ptr_offset(output, refcnt_offset, arch::AccessSize::k32));
+  as->bind(skip_incref);
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
+void translateSaveCurrentNode(Environ* env, const Instruction* instr) {
+  // Py_DECREF(GenDataFooter.current_node 旧值)
+  // Py_INCREF(新值)
+  // GenDataFooter.current_node = 新值
+  // RefcountInsertion 会对输入寄存器 XDecref，所以 incref 和 XDecref 平衡
+#if defined(CINDER_X86_64)
+  arch::Builder* as = env->as;
+  constexpr auto node_offset = offsetof(GenDataFooter, current_node);
+  constexpr auto refcnt_offset = offsetof(PyObject, ob_refcnt);
+
+  const OperandBase* input_op = instr->getInput(0);
+  x86::Gp new_node = input_op->isReg() ? AutoTranslator::getGp(input_op)
+                                        : x86::gpq(arch::reg_scratch_0.getPhyRegister().loc);
+  x86::Gp old_node = x86::gpq(arch::reg_scratch_0.getPhyRegister().loc);
+  x86::Gp scratch32 = x86::gpd(arch::reg_scratch_0.getPhyRegister().loc);
+
+  // 如果输入不在寄存器中，先加载到 scratch
+  if (!input_op->isReg()) {
+    if (input_op->isImm()) {
+      as->mov(old_node, static_cast<int64_t>(input_op->getConstant()));
+    } else {
+      as->mov(old_node, x86::ptr(x86::rbp, input_op->getStackSlot().loc));
+    }
+    new_node = old_node;
+  }
+
+  // 使用另一个 scratch 寄存器保存旧值
+  x86::Gp saved_old = x86::gpq(arch::reg_scratch_br.getPhyRegister().loc);
+
+  // 1. 加载旧值
+  as->mov(saved_old, x86::ptr(x86::rbp, node_offset));
+
+  // 2. inline Py_DECREF(saved_old)
+  Label skip_dec = as->newLabel();
+  as->test(saved_old, saved_old);
+  as->jz(skip_dec);
+  as->mov(x86::gpd(arch::reg_scratch_br.getPhyRegister().loc + 1),
+          x86::dword_ptr(saved_old, refcnt_offset));
+  // 注意：这里 scratch 寄存器可能冲突，使用 r13
+  as->mov(x86::r13d, x86::dword_ptr(saved_old, refcnt_offset));
+  as->dec(x86::r13d);
+#if PY_VERSION_HEX >= 0x030E0000
+  as->js(skip_dec);  // overflow → immortal
+#else
+  Label dec_mortal = as->newLabel();
+  as->jne(dec_mortal);
+  as->jmp(skip_dec);
+  as->bind(dec_mortal);
+#endif
+  as->mov(x86::dword_ptr(saved_old, refcnt_offset), x86::r13d);
+  // TODO: 如果 refcnt=0，调用 _Py_Dealloc（罕见路径，树节点在遍历期间不会释放）
+  as->bind(skip_dec);
+
+  // 3. inline Py_INCREF(new_node)
+  Label skip_inc = as->newLabel();
+  as->test(new_node, new_node);
+  as->jz(skip_inc);
+  as->mov(x86::r13d, x86::dword_ptr(new_node, refcnt_offset));
+  as->inc(x86::r13d);
+#if PY_VERSION_HEX >= 0x030E0000
+  as->js(skip_inc);
+#else
+  Label inc_mortal = as->newLabel();
+  as->jne(inc_mortal);
+  as->jmp(skip_inc);
+  as->bind(inc_mortal);
+#endif
+  as->mov(x86::dword_ptr(new_node, refcnt_offset), x86::r13d);
+  as->bind(skip_inc);
+
+  // 4. 存储新值
+  as->mov(x86::ptr(x86::rbp, node_offset), new_node);
+
+#elif defined(CINDER_AARCH64)
+  arch::Builder* as = env->as;
+  constexpr auto node_offset = offsetof(GenDataFooter, current_node);
+  constexpr auto refcnt_offset = offsetof(PyObject, ob_refcnt);
+
+  const OperandBase* input_op = instr->getInput(0);
+
+  // 获取 new_node 寄存器（输入操作数）
+  // AArch64: 需要处理输入在不同位置的情况
+  // 寄存器使用:
+  //   new_node: 输入操作数所在寄存器
+  //   x12 (reg_scratch_0): 旧值 / 临时
+  //   x13 (reg_scratch_1): refcnt 操作 scratch
+  //   x16 (reg_scratch_br): ptr_resolve scratch
+
+  // 1. 加载旧值到 x12（需要先处理，因为后面 ptr_resolve 会覆盖 scratch）
+  as->ldr(a64::x12, arch::ptr_resolve(as, arch::fp, node_offset, a64::x16));
+
+  // 2. inline Py_DECREF(old_node = x12)
+  Label skip_dec = as->newLabel();
+  Label dec_done = as->newLabel();
+  as->cbz(a64::x12, skip_dec);
+  // load ob_refcnt (32-bit)
+  as->ldr(
+      a64::w13,
+      arch::ptr_offset(a64::x12, refcnt_offset, arch::AccessSize::k32));
+  as->tbnz(a64::w13, 31, skip_dec);  // bit 31 set → immortal → skip
+  // mortal: refcnt - 1
+  as->subs(a64::w13, a64::w13, 1);
+  as->str(
+      a64::w13,
+      arch::ptr_offset(a64::x12, refcnt_offset, arch::AccessSize::k32));
+  as->b_ne(dec_done);  // refcnt != 0, done
+  // refcnt = 0: 调用 _Py_Dealloc（极罕见，树节点遍历期间不会释放）
+  as->mov(a64::x0, a64::x12);
+  emitCall(*env, reinterpret_cast<uint64_t>(_Py_Dealloc), nullptr);
+  as->bind(dec_done);
+  as->bind(skip_dec);
+
+  // 3. inline Py_INCREF(new_node)
+  Label skip_inc = as->newLabel();
+  if (input_op->isReg()) {
+    auto new_node = AutoTranslator::getGp(input_op);
+    as->cbz(new_node, skip_inc);
+    as->ldr(
+        a64::w13,
+        arch::ptr_offset(new_node, refcnt_offset, arch::AccessSize::k32));
+    as->adds(a64::w13, a64::w13, 1);
+#if PY_VERSION_HEX >= 0x030E0000
+    as->b_mi(skip_inc);
+#else
+    Label store_inc = as->newLabel();
+    as->b_ne(store_inc);
+    as->b(skip_inc);
+    as->bind(store_inc);
+#endif
+    as->str(
+        a64::w13,
+        arch::ptr_offset(new_node, refcnt_offset, arch::AccessSize::k32));
+    as->bind(skip_inc);
+    // 4. 存储新值
+    as->str(new_node, arch::ptr_resolve(as, arch::fp, node_offset, a64::x16));
+  } else if (input_op->isImm()) {
+    int64_t val = static_cast<int64_t>(input_op->getConstant());
+    as->mov(a64::x12, val);
+    as->str(a64::x12, arch::ptr_resolve(as, arch::fp, node_offset, a64::x16));
+  } else {
+    // 栈槽：直接写入（不处理 incref，因为栈槽值不持有引用）
+    as->ldr(
+        a64::x12,
+        arch::ptr_resolve(as, arch::fp, input_op->getStackSlot().loc, a64::x16));
+    as->str(a64::x12, arch::ptr_resolve(as, arch::fp, node_offset, a64::x16));
+  }
+#else
+  CINDER_UNSUPPORTED
+#endif
+}
+
 
 // ***********************************************************************
 // The following templates and macros implement the auto generation table.
@@ -1919,6 +2752,47 @@ END_RULES
 
 BEGIN_RULES(Instruction::kYieldFromHandleStopAsyncIteration)
   GEN(ANY, CALL_C(translateYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kOptimizedYieldFrom)
+  GEN(ANY, CALL_C(translateOptimizedYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kYieldFromInline)
+  GEN(ANY, CALL_C(translateYieldFromInline))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPush)
+  GEN(ANY, CALL_C(translateStateStackPush))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPop)
+  GEN(ANY, CALL_C(translateStateStackPop))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadPoppedPhase)
+  GEN(ANY, CALL_C(translateLoadPoppedPhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadStackTop)
+  GEN(ANY, CALL_C(translateLoadStackTop))
+END_RULES
+
+// Phase 3.2 Plan B: 内联 codegen（纯整数操作）
+BEGIN_RULES(Instruction::kLoadPhase)
+  GEN(ANY, CALL_C(translateLoadPhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kSavePhase)
+  GEN(ANY, CALL_C(translateSavePhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadCurrentNode)
+  GEN(ANY, CALL_C(translateLoadCurrentNode))
+END_RULES
+
+BEGIN_RULES(Instruction::kSaveCurrentNode)
+  GEN(ANY, CALL_C(translateSaveCurrentNode))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)
@@ -3240,6 +4114,47 @@ END_RULES
 
 BEGIN_RULES(Instruction::kYieldFromHandleStopAsyncIteration)
   GEN(ANY, CALL_C(translateYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kOptimizedYieldFrom)
+  GEN(ANY, CALL_C(translateOptimizedYieldFrom))
+END_RULES
+
+BEGIN_RULES(Instruction::kYieldFromInline)
+  GEN(ANY, CALL_C(translateYieldFromInline))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPush)
+  GEN(ANY, CALL_C(translateStateStackPush))
+END_RULES
+
+BEGIN_RULES(Instruction::kStateStackPop)
+  GEN(ANY, CALL_C(translateStateStackPop))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadPoppedPhase)
+  GEN(ANY, CALL_C(translateLoadPoppedPhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadStackTop)
+  GEN(ANY, CALL_C(translateLoadStackTop))
+END_RULES
+
+// Phase 3.2 Plan B: 内联 codegen（直接 FP 访问 GenDataFooter 字段）
+BEGIN_RULES(Instruction::kLoadPhase)
+  GEN(ANY, CALL_C(translateLoadPhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kSavePhase)
+  GEN(ANY, CALL_C(translateSavePhase))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadCurrentNode)
+  GEN(ANY, CALL_C(translateLoadCurrentNode))
+END_RULES
+
+BEGIN_RULES(Instruction::kSaveCurrentNode)
+  GEN(ANY, CALL_C(translateSaveCurrentNode))
 END_RULES
 
 BEGIN_RULES(Instruction::kYieldValue)

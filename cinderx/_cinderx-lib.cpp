@@ -16,6 +16,7 @@
 #include "cinderx/Jit/generators_rt.h"
 #include "cinderx/Jit/global_cache.h"
 #include "cinderx/Jit/perf_jitdump.h"
+#include "cinderx/Jit/hir/tree_iter_state_machine_pass.h"
 #include "cinderx/Jit/pyjit.h"
 #include "cinderx/Jit/symbolizer.h"
 #include "cinderx/python_runtime.h"
@@ -193,6 +194,32 @@ PyObject* watch_sys_modules(PyObject*, PyObject*) {
   if (Ci_Watchers_WatchDict(modules) < 0) {
     return nullptr;
   }
+  Py_RETURN_NONE;
+}
+
+// Phase 3.2 探针测试支持
+PyDoc_STRVAR(
+    get_state_machine_pass_triggered_doc,
+    "get_state_machine_pass_triggered()\n\n"
+    "Return the number of times TreeIterStateMachinePass was triggered.\n"
+    "Used for testing to verify the state machine optimization is active.");
+
+PyObject* get_state_machine_pass_triggered(
+    [[maybe_unused]] PyObject*,
+    [[maybe_unused]] PyObject*) {
+  return PyLong_FromLong(g_state_machine_pass_triggered);
+}
+
+PyDoc_STRVAR(
+    reset_state_machine_pass_triggered_doc,
+    "reset_state_machine_pass_triggered()\n\n"
+    "Reset the state machine pass trigger counter to zero.\n"
+    "Used for testing to isolate individual test cases.");
+
+PyObject* reset_state_machine_pass_triggered(
+    [[maybe_unused]] PyObject*,
+    [[maybe_unused]] PyObject*) {
+  g_state_machine_pass_triggered = 0;
   Py_RETURN_NONE;
 }
 
@@ -1302,6 +1329,14 @@ PyMethodDef _cinderx_methods[] = {
      METH_NOARGS,
      cinder_get_threshold_doc},
 #endif
+    {"get_state_machine_pass_triggered",
+     get_state_machine_pass_triggered,
+     METH_NOARGS,
+     get_state_machine_pass_triggered_doc},
+    {"reset_state_machine_pass_triggered",
+     reset_state_machine_pass_triggered,
+     METH_NOARGS,
+     reset_state_machine_pass_triggered_doc},
     {nullptr, nullptr, 0, nullptr}};
 
 int _cinderx_exec_impl(PyObject* m) {

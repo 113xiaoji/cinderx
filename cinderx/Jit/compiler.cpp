@@ -30,6 +30,7 @@
 #include "cinderx/Jit/hir/simplify.h"
 #include "cinderx/Jit/hir/slot_version_guard_elimination.h"
 #include "cinderx/Jit/hir/ssa.h"
+#include "cinderx/Jit/hir/tree_iter_state_machine_pass.h"
 #include "cinderx/Jit/jit_time_log.h"
 
 #include <chrono>
@@ -130,6 +131,9 @@ void Compiler::runPasses(
   runPassIf(hir::CleanCFG{}, PassConfig::kCleanCFG);
   runPass(jit::hir::InlineGenexprMakeFunctionHoist{}, irfunc, callback);
 
+  // Run tree iter state machine pass after cleanup passes
+  runPassIf(hir::TreeIterStateMachinePass{}, PassConfig::kTreeIterStateMachine);
+
   runPass(jit::hir::RefcountInsertion{}, irfunc, callback);
   runPass(jit::hir::ListSliceCleanup{}, irfunc, callback);
   runPass(jit::hir::FloatCompareElimination{}, irfunc, callback);
@@ -173,6 +177,7 @@ PassConfig createConfig() {
   };
 
   auto const& hir_opts = getConfig().hir_opts;
+
   set(hir_opts.begin_inlined_function_elim,
       PassConfig::kBeginInlinedFunctionElim);
   set(hir_opts.builtin_load_method_elim, PassConfig::kBuiltinLoadMethodElim);
@@ -185,6 +190,7 @@ PassConfig createConfig() {
   set(hir_opts.insert_update_prev_instr, PassConfig::kInsertUpdatePrevInstr);
   set(hir_opts.phi_elim, PassConfig::kPhiElim);
   set(hir_opts.simplify, PassConfig::kSimplify);
+  set(hir_opts.tree_iter_state_machine, PassConfig::kTreeIterStateMachine);
 
   return static_cast<PassConfig>(result);
 }
@@ -192,6 +198,7 @@ PassConfig createConfig() {
 std::optional<CompiledFunctionData> Compiler::Compile(
     const jit::hir::Preloader& preloader) {
   const std::string& fullname = preloader.fullname();
+
   if (!PyDict_CheckExact(preloader.globals())) {
     JIT_DLOG(
         "Refusing to compile {}: globals is a {:.200}, not a dict",

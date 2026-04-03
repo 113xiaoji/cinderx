@@ -1020,6 +1020,8 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       }
       case Opcode::kPrimitiveCompare: {
         auto instr = static_cast<const PrimitiveCompare*>(&i);
+        JIT_DLOG("LIR: Lowering PrimitiveCompare op={} in func {}",
+            static_cast<int>(instr->op()), GetHIRFunction()->fullname);
         Instruction::Opcode op;
         switch (instr->op()) {
           case PrimitiveCompareOp::kEqual:
@@ -1276,6 +1278,25 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         bbb.appendInstr(Instruction::kReturn, i.GetOperand(0));
         break;
       }
+      // Phase 2: State machine instructions (placeholder implementations)
+      case Opcode::kStateSwitch: {
+        // TODO: Implement state dispatch logic
+        // For now, this is a placeholder to allow compilation
+        JIT_ABORT("StateSwitch not yet implemented in LIR generator");
+        break;
+      }
+      case Opcode::kSaveState: {
+        // TODO: Implement state save logic
+        // For now, this is a placeholder to allow compilation
+        JIT_ABORT("SaveState not yet implemented in LIR generator");
+        break;
+      }
+      case Opcode::kLoadState: {
+        // TODO: Implement state load logic
+        // For now, this is a placeholder to allow compilation
+        JIT_ABORT("LoadState not yet implemented in LIR generator");
+        break;
+      }
       case Opcode::kSetCurrentAwaiter: {
         bbb.appendInvokeInstruction(
             JITRT_SetCurrentAwaiter, i.GetOperand(0), env_->asm_tstate);
@@ -1300,19 +1321,84 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       }
       case Opcode::kYieldAndYieldFrom:
       case Opcode::kYieldFrom:
-      case Opcode::kYieldFromHandleStopAsyncIteration: {
+      case Opcode::kOptimizedYieldFrom:
+      case Opcode::kYieldFromHandleStopAsyncIteration:
+      case Opcode::kInlineIter:
+      case Opcode::kYieldFromInline: {
         Instruction::Opcode op = [&] {
           if (opcode == Opcode::kYieldAndYieldFrom) {
             return Instruction::kYieldFromSkipInitialSend;
+          } else if (opcode == Opcode::kOptimizedYieldFrom || opcode == Opcode::kInlineIter) {
+            return opcode == Opcode::kInlineIter ? Instruction::kInlineIter : Instruction::kOptimizedYieldFrom;
+          } else if (opcode == Opcode::kYieldFromInline) {
+            return Instruction::kYieldFromInline;
           } else if (opcode == Opcode::kYieldFrom) {
             return Instruction::kYieldFrom;
           } else {
             return Instruction::kYieldFromHandleStopAsyncIteration;
           }
         }();
-        Instruction* instr = bbb.appendInstr(
-            i.output(), op, env_->asm_tstate, i.GetOperand(0), i.GetOperand(1));
+        Instruction* instr = [&] {
+          if (opcode == Opcode::kOptimizedYieldFrom) {
+            // OptimizedYieldFrom has 3 operands: send_value, iter, entry
+            return bbb.appendInstr(
+                i.output(), op, env_->asm_tstate, i.GetOperand(0),
+                i.GetOperand(1), i.GetOperand(2));
+          } else if (opcode == Opcode::kInlineIter) {
+            // InlineIter has 3 operands: send_value, iter, state_size
+            return bbb.appendInstr(
+                i.output(), op, env_->asm_tstate, i.GetOperand(0),
+                i.GetOperand(1), i.GetOperand(2));
+          } else if (opcode == Opcode::kYieldFromInline) {
+            // YieldFromInline has 2 operands: iter, next_state
+            return bbb.appendInstr(
+                i.output(), op, env_->asm_tstate, i.GetOperand(0),
+                i.GetOperand(1));
+          }
+          return bbb.appendInstr(
+              i.output(), op, env_->asm_tstate, i.GetOperand(0), i.GetOperand(1));
+        }();
         finishYield(bbb, instr, static_cast<const DeoptBase*>(&i));
+        break;
+      }
+      case Opcode::kStateStackPush: {
+        // Push 原生 LIR
+        bbb.appendInstr(Instruction::kStateStackPush, i.GetOperand(0), i.GetOperand(1));
+        break;
+      }
+      case Opcode::kStateStackPop: {
+        // Pop 原生 LIR
+        bbb.appendInstr(i.output(), Instruction::kStateStackPop);
+        break;
+      }
+      case Opcode::kLoadPoppedPhase: {
+        // 原生 LIR 调查
+        bbb.appendInstr(i.output(), Instruction::kLoadPoppedPhase);
+        break;
+      }
+      case Opcode::kLoadStackTop: {
+        // Plan B: 原生 LIR 指令，codegen 内联
+        bbb.appendInstr(i.output(), Instruction::kLoadStackTop);
+        break;
+      }
+      case Opcode::kSaveCurrentNode: {
+        // Plan B: 创建原生 LIR 指令而非 kCall，允许 codegen 内联
+        bbb.appendInstr(Instruction::kSaveCurrentNode, i.GetOperand(0));
+        break;
+      }
+      case Opcode::kLoadCurrentNode: {
+        // Plan B: 创建原生 LIR 指令
+        bbb.appendInstr(i.output(), Instruction::kLoadCurrentNode);
+        break;
+      }
+      case Opcode::kSavePhase: {
+        // Plan B: 创建原生 LIR 指令
+        bbb.appendInstr(Instruction::kSavePhase, i.GetOperand(0));
+        break;
+      }
+      case Opcode::kLoadPhase: {
+        // Plan B: 创建原生 LIR 指令
+        bbb.appendInstr(i.output(), Instruction::kLoadPhase);
         break;
       }
       case Opcode::kAssign: {

@@ -1,0 +1,440 @@
+# Node.__iter__ HIR (Baseline - Recursive Generator with yield-from)
+
+This file contains the baseline HIR for the recursive generator implementation
+using `yield from`. This will be compared with the optimized version later.
+
+## Key Features:
+- Uses `yield from` for recursive iteration (lines 179, 372)
+- Send/YieldFrom pattern for delegating to sub-generators
+- Type checks for coroutine safety (bb 1, bb 6)
+- Phi nodes for merging control flow (lines 150, 156, 341, 347)
+
+## HIR Dump:
+
+```
+fun __main__:Node.__iter__ {
+  bb 0 {
+    v31:Object = LoadArg<0; "self">
+    LoadFrame
+    v33:ObjectUser[Node:Exact] = GuardType<ObjectUser[Node:Exact]> v31 {
+      LiveValues<1> b:v31
+      FrameState {
+        CurInstrOffset 0
+        Locals<1> v31
+      }
+    }
+    Incref v33
+    UpdatePrevInstr<idx:1 line_no:25: no parent>
+    v34:OptNoneType = InitialYield {
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 2
+        Locals<1> v33
+      }
+    }
+    v35:CInt64 = LoadEvalBreaker
+    CondBranch<17, 16> v35
+  }
+
+  bb 17 (preds 0) {
+    UpdatePrevInstr<idx:2 line_no:25: no parent>
+    v36:CInt32 = RunPeriodicTasks {
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 4
+        Locals<1> v33
+      }
+    }
+    Branch<16>
+  }
+
+  bb 16 (preds 0, 17) {
+    DeoptPatchpoint<Patcher 0xc69288060> {
+      Descr 'SplitDictDeoptPatcher'
+      GuiltyReg v33
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 6
+        Locals<1> v33
+      }
+    }
+    v99:CUInt8 = LoadField<inline_values.valid@19, CUInt8, borrowed> v33
+    Guard v99 {
+      Descr 'inline_values.valid'
+      GuiltyReg v33
+      LiveValues<2> o:v33 uns:v99
+      FrameState {
+        CurInstrOffset 6
+        Locals<1> v33
+      }
+    }
+    v100:OptObject = LoadField<left@24, OptObject, borrowed> v33
+    v101:Object = CheckField<"left"> v100 {
+      GuiltyReg v33
+      LiveValues<2> o:v33 b:v100
+      FrameState {
+        CurInstrOffset 8
+        Locals<1> v33
+      }
+    }
+    Incref v101
+    UpdatePrevInstr<idx:14 line_no:26: no parent>
+    v39:CBool = IsTruthy v101 {
+      LiveValues<2> o:v33 o:v101
+      FrameState {
+        CurInstrOffset 28
+        Locals<1> v33
+      }
+    }
+    Decref v101
+    CondBranch<1, 5> v39
+  }
+
+  bb 1 (preds 16) {
+    # Check if left child is a coroutine (yield from safety check)
+    DeoptPatchpoint<Patcher 0xc69288180> {
+      Descr 'SplitDictDeoptPatcher'
+      GuiltyReg v33
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 42
+        Locals<1> v33
+      }
+    }
+    v87:CUInt8 = LoadField<inline_values.valid@19, CUInt8, borrowed> v33
+    Guard v87 {
+      Descr 'inline_values.valid'
+      GuiltyReg v33
+      LiveValues<2> o:v33 uns:v87
+      FrameState {
+        CurInstrOffset 42
+        Locals<1> v33
+      }
+    }
+    v88:OptObject = LoadField<left@24, OptObject, borrowed> v33
+    v89:Object = CheckField<"left"> v88 {
+      GuiltyReg v33
+      LiveValues<2> o:v33 b:v88
+      FrameState {
+        CurInstrOffset 44
+        Locals<1> v33
+      }
+    }
+    CondBranchCheckType<21, 22, ObjectUser[coroutine:Exact]> v89
+  }
+
+  bb 22 (preds 1) {
+    CondBranchCheckType<21, 19, ObjectUser[coroutine:Exact]> v89
+  }
+
+  bb 21 (preds 1, 22) {
+    # Error: cannot yield from coroutine in non-coroutine generator
+    RaiseStatic<TypeError, "cannot 'yield from' a coroutine object in a non-coroutine generator", <<1> o:v33>> {
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 64
+        Locals<1> v33
+      }
+    }
+  }
+
+  bb 19 (preds 22) {
+    # Check if already a generator
+    CondBranchCheckType<20, 23, Gen> v89
+  }
+
+  bb 20 (preds 19) {
+    # Already a generator, use directly
+    Incref v89
+    Branch<18>
+  }
+
+  bb 23 (preds 19) {
+    # Not a generator, get iterator
+    Incref v89
+    UpdatePrevInstr<idx:32 line_no:27: no parent>
+    v46:Object = GetIter v89 {
+      LiveValues<2> o:v33 o:v89
+      FrameState {
+        CurInstrOffset 64
+        Locals<1> v33
+      }
+    }
+    Decref v89
+    Branch<18>
+  }
+
+  bb 18 (preds 20, 23) {
+    # Merge iterator from generator/iterable paths
+    v47:Object = Phi<20, 23> v89 v46
+    v49:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Branch<2>
+  }
+
+  bb 2 (preds 3, 18) {
+    # Yield-from loop: send value to sub-iterator
+    v53:Object = Phi<3, 18> v58 v49
+    UpdatePrevInstr<idx:34 line_no:27: no parent>
+    v55:Object = Send v47 v53 {
+      LiveValues<3> o:v33 o:v47 b:v53
+      FrameState {
+        CurInstrOffset 68
+        Locals<1> v33
+        Stack<1> v47
+      }
+    }
+    v56:CInt64 = GetSecondOutput<CInt64> v55
+    CondBranch<32, 3> v56
+  }
+
+  bb 32 (preds 2) {
+    # Sub-iterator exhausted
+    UpdatePrevInstr<idx:34 line_no:27: no parent>
+    Decref v47
+    Decref v55
+    Branch<5>
+  }
+
+  bb 3 (preds 2) {
+    # Yield value from sub-iterator to caller
+    UpdatePrevInstr<idx:37 line_no:27: no parent>
+    v58:Object = YieldFrom v55 v47 {
+      LiveValues<3> o:v33 o:v47 b:v55
+      FrameState {
+        CurInstrOffset 74
+        Locals<1> v33
+        Stack<1> v47
+      }
+    }
+    Branch<2>
+  }
+
+  bb 5 (preds 16, 32) {
+    # Yield self.value
+    DeoptPatchpoint<Patcher 0xc692880c0> {
+      Descr 'SplitDictDeoptPatcher'
+      GuiltyReg v33
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 82
+        Locals<1> v33
+      }
+    }
+    v90:CUInt8 = LoadField<inline_values.valid@19, CUInt8, borrowed> v33
+    Guard v90 {
+      Descr 'inline_values.valid'
+      GuiltyReg v33
+      LiveValues<2> o:v33 uns:v90
+      FrameState {
+        CurInstrOffset 82
+        Locals<1> v33
+      }
+    }
+    v91:OptObject = LoadField<value@40, OptObject, borrowed> v33
+    v92:Object = CheckField<"value"> v91 {
+      GuiltyReg v33
+      LiveValues<2> o:v33 b:v91
+      FrameState {
+        CurInstrOffset 84
+        Locals<1> v33
+      }
+    }
+    Incref v92
+    UpdatePrevInstr<idx:53 line_no:28: no parent>
+    v62:Object = YieldValue v92 {
+      LiveValues<2> o:v33 b:v92
+      FrameState {
+        CurInstrOffset 106
+        Locals<1> v33
+      }
+    }
+    DeoptPatchpoint<Patcher 0xc69288000> {
+      Descr 'SplitDictDeoptPatcher'
+      GuiltyReg v33
+      LiveValues<2> o:v33 b:v62
+      FrameState {
+        CurInstrOffset 108
+        Locals<1> v33
+        Stack<1> v62
+      }
+    }
+    v93:CUInt8 = LoadField<inline_values.valid@19, CUInt8, borrowed> v33
+    Guard v93 {
+      Descr 'inline_values.valid'
+      GuiltyReg v33
+      LiveValues<3> o:v33 b:v62 uns:v93
+      FrameState {
+        CurInstrOffset 108
+        Locals<1> v33
+        Stack<1> v62
+      }
+    }
+    v94:OptObject = LoadField<right@32, OptObject, borrowed> v33
+    v95:Object = CheckField<"right"> v94 {
+      GuiltyReg v33
+      LiveValues<2> o:v33 b:v94
+      FrameState {
+        CurInstrOffset 112
+        Locals<1> v33
+      }
+    }
+    Incref v95
+    UpdatePrevInstr<idx:66 line_no:29: no parent>
+    v64:CBool = IsTruthy v95 {
+      LiveValues<2> o:v33 o:v95
+      FrameState {
+        CurInstrOffset 132
+        Locals<1> v33
+      }
+    }
+    Decref v95
+    CondBranch<6, 10> v64
+  }
+
+  bb 6 (preds 5) {
+    # Check if right child is a coroutine (yield from safety check)
+    DeoptPatchpoint<Patcher 0xc69288150> {
+      Descr 'SplitDictDeoptPatcher'
+      GuiltyReg v33
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 146
+        Locals<1> v33
+      }
+    }
+    v96:CUInt8 = LoadField<inline_values.valid@19, CUInt8, borrowed> v33
+    Guard v96 {
+      Descr 'inline_values.valid'
+      GuiltyReg v33
+      LiveValues<2> o:v33 uns:v96
+      FrameState {
+        CurInstrOffset 146
+        Locals<1> v33
+      }
+    }
+    v97:OptObject = LoadField<right@32, OptObject, borrowed> v33
+    v98:Object = CheckField<"right"> v97 {
+      GuiltyReg v33
+      LiveValues<2> o:v33 b:v97
+      FrameState {
+        CurInstrOffset 148
+        Locals<1> v33
+      }
+    }
+    CondBranchCheckType<27, 28, ObjectUser[coroutine:Exact]> v98
+  }
+
+  bb 28 (preds 6) {
+    CondBranchCheckType<27, 25, ObjectUser[coroutine:Exact]> v98
+  }
+
+  bb 27 (preds 6, 28) {
+    # Error: cannot yield from coroutine in non-coroutine generator
+    RaiseStatic<TypeError, "cannot 'yield from' a coroutine object in a non-coroutine generator", <<1> o:v33>> {
+      LiveValues<1> o:v33
+      FrameState {
+        CurInstrOffset 168
+        Locals<1> v33
+      }
+    }
+  }
+
+  bb 25 (preds 28) {
+    # Check if already a generator
+    CondBranchCheckType<26, 29, Gen> v98
+  }
+
+  bb 26 (preds 25) {
+    # Already a generator, use directly
+    Incref v98
+    Branch<24>
+  }
+
+  bb 29 (preds 25) {
+    # Not a generator, get iterator
+    Incref v98
+    UpdatePrevInstr<idx:84 line_no:30: no parent>
+    v71:Object = GetIter v98 {
+      LiveValues<2> o:v33 o:v98
+      FrameState {
+        CurInstrOffset 168
+        Locals<1> v33
+      }
+    }
+    Decref v98
+    Branch<24>
+  }
+
+  bb 24 (preds 26, 29) {
+    # Merge iterator from generator/iterable paths
+    v72:Object = Phi<26, 29> v98 v71
+    v74:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Branch<7>
+  }
+
+  bb 7 (preds 8, 24) {
+    # Yield-from loop: send value to sub-iterator
+    v78:Object = Phi<8, 24> v84 v74
+    UpdatePrevInstr<idx:86 line_no:30: no parent>
+    v80:Object = Send v72 v78 {
+      LiveValues<3> o:v33 o:v72 b:v78
+      FrameState {
+        CurInstrOffset 172
+        Locals<1> v33
+        Stack<1> v72
+      }
+    }
+    v81:CInt64 = GetSecondOutput<CInt64> v80
+    CondBranch<9, 8> v81
+  }
+
+  bb 9 (preds 7) {
+    # Generator complete
+    UpdatePrevInstr<idx:93 line_no:30: no parent>
+    Decref v33
+    Decref v72
+    Decref v80
+    v83:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Return v83
+  }
+
+  bb 8 (preds 7) {
+    # Yield value from sub-iterator to caller
+    UpdatePrevInstr<idx:89 line_no:30: no parent>
+    v84:Object = YieldFrom v80 v72 {
+      LiveValues<3> o:v33 o:v72 b:v80
+      FrameState {
+        CurInstrOffset 178
+        Locals<1> v33
+        Stack<1> v72
+      }
+    }
+    Branch<7>
+  }
+
+  bb 10 (preds 5) {
+    # No right child, generator complete
+    UpdatePrevInstr<idx:95 line_no:29: no parent>
+    Decref v33
+    v86:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Return v86
+  }
+}
+```
+
+## Analysis:
+
+### Control Flow Complexity:
+- 15 basic blocks
+- 2 yield-from loops (bb 2-3 for left, bb 7-8 for right)
+- Coroutine type checking duplicated for left/right children
+
+### Yield-From Pattern (bb 2-3, bb 7-8):
+- `Send` instruction to send value to sub-iterator
+- `YieldFrom` instruction to yield value to caller
+- Loop continues until sub-iterator exhausted
+
+### Optimization Opportunities:
+1. Eliminate duplicate coroutine type checks
+2. Inline yield-from loops to reduce Send/YieldFrom overhead
+3. Reduce Phi node complexity through better register allocation

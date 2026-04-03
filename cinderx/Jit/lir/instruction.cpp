@@ -287,10 +287,13 @@ bool Instruction::isTerminator() const {
 bool Instruction::isAnyYield() const {
   switch (opcode_) {
     case kYieldFrom:
+    case kOptimizedYieldFrom:
     case kYieldFromHandleStopAsyncIteration:
     case kYieldFromSkipInitialSend:
     case kYieldInitial:
     case kYieldValue:
+    case kInlineIter:
+    case kYieldFromInline:
       return true;
     default:
       return false;

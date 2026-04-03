@@ -77,7 +77,46 @@ struct GenDataFooter {
   // Frame header used for tracking the current frame.
   FrameHeader frame_header;
 #endif
+
+// Phase 2: State machine support
+// Current state for state machine generators.
+// -1 = uninitialized, 0 = initial, >0 = generated states
+// This field is used by the state machine generator to track execution state.
+#if PY_VERSION_HEX >= 0x030E0000
+  // Python 3.14+: Use existing gi_frame_state field from CPython
+  // No additional field needed, state is stored in PyGenObject::gi_frame_state
+#else
+  // Python < 3.14: Store state machine state in GenDataFooter
+  // Using int32_t for efficiency (aligned to 4 bytes, but padded to 8)
+  int32_t currentState{-1};
+#endif
+
+  // Current tree node for state machine (as int64_t for pointer tagging)
+  int64_t current_node{0};
+  // Current phase for state machine (kLeft = 1, kYield, 2=LEFT, 1=YIELD, 3=RIGHT, 4=BACKTRACK)
+  int32_t current_phase{0};
+
+  struct StackEntry {
+    int64_t node;      // PyObject* (current tree node)
+    int32_t phase;     // TreeIterPhase (0=LEFT, 1=YIELD, 2=RIGHT, 3=BACKTRACK)
+    int32_t reserved;  // Padding for alignment (16 bytes total)
+  };
+
+  int32_t stack_top{0};           // Stack top pointer (0 = empty)
+  int32_t popped_phase{0};        // Phase from last pop operation (for StateStackPop)
+  int32_t reserved_padding{0};    // Padding to align StackEntry array
+
+  // Stack capacity: 16 entries supports depth ≤ 12 (max 2^12 - 1 = 4095 nodes)
+  // Each entry is 16 bytes, total stack size = 256 bytes
+  StackEntry state_stack[16];
 };
+
+static_assert(
+    sizeof(GenDataFooter::StackEntry) == 16,
+    "StackEntry must be 16 bytes for proper alignment");
+static_assert(
+    sizeof(GenDataFooter::state_stack) == 256,
+    "State stack must be exactly 256 bytes (16 entries * 16 bytes)");
 
 #if PY_VERSION_HEX >= 0x030C0000
 GenDataFooter** jitGenDataFooterPtr(PyGenObject* gen, PyCodeObject* gen_code);

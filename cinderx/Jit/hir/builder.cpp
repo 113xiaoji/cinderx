@@ -113,6 +113,9 @@ BorrowedRef<PyTypeObject> getStdlibArrayType() {
     return array_type;
   }
 
+  // 多线程编译时 worker 线程不持有 GIL，不能调用 PyImport_ImportModule
+  RETURN_MULTITHREADED_COMPILE(nullptr);
+
   ThreadedCompileSerialize guard;
   Ref<> mod = Ref<>::steal(PyImport_ImportModule("array"));
   if (mod == nullptr) {
@@ -6864,6 +6867,25 @@ void HIRBuilder::emitInlineGenexprYield(
     }
   }
   JIT_ABORT("Unhandled inline genexpr collector kind");
+}
+
+// Check if this yield-from can be inlined based on iterator source
+bool HIRBuilder::canInlineYieldFrom(Register* iter_reg) {
+  // iter_reg will be used for pattern detection in future implementation
+  // For now, use environment variable to enable
+  (void)iter_reg; // Suppress unused parameter warning
+
+  // Pattern: yield from self.left or yield from self.right
+  // Detected during Phi node analysis in simplify.cpp
+  // For now, use environment variable to enable
+  const char* env = std::getenv("PYTHONJIT_INLINE_YIELD_FROM");
+  if (!env || std::strcmp(env, "1") != 0) {
+    return false;
+  }
+
+  // TODO: Add pattern detection logic using iter_reg
+  // For initial implementation, just check env var
+  return true;
 }
 
 void HIRBuilder::emitSetUpdate(

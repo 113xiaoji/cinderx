@@ -1131,8 +1131,31 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
     case Opcode::kXIncref:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
+    case Opcode::kInlineIter:
+    case Opcode::kYieldFromInline:  // Phase 2: 类似 YieldFrom
     case Opcode::kYieldFromHandleStopAsyncIteration: {
       JIT_ABORT("Unsupported opcode: {}", opcode);
+    }
+    // Phase 2: 状态机指令解析
+    case Opcode::kLoadState: {
+      // LoadState 没有输入操作数，从 GenDataFooter 加载状态
+      NEW_INSTR(LoadState, dst);
+      break;
+    }
+    case Opcode::kSaveState: {
+      // SaveState 有一个输入操作数（新状态值）
+      auto new_state = ParseRegister();
+      NEW_INSTR(SaveState, new_state);
+      break;
+    }
+    case Opcode::kStateSwitch: {
+      // StateSwitch 是终止符指令，基于状态变量跳转
+      // 语法: StateSwitch <state_var>
+      auto state_var = ParseRegister();
+      NEW_INSTR(StateSwitch, state_var);
+      // StateSwitch 的目标基本块在后续解析中处理
+      break;
     }
   }
 

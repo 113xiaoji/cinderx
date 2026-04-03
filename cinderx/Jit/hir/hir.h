@@ -3730,6 +3730,130 @@ DEFINE_SIMPLE_INSTR(
     Operands<2>,
     DeoptBase);
 
+// OptimizedYieldFrom: 自引用委托优化指令
+// 绕过 JITRT_GenSend，直接调用子生成器入口点
+// 操作数: send_value, iter, target_entry
+DEFINE_SIMPLE_INSTR(
+    OptimizedYieldFrom,
+    (TObject, TOptObject),
+    HasOutput,
+    Operands<3>,
+    DeoptBase);
+
+// InlineIter: 内联迭代器状态机指令
+// 对于不可逃逸的生成器，将生成器状态机内联到调用栈，消除帧切换开销
+// 操作数: send_value, iter, state_size
+DEFINE_SIMPLE_INSTR(
+    InlineIter,
+    (TObject, TOptObject),
+    HasOutput,
+    Operands<3>,
+    DeoptBase);
+
+// Phase 2: 状态机生成相关指令
+
+// StateSwitch: 状态分发指令
+// 根据当前状态跳转到对应的基本块
+// 操作数: state_var (状态变量，TCInt32类型)
+// 这是一个终结器指令（Terminator）
+DEFINE_SIMPLE_INSTR(
+    StateSwitch,
+    (TCInt32),
+    Operands<1>);
+
+// SaveState: 状态保存指令
+// 将状态值保存到 GenDataFooter.currentState
+// 操作数: new_state (新状态值，TCInt32类型)
+DEFINE_SIMPLE_INSTR(
+    SaveState,
+    (TCInt32),
+    Operands<1>);
+
+// LoadState: 状态加载指令
+// 从 GenDataFooter.currentState 加载当前状态
+// 输出: 当前状态值（TCInt32类型）
+DEFINE_SIMPLE_INSTR(
+    LoadState,
+    (),
+    HasOutput,
+    Operands<0>);
+
+// YieldFromInline: 内联 yield from 指令（树遍历状态机）
+// 直接使用已加载的迭代器，避免运行时字段访问
+// 操作数: iter, next_state
+// 输出: yield 的值
+DEFINE_SIMPLE_INSTR(
+    YieldFromInline,
+    (TObject, TCInt32),
+    HasOutput,
+    Operands<2>,
+    DeoptBase);
+
+// StateStackPush: 状态机栈 Push 操作
+// 将 (node, phase) 压入 GenDataFooter.state_stack
+// 操作数: node (PyObject*), phase (int32_t)
+// 注意：这是无输出指令，直接修改 GenDataFooter
+DEFINE_SIMPLE_INSTR(
+    StateStackPush,
+    (TObject, TCInt32),
+    Operands<2>);
+
+// StateStackPop: 状态机栈 Pop 操作
+// 从 GenDataFooter.state_stack 弹出 (node, phase)
+// 输出: node (PyObject*), phase (int32_t) - 通过两个输出寄存器返回
+// 注意：这需要双输出，但 CinderX HIR 不支持，因此使用单一结构体输出
+// 临时方案：返回一个包含两个值的元组对象
+DEFINE_SIMPLE_INSTR(
+    StateStackPop,
+    (TObject),
+    HasOutput,
+    Operands<0>);
+
+// LoadPoppedPhase: 读取 GenDataFooter.popped_phase
+// StateStackPop 将 phase 存储到 GenDataFooter.popped_phase，
+// LoadPoppedPhase 将其加载到寄存器供状态机使用
+DEFINE_SIMPLE_INSTR(
+    LoadPoppedPhase,
+    (TCInt32),
+    HasOutput,
+    Operands<0>);
+
+// LoadStackTop: 读取 GenDataFooter.stack_top
+// StateStackPush/StateStackPop 修改 stack_top，
+// LoadStackTop 将其加载到寄存器用于空栈检查
+DEFINE_SIMPLE_INSTR(
+    LoadStackTop,
+    (TCInt32),
+    HasOutput,
+    Operands<0>);
+
+// SaveCurrentNode: 存储 PyObject* 到 GenDataFooter.current_node
+// 用于状态机循环，消除 SSA Phi 自引用
+DEFINE_SIMPLE_INSTR(
+    SaveCurrentNode,
+    (TObject),
+    Operands<1>);
+
+// LoadCurrentNode: 从 GenDataFooter.current_node 加载 PyObject*
+DEFINE_SIMPLE_INSTR(
+    LoadCurrentNode,
+    (TObject),
+    HasOutput,
+    Operands<0>);
+
+// SavePhase: 存储 int32_t 到 GenDataFooter.current_phase
+DEFINE_SIMPLE_INSTR(
+    SavePhase,
+    (TCInt32),
+    Operands<1>);
+
+// LoadPhase: 从 GenDataFooter.current_phase 加载 int32_t
+DEFINE_SIMPLE_INSTR(
+    LoadPhase,
+    (TCInt32),
+    HasOutput,
+    Operands<0>);
+
 // A more compact (in terms of emitted code) equivalent to YieldValue followed
 // by YieldFrom.
 DEFINE_SIMPLE_INSTR(

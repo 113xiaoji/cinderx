@@ -48,6 +48,7 @@ struct HIROptimizations {
   bool insert_update_prev_instr{true};
   bool phi_elim{true};
   bool simplify{true};
+  bool tree_iter_state_machine{false};  // Enable tree iter state machine optimization
 };
 
 // List of LIR optimization passes to run.

@@ -187,7 +187,21 @@ namespace jit::hir {
   V(YieldAndYieldFrom)                 \
   V(YieldFrom)                         \
   V(YieldFromHandleStopAsyncIteration) \
-  V(YieldValue)
+  V(YieldValue)                        \
+  V(OptimizedYieldFrom)                \
+  V(InlineIter)                        \
+  V(StateSwitch)                       \
+  V(SaveState)                         \
+  V(LoadState)                         \
+  V(YieldFromInline)                  \
+  V(StateStackPush)                   \
+  V(StateStackPop)                    \
+  V(LoadPoppedPhase)                  \
+  V(LoadStackTop)                     \
+  V(SaveCurrentNode)                  \
+  V(LoadCurrentNode)                  \
+  V(SavePhase)                        \
+  V(LoadPhase)
 
 enum class Opcode {
 #define DECLARE_OP(opname) k##opname,

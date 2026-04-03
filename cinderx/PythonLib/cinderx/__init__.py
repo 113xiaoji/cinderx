@@ -84,12 +84,14 @@ try:
         enable_parallel_gc,
         freeze_type,
         get_parallel_gc_settings,
+        get_state_machine_pass_triggered,
         has_parallel_gc,
         immortalize_heap,
         install_frame_evaluator,
         is_frame_evaluator_installed,
         is_immortal,
         remove_frame_evaluator,
+        reset_state_machine_pass_triggered,
         strict_module_patch,
         strict_module_patch_delete,
         strict_module_patch_enabled,
@@ -528,6 +530,9 @@ except ImportError as e:
     def get_parallel_gc_settings() -> dict[str, int] | None:
         return None
 
+    def get_state_machine_pass_triggered() -> int:
+        return 0
+
     def has_parallel_gc() -> bool:
         return False
 
@@ -546,6 +551,9 @@ except ImportError as e:
         )
 
     def remove_frame_evaluator() -> None:
+        pass
+
+    def reset_state_machine_pass_triggered() -> None:
         pass
 
     def strict_module_patch(mod: object, name: str, value: object) -> None:

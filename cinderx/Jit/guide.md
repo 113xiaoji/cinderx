@@ -15,6 +15,11 @@ from less to more specific:
   deoptimization is how Cinder transfers execution from JIT-compiled code back
   to the interpreter, usually to handle a rare, slow path.
 
+- [InlineIter Optimization](inline_iter.md): Generator inlining optimization
+  for non-escaping iterators, with escape analysis and tree traversal pattern
+  detection. Provides 3-32% performance improvement for generator-based tree
+  traversals.
+
 - [`hir::Type`](hir/type.md): An overview of HIR's type system.
 
 - [Refcount insertion](hir/refcount_insertion.md): An overview of the HIR

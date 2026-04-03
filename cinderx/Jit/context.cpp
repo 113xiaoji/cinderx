@@ -471,6 +471,10 @@ jit::GenDataFooter* jitgen_data_allocate(size_t spill_words) {
         malloc(spill_words * sizeof(uint64_t) + sizeof(jit::GenDataFooter));
     auto footer = reinterpret_cast<jit::GenDataFooter*>(
         reinterpret_cast<uint64_t*>(data) + spill_words);
+    // Phase 3.2: 初始化状态机字段（malloc 不零初始化）
+    footer->stack_top = 0;
+    footer->popped_phase = 0;
+    memset(footer->state_stack, 0, sizeof(footer->state_stack));
     footer->spillWords = spill_words;
     return footer;
   }
@@ -482,8 +486,13 @@ jit::GenDataFooter* jitgen_data_allocate(size_t spill_words) {
   gen_data_free_list_size--;
   void* data = gen_data_free_list_tail;
   gen_data_free_list_tail = *reinterpret_cast<void**>(gen_data_free_list_tail);
-  return reinterpret_cast<jit::GenDataFooter*>(
+  auto footer = reinterpret_cast<jit::GenDataFooter*>(
       reinterpret_cast<uint64_t*>(data) + spill_words);
+  // Phase 3.2: 重置状态机字段（free-list 内存可能包含旧数据）
+  footer->stack_top = 0;
+  footer->popped_phase = 0;
+  memset(footer->state_stack, 0, sizeof(footer->state_stack));
+  return footer;
 }
 
 void jitgen_data_free(PyGenObject* gen) {

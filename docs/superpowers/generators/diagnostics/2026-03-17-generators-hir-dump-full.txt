@@ -1,0 +1,461 @@
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:972 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:975 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:972 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:975 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:972 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:975 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:972 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:975 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:972 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:975 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:972 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:975 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/compiler.cpp:148 -- Optimized HIR for __main__:Node.__iter__:
+fun __main__:Node.__iter__ {
+  bb 0 {
+    v91:Object = LoadArg<0; "self">
+    LoadFrame
+    Incref v91
+    UpdatePrevInstr<idx:1 line_no:23: no parent>
+    v94:OptNoneType = InitialYield {
+      LiveValues<1> o:v91
+      FrameState {
+        CurInstrOffset 2
+        Locals<1> v91
+      }
+    }
+    v95:CInt64 = LoadEvalBreaker
+    CondBranch<17, 16> v95
+  }
+
+  bb 17 (preds 0) {
+    UpdatePrevInstr<idx:2 line_no:23: no parent>
+    v96:CInt32 = RunPeriodicTasks {
+      LiveValues<1> o:v91
+      FrameState {
+        CurInstrOffset 4
+        Locals<1> v91
+      }
+    }
+    Branch<16>
+  }
+
+  bb 16 (preds 0, 17) {
+    v98:Type = LoadField<ob_type@8, Type, borrowed> v91
+    v99:CUInt32 = LoadField<tp_version_tag@384, CUInt32, borrowed> v98
+    v100:CUInt32[131292] = LoadConst<CUInt32[131292]>
+    v101:CBool = PrimitiveCompare<Equal> v99 v100
+    Guard v101 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<3> o:v91 b:v98 bool:v101
+      FrameState {
+        CurInstrOffset 6
+        Locals<1> v91
+      }
+    }
+    v102:CInt64 = LoadField<tp_basicsize@32, CInt64, borrowed> v98
+    v103:CInt64[3] = LoadConst<CInt64[3]>
+    v104:CInt64 = IntBinaryOp<Add> v102 v103
+    v105:CPtr = LoadFieldAddress v91 v104
+    v106:CInt64[0] = LoadConst<CInt64[0]>
+    v107:CUInt8 = LoadArrayItem v105 v106 v91
+    v108:CUInt8[0] = LoadConst<CUInt8[0]>
+    v109:CBool = PrimitiveCompare<NotEqual> v107 v108
+    Guard v109 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<2> o:v91 bool:v109
+      FrameState {
+        CurInstrOffset 6
+        Locals<1> v91
+      }
+    }
+    v110:OptObject = LoadField<left@24, OptObject, borrowed> v91
+    v111:Object = CheckField<"left"> v110 {
+      GuiltyReg v91
+      LiveValues<2> o:v91 b:v110
+      FrameState {
+        CurInstrOffset 8
+        Locals<1> v91
+      }
+    }
+    Incref v111
+    UpdatePrevInstr<idx:14 line_no:24: no parent>
+    v112:CBool = IsTruthy v111 {
+      LiveValues<2> o:v91 o:v111
+      FrameState {
+        CurInstrOffset 28
+        Locals<1> v91
+      }
+    }
+    Decref v111
+    CondBranch<1, 5> v112
+  }
+
+  bb 1 (preds 16) {
+    v116:Type = LoadField<ob_type@8, Type, borrowed> v91
+    v117:CUInt32 = LoadField<tp_version_tag@384, CUInt32, borrowed> v116
+    v118:CUInt32[131292] = LoadConst<CUInt32[131292]>
+    v119:CBool = PrimitiveCompare<Equal> v117 v118
+    Guard v119 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<3> o:v91 b:v116 bool:v119
+      FrameState {
+        CurInstrOffset 42
+        Locals<1> v91
+      }
+    }
+    v120:CInt64 = LoadField<tp_basicsize@32, CInt64, borrowed> v116
+    v121:CInt64[3] = LoadConst<CInt64[3]>
+    v122:CInt64 = IntBinaryOp<Add> v120 v121
+    v123:CPtr = LoadFieldAddress v91 v122
+    v124:CInt64[0] = LoadConst<CInt64[0]>
+    v125:CUInt8 = LoadArrayItem v123 v124 v91
+    v126:CUInt8[0] = LoadConst<CUInt8[0]>
+    v127:CBool = PrimitiveCompare<NotEqual> v125 v126
+    Guard v127 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<2> o:v91 bool:v127
+      FrameState {
+        CurInstrOffset 42
+        Locals<1> v91
+      }
+    }
+    v128:OptObject = LoadField<left@24, OptObject, borrowed> v91
+    v129:Object = CheckField<"left"> v128 {
+      GuiltyReg v91
+      LiveValues<2> o:v91 b:v128
+      FrameState {
+        CurInstrOffset 44
+        Locals<1> v91
+      }
+    }
+    CondBranchCheckType<21, 22, ObjectUser[coroutine:Exact]> v129
+  }
+
+  bb 22 (preds 1) {
+    CondBranchCheckType<21, 19, ObjectUser[coroutine:Exact]> v129
+  }
+
+  bb 21 (preds 1, 22) {
+    RaiseStatic<TypeError, "cannot 'yield from' a coroutine object in a non-coroutine generator", <<1> o:v91>> {
+      LiveValues<1> o:v91
+      FrameState {
+        CurInstrOffset 64
+        Locals<1> v91
+      }
+    }
+  }
+
+  bb 19 (preds 22) {
+    CondBranchCheckType<20, 23, Gen> v129
+  }
+
+  bb 20 (preds 19) {
+    Incref v129
+    Branch<18>
+  }
+
+  bb 23 (preds 19) {
+    Incref v129
+    UpdatePrevInstr<idx:32 line_no:25: no parent>
+    v132:Object = GetIter v129 {
+      LiveValues<2> o:v91 o:v129
+      FrameState {
+        CurInstrOffset 64
+        Locals<1> v91
+      }
+    }
+    Decref v129
+    Branch<18>
+  }
+
+  bb 18 (preds 20, 23) {
+    v133:Object = Phi<20, 23> v129 v132
+    v135:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Branch<2>
+  }
+
+  bb 2 (preds 3, 18) {
+    v139:Object = Phi<3, 18> v144 v135
+    UpdatePrevInstr<idx:34 line_no:25: no parent>
+    v141:Object = Send v133 v139 {
+      LiveValues<3> o:v91 o:v133 b:v139
+      FrameState {
+        CurInstrOffset 68
+        Locals<1> v91
+        Stack<1> v133
+      }
+    }
+    v142:CInt64 = GetSecondOutput<CInt64> v141
+    CondBranch<32, 3> v142
+  }
+
+  bb 32 (preds 2) {
+    UpdatePrevInstr<idx:34 line_no:25: no parent>
+    Decref v133
+    Decref v141
+    Branch<5>
+  }
+
+  bb 3 (preds 2) {
+    UpdatePrevInstr<idx:37 line_no:25: no parent>
+    v144:Object = YieldFrom v141 v133 {
+      LiveValues<3> o:v91 o:v133 b:v141
+      FrameState {
+        CurInstrOffset 74
+        Locals<1> v91
+        Stack<1> v133
+      }
+    }
+    Branch<2>
+  }
+
+  bb 5 (preds 16, 32) {
+    v147:Type = LoadField<ob_type@8, Type, borrowed> v91
+    v148:CUInt32 = LoadField<tp_version_tag@384, CUInt32, borrowed> v147
+    v149:CUInt32[131292] = LoadConst<CUInt32[131292]>
+    v150:CBool = PrimitiveCompare<Equal> v148 v149
+    Guard v150 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<3> o:v91 b:v147 bool:v150
+      FrameState {
+        CurInstrOffset 82
+        Locals<1> v91
+      }
+    }
+    v151:CInt64 = LoadField<tp_basicsize@32, CInt64, borrowed> v147
+    v152:CInt64[3] = LoadConst<CInt64[3]>
+    v153:CInt64 = IntBinaryOp<Add> v151 v152
+    v154:CPtr = LoadFieldAddress v91 v153
+    v155:CInt64[0] = LoadConst<CInt64[0]>
+    v156:CUInt8 = LoadArrayItem v154 v155 v91
+    v157:CUInt8[0] = LoadConst<CUInt8[0]>
+    v158:CBool = PrimitiveCompare<NotEqual> v156 v157
+    Guard v158 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<2> o:v91 bool:v158
+      FrameState {
+        CurInstrOffset 82
+        Locals<1> v91
+      }
+    }
+    v159:OptObject = LoadField<value@40, OptObject, borrowed> v91
+    v160:Object = CheckField<"value"> v159 {
+      GuiltyReg v91
+      LiveValues<2> o:v91 b:v159
+      FrameState {
+        CurInstrOffset 84
+        Locals<1> v91
+      }
+    }
+    Incref v160
+    UpdatePrevInstr<idx:53 line_no:26: no parent>
+    v161:Object = YieldValue v160 {
+      LiveValues<2> o:v91 b:v160
+      FrameState {
+        CurInstrOffset 106
+        Locals<1> v91
+      }
+    }
+    v162:Type = LoadField<ob_type@8, Type, borrowed> v91
+    v163:CUInt32 = LoadField<tp_version_tag@384, CUInt32, borrowed> v162
+    v164:CUInt32[131292] = LoadConst<CUInt32[131292]>
+    v165:CBool = PrimitiveCompare<Equal> v163 v164
+    Guard v165 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<4> o:v91 b:v161 b:v162 bool:v165
+      FrameState {
+        CurInstrOffset 108
+        Locals<1> v91
+        Stack<1> v161
+      }
+    }
+    v166:CInt64 = LoadField<tp_basicsize@32, CInt64, borrowed> v162
+    v167:CInt64[3] = LoadConst<CInt64[3]>
+    v168:CInt64 = IntBinaryOp<Add> v166 v167
+    v169:CPtr = LoadFieldAddress v91 v168
+    v170:CInt64[0] = LoadConst<CInt64[0]>
+    v171:CUInt8 = LoadArrayItem v169 v170 v91
+    v172:CUInt8[0] = LoadConst<CUInt8[0]>
+    v173:CBool = PrimitiveCompare<NotEqual> v171 v172
+    Guard v173 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<3> o:v91 b:v161 bool:v173
+      FrameState {
+        CurInstrOffset 108
+        Locals<1> v91
+        Stack<1> v161
+      }
+    }
+    v174:OptObject = LoadField<right@32, OptObject, borrowed> v91
+    v175:Object = CheckField<"right"> v174 {
+      GuiltyReg v91
+      LiveValues<2> o:v91 b:v174
+      FrameState {
+        CurInstrOffset 112
+        Locals<1> v91
+      }
+    }
+    Incref v175
+    UpdatePrevInstr<idx:66 line_no:27: no parent>
+    v176:CBool = IsTruthy v175 {
+      LiveValues<2> o:v91 o:v175
+      FrameState {
+        CurInstrOffset 132
+        Locals<1> v91
+      }
+    }
+    Decref v175
+    CondBranch<6, 10> v176
+  }
+
+  bb 6 (preds 5) {
+    v180:Type = LoadField<ob_type@8, Type, borrowed> v91
+    v181:CUInt32 = LoadField<tp_version_tag@384, CUInt32, borrowed> v180
+    v182:CUInt32[131292] = LoadConst<CUInt32[131292]>
+    v183:CBool = PrimitiveCompare<Equal> v181 v182
+    Guard v183 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<3> o:v91 b:v180 bool:v183
+      FrameState {
+        CurInstrOffset 146
+        Locals<1> v91
+      }
+    }
+    v184:CInt64 = LoadField<tp_basicsize@32, CInt64, borrowed> v180
+    v185:CInt64[3] = LoadConst<CInt64[3]>
+    v186:CInt64 = IntBinaryOp<Add> v184 v185
+    v187:CPtr = LoadFieldAddress v91 v186
+    v188:CInt64[0] = LoadConst<CInt64[0]>
+    v189:CUInt8 = LoadArrayItem v187 v188 v91
+    v190:CUInt8[0] = LoadConst<CUInt8[0]>
+    v191:CBool = PrimitiveCompare<NotEqual> v189 v190
+    Guard v191 {
+      Descr 'LOAD_ATTR_INSTANCE_VALUE'
+      GuiltyReg v91
+      LiveValues<2> o:v91 bool:v191
+      FrameState {
+        CurInstrOffset 146
+        Locals<1> v91
+      }
+    }
+    v192:OptObject = LoadField<right@32, OptObject, borrowed> v91
+    v193:Object = CheckField<"right"> v192 {
+      GuiltyReg v91
+      LiveValues<2> o:v91 b:v192
+      FrameState {
+        CurInstrOffset 148
+        Locals<1> v91
+      }
+    }
+    CondBranchCheckType<27, 28, ObjectUser[coroutine:Exact]> v193
+  }
+
+  bb 28 (preds 6) {
+    CondBranchCheckType<27, 25, ObjectUser[coroutine:Exact]> v193
+  }
+
+  bb 27 (preds 6, 28) {
+    RaiseStatic<TypeError, "cannot 'yield from' a coroutine object in a non-coroutine generator", <<1> o:v91>> {
+      LiveValues<1> o:v91
+      FrameState {
+        CurInstrOffset 168
+        Locals<1> v91
+      }
+    }
+  }
+
+  bb 25 (preds 28) {
+    CondBranchCheckType<26, 29, Gen> v193
+  }
+
+  bb 26 (preds 25) {
+    Incref v193
+    Branch<24>
+  }
+
+  bb 29 (preds 25) {
+    Incref v193
+    UpdatePrevInstr<idx:84 line_no:28: no parent>
+    v196:Object = GetIter v193 {
+      LiveValues<2> o:v91 o:v193
+      FrameState {
+        CurInstrOffset 168
+        Locals<1> v91
+      }
+    }
+    Decref v193
+    Branch<24>
+  }
+
+  bb 24 (preds 26, 29) {
+    v197:Object = Phi<26, 29> v193 v196
+    v199:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Branch<7>
+  }
+
+  bb 7 (preds 8, 24) {
+    v203:Object = Phi<8, 24> v209 v199
+    UpdatePrevInstr<idx:86 line_no:28: no parent>
+    v205:Object = Send v197 v203 {
+      LiveValues<3> o:v91 o:v197 b:v203
+      FrameState {
+        CurInstrOffset 172
+        Locals<1> v91
+        Stack<1> v197
+      }
+    }
+    v206:CInt64 = GetSecondOutput<CInt64> v205
+    CondBranch<9, 8> v206
+  }
+
+  bb 9 (preds 7) {
+    UpdatePrevInstr<idx:93 line_no:28: no parent>
+    Decref v91
+    Decref v197
+    Decref v205
+    v208:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Return v208
+  }
+
+  bb 8 (preds 7) {
+    UpdatePrevInstr<idx:89 line_no:28: no parent>
+    v209:Object = YieldFrom v205 v197 {
+      LiveValues<3> o:v91 o:v197 b:v205
+      FrameState {
+        CurInstrOffset 178
+        Locals<1> v91
+        Stack<1> v197
+      }
+    }
+    Branch<7>
+  }
+
+  bb 10 (preds 5) {
+    UpdatePrevInstr<idx:95 line_no:27: no parent>
+    Decref v91
+    v211:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Return v211
+  }
+}
+
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:932 -- === YieldFrom Profiling Stats ===
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:933 -- Total simplifyYieldFrom calls: 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:934 --   Environment disabled:     
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:935 --   Not TreeIter code:        
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:936 --   Missing operands:         
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:937 --   Not LoadAttr:             
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:938 --   Not self receiver:        
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:939 --   Invalid attribute:        
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:940 --   ✅ Optimization detected: 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:945 -- Detection rate: 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:947 -- ================================

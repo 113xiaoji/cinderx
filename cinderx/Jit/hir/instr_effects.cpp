@@ -331,6 +331,53 @@ MemoryEffects memoryEffects(const Instr& inst) {
 #else
       [[fallthrough]];
 #endif
+    case Opcode::kOptimizedYieldFrom:
+      // 与 YieldFrom 相同的内存效果
+#if PY_VERSION_HEX >= 0x030C0000
+      return {true, AFuncArgs, {3, 1}, AAny};
+#else
+      return commonEffects(inst, AAny);
+#endif
+    case Opcode::kInlineIter:
+      // 内联迭代器读写栈上状态机
+      return {true, AFuncArgs, {3, 1}, AAny};
+    // Phase 2: 状态机指令
+    case Opcode::kStateSwitch:
+      // 状态分发只读状态变量
+      return commonEffects(inst, AEmpty);
+    case Opcode::kSaveState:
+      // 保存状态到 GenDataFooter
+      return commonEffects(inst, AOther);
+    case Opcode::kLoadState:
+      // 从 GenDataFooter 加载状态
+      return commonEffects(inst, AEmpty);
+    case Opcode::kYieldFromInline:
+      // 内联 yield from 读写生成器状态
+      return {true, AFuncArgs, {3, 1}, AAny};
+    case Opcode::kStateStackPush:
+      // 修改 GenDataFooter 栈，读取 node 和 phase 操作数
+      return {false, AEmpty, {inst.NumOperands()}, AOther};
+    case Opcode::kStateStackPop:
+      // 修改 GenDataFooter 栈，输出 node
+      return {false, AEmpty, {0, 0}, AOther};
+    case Opcode::kLoadPoppedPhase:
+      // 只读 GenDataFooter.popped_phase
+      return commonEffects(inst, AEmpty);
+    case Opcode::kLoadStackTop:
+      // 只读 GenDataFooter.stack_top
+      return commonEffects(inst, AEmpty);
+    case Opcode::kSaveCurrentNode:
+      // 修改 GenDataFooter.current_node
+      return commonEffects(inst, AOther);
+    case Opcode::kLoadCurrentNode:
+      // 只读 GenDataFooter.current_node
+      return commonEffects(inst, AEmpty);
+    case Opcode::kSavePhase:
+      // 修改 GenDataFooter.current_phase
+      return commonEffects(inst, AOther);
+    case Opcode::kLoadPhase:
+      // 只读 GenDataFooter.current_phase
+      return commonEffects(inst, AEmpty);
     case Opcode::kYieldFromHandleStopAsyncIteration: {
       // In 3.10 YieldFrom's output is either the yielded value from the subiter
       // or the final result from a StopIteration, and is owned in either case.
@@ -477,6 +524,10 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kWaitHandleLoadWaiter:
     case Opcode::kWaitHandleRelease:
     case Opcode::kXIncref:
+    // Phase 3.2: 纯内存读取，不触发任意 Python 代码
+    case Opcode::kLoadPhase:
+    case Opcode::kLoadPoppedPhase:
+    case Opcode::kLoadStackTop:
       return false;
 
     /*
@@ -553,6 +604,14 @@ bool hasArbitraryExecution(const Instr& inst) {
     case Opcode::kXDecref:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:
+    case Opcode::kOptimizedYieldFrom:
+    case Opcode::kInlineIter:
+    case Opcode::kYieldFromInline:  // Phase 2: 内联 yield from
+    case Opcode::kStateStackPush:
+    case Opcode::kStateStackPop:
+    case Opcode::kSaveCurrentNode:
+    case Opcode::kLoadCurrentNode:
+    case Opcode::kSavePhase:
     case Opcode::kYieldFromHandleStopAsyncIteration:
     case Opcode::kYieldValue:
       return true;

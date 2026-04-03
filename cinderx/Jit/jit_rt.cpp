@@ -786,6 +786,13 @@ JITRT_AllocateAndLinkGenAndInterpreterFrame(
             original_frame_pointer) +
         1);
 
+  // Phase 3.2: 初始化状态机字段（free-list 回收的内存不保证清零）
+  footer->current_node = 0;
+  footer->current_phase = 0;
+  footer->stack_top = 0;
+  footer->popped_phase = 0;
+  memset(footer->state_stack, 0, sizeof(footer->state_stack));
+
   PyObject_GC_Track(gen);
 
   return {tstate, footer};
@@ -1934,6 +1941,12 @@ static inline PyObject* make_gen_object(
   footer->state = Ci_JITGenState_JustStarted;
   footer->gen = gen;
   footer->code_rt = code_rt;
+  // Phase 3.2: 初始化状态机字段（free-list 回收的内存不保证清零）
+  footer->current_node = 0;
+  footer->current_phase = 0;
+  footer->stack_top = 0;
+  footer->popped_phase = 0;
+  memset(footer->state_stack, 0, sizeof(footer->state_stack));
 
   gen->gi_jit_data = reinterpret_cast<Ci_JITGenData*>(footer);
 
@@ -2057,6 +2070,75 @@ JITRT_GenSendRes JITRT_GenSendHandleStopAsyncIteration(
     res.retval = &JITRT_IterDoneSentinel;
   }
   return res;
+}
+
+PyObject* JITRT_GetGenResumeEntry(
+    PyObject* gen,
+    PyObject* send_value,
+    uint64_t finish_yield_from) {
+  if (gen == nullptr) {
+    return nullptr;
+  }
+  // 检查生成器是否为 JIT 编译的生成器
+  jit::JitGenObject* jit_gen = jit::JitGenObject::cast(gen);
+  if (jit_gen == nullptr) {
+    // 生成器未 JIT 编译，回退到标准路径
+    return nullptr;
+  }
+
+  jit::GenDataFooter* footer = jit_gen->genDataFooter();
+  if (footer == nullptr) {
+    return nullptr;
+  }
+  GenResumeFunc resume_entry = footer->resumeEntry;
+  if (resume_entry == nullptr) {
+    return nullptr;
+  }
+
+  // 直接调用 resumeEntry，跳过 PyIter_Send 调用链
+  // 使用 PyThreadState_Get() 获取当前线程状态
+  PyThreadState* tstate = PyThreadState_Get();
+  PyObject* result =
+      resume_entry(gen, send_value, finish_yield_from, tstate);
+
+  if (result == nullptr && !_PyErr_Occurred(tstate)) {
+    // 子生成器正常结束（StopIteration），无异常
+    // caller 的 CheckExc 会处理此情况
+  }
+
+  return result;
+}
+
+PyObject* JITRT_YieldFromInlineHelper(
+    PyObject* iter,
+    int32_t next_state) {
+  if (iter == nullptr) {
+    return nullptr;
+  }
+
+  PyThreadState* tstate = PyThreadState_Get();
+
+  // 调用 next(iter)
+  PyObject* value = PyIter_Next(iter);
+
+  if (value == nullptr) {
+    // 迭代完成或异常
+    if (_PyErr_Occurred(tstate)) {
+      // 有异常，传播
+      return nullptr;
+    } else {
+      // 正常完成，设置 StopIteration
+      PyErr_SetNone(PyExc_StopIteration);
+      return nullptr;
+    }
+  }
+
+  // TODO: 保存下一个状态到 GenDataFooter->currentState
+  // 这需要从当前线程状态获取生成器对象，然后获取 GenDataFooter
+  // 暂时跳过状态保存，因为状态机框架还未完全实现
+
+  // 返回 yield 值
+  return value;
 }
 
 PyObject* JITRT_FormatValue(
@@ -2647,4 +2729,100 @@ PyObject* JITRT_InvokeIterNext(PyObject* iterator) {
   }
   Py_INCREF(&JITRT_IterDoneSentinel);
   return &JITRT_IterDoneSentinel;
+}
+
+// Phase 3.2: State machine stack operations
+// These functions get GenDataFooter from the current generator's thread state.
+
+static jit::GenDataFooter* getCurrentGenDataFooter() {
+  PyThreadState* tstate = PyThreadState_Get();
+  _PyInterpreterFrame* frame = currentFrame(tstate);
+  BorrowedRef<PyGenObject> base_gen = _PyGen_GetGeneratorFromFrame(frame);
+  jit::JitGenObject* jit_gen = jit::JitGenObject::cast(base_gen.get());
+  JIT_DCHECK(jit_gen != nullptr, "Expected JIT generator");
+  return jit_gen->genDataFooter();
+}
+
+void JITRT_StateStackPush(PyObject* node, int32_t phase) {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  int32_t top = footer->stack_top;
+  JIT_DCHECK(top >= 0 && top < 16, "stack_top out of range: {}", top);
+  footer->state_stack[top].node = reinterpret_cast<int64_t>(node);
+  footer->state_stack[top].phase = phase;
+  // Incref: 栈持有引用，RefcountInsertion 会对传入的寄存器 XDecref
+  if (node != nullptr) {
+    Py_INCREF(node);
+  }
+  footer->stack_top = top + 1;
+}
+
+PyObject* JITRT_StateStackPop() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  footer->stack_top--;
+  int32_t top = footer->stack_top;
+  JIT_DCHECK(top >= 0, "stack_top underflow: {}", top);
+  PyObject* node = reinterpret_cast<PyObject*>(footer->state_stack[top].node);
+  footer->popped_phase = footer->state_stack[top].phase;
+  footer->state_stack[top].node = 0;
+  footer->state_stack[top].phase = 0;
+  // 转移栈引用给调用者：不 decref 栈引用，让调用者（寄存器）持有它
+  // RefcountInsertion 会对返回的寄存器 XDecref，这会释放这个引用
+  return node;
+}
+
+int32_t JITRT_LoadPoppedPhase() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  return footer->popped_phase;
+}
+
+int32_t JITRT_LoadStackTop() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  return footer->stack_top;
+}
+
+void JITRT_SaveCurrentNode(PyObject* node) {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return;
+  }
+  // Decref 旧值（GenDataFooter 持有的引用）
+  PyObject* old_node = reinterpret_cast<PyObject*>(footer->current_node);
+  if (old_node != nullptr) {
+    Py_DECREF(old_node);
+  }
+  // Incref 新值（GenDataFooter 持有引用）
+  if (node != nullptr) {
+    Py_INCREF(node);
+  }
+  footer->current_node = reinterpret_cast<int64_t>(node);
+}
+
+PyObject* JITRT_LoadCurrentNode() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return nullptr;
+  }
+  PyObject* result = reinterpret_cast<PyObject*>(footer->current_node);
+  // Incref: RefcountInsertion 会对返回的寄存器 XDecref
+  // GenDataFooter 继续持有自己的引用（SaveCurrentNode 时 incref 的）
+  if (result != nullptr) {
+    Py_INCREF(result);
+  }
+  return result;
+}
+
+void JITRT_SavePhase(int32_t phase) {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return;
+  }
+  footer->current_phase = phase;
+}
+
+int32_t JITRT_LoadPhase() {
+  jit::GenDataFooter* footer = getCurrentGenDataFooter();
+  if (footer == nullptr) {
+    return -1;
+  }
+  return footer->current_phase;
 }

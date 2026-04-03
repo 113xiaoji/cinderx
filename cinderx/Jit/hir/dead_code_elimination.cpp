@@ -122,7 +122,7 @@ void DeadCodeElimination::Run(Function& func) {
     worklist.pop();
     if (live_set.insert(live_op).second) {
       live_op->visitUses([&](Register*& reg) {
-        if (!live_set.contains(reg->instr())) {
+        if (reg != nullptr && reg->instr() != nullptr && !live_set.contains(reg->instr())) {
           worklist.push(reg->instr());
         }
         return true;

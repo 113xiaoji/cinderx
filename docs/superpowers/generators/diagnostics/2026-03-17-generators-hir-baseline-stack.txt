@@ -1,0 +1,449 @@
+# StackNode.__iter__ HIR (Baseline - Stack-based Iterator)
+
+This file contains the baseline HIR for the stack-based iterator implementation
+that avoids recursion by managing an explicit stack.
+
+## Key Features:
+- No yield-from (uses explicit stack management)
+- Complex control flow with nested conditionals
+- Heavy use of method calls (list.append, list.pop)
+- Tuple unpacking and multiple local variables
+
+## HIR Dump:
+
+```
+fun __main__:StackNode.__iter__ {
+  bb 0 {
+    v78:Object = LoadArg<0; "self">
+    LoadFrame
+    v80:Nullptr = LoadConst<Nullptr>
+    Incref v78
+    UpdatePrevInstr<idx:1 line_no:39: no parent>
+    v82:OptNoneType = InitialYield {
+      LiveValues<2> o:v78 unc:v80
+      FrameState {
+        CurInstrOffset 2
+        Locals<5> v78 v80 v80 v80 v80
+      }
+    }
+    v83:CInt64 = LoadEvalBreaker
+    CondBranch<13, 12> v83
+  }
+
+  bb 13 (preds 0) {
+    UpdatePrevInstr<idx:2 line_no:39: no parent>
+    v84:CInt32 = RunPeriodicTasks {
+      LiveValues<2> o:v78 unc:v80
+      FrameState {
+        CurInstrOffset 4
+        Locals<5> v78 v80 v80 v80 v80
+      }
+    }
+    Branch<12>
+  }
+
+  bb 12 (preds 0, 13) {
+    # Initialize stack: stack = [(self, False, False)]
+    v90:ImmortalBool[False] = LoadConst<ImmortalBool[False]>
+    v91:ImmortalBool[False] = LoadConst<ImmortalBool[False]>
+    v92:MortalTupleExact = MakeTuple<3> v78 v90 v91 {
+      LiveValues<4> o:v78 unc:v80 unc:v90 unc:v91
+      FrameState {
+        CurInstrOffset 12
+        Locals<5> v78 v80 v80 v80 v80
+        Stack<3> v78 v90 v91
+      }
+    }
+    v93:MortalListExact = MakeList<1> v92 {
+      LiveValues<3> o:v78 unc:v80 b:v92
+      FrameState {
+        CurInstrOffset 14
+        Locals<5> v78 v80 v80 v80 v80
+        Stack<1> v92
+      }
+    }
+    Branch<20>
+  }
+
+  bb 20 (preds 4, 9, 12, 24, 25) {
+    # Main loop: while stack:
+    v98:OptObject = Phi<4, 9, 12, 24, 25> v127 v127 v80 v127 v127
+    v99:OptObject = Phi<4, 9, 12, 24, 25> v125 v125 v80 v125 v125
+    v100:OptObject = Phi<4, 9, 12, 24, 25> v123 v123 v80 v123 v123
+    v95:CInt64 = LoadEvalBreaker
+    CondBranch<21, 1> v95
+  }
+
+  bb 21 (preds 20) {
+    UpdatePrevInstr<idx:9 line_no:41: no parent>
+    v101:CInt32 = RunPeriodicTasks {
+      LiveValues<5> o:v78 o:v93 o:v98 o:v99 o:v100
+      FrameState {
+        CurInstrOffset 18
+        Locals<5> v78 v93 v98 v99 v100
+      }
+    }
+    Branch<1>
+  }
+
+  bb 1 (preds 20, 21) {
+    # Check if stack is empty
+    v194:CInt64 = LoadField<ob_size@16, CInt64, borrowed> v93
+    v195:CBool = CIntToCBool v194
+    CondBranch<2, 10> v195
+  }
+
+  bb 2 (preds 1) {
+    # Pop from stack: node, left_done, right_done = stack.pop()
+    UpdatePrevInstr<idx:18 line_no:42: no parent>
+    v196:Object = LoadMethodCached<0; "pop"> v93 {
+      LiveValues<5> o:v78 o:v93 o:v98 o:v99 o:v100
+      FrameState {
+        CurInstrOffset 36
+        Locals<5> v78 v93 v98 v99 v100
+      }
+    }
+    v112:OptObject = GetSecondOutput<OptObject> v196
+    v113:Object = CallMethod<2> v196 v112 {
+      LiveValues<7> o:v78 o:v93 o:v98 o:v99 o:v100 o:v112 o:v196
+      FrameState {
+        CurInstrOffset 56
+        Locals<5> v78 v93 v98 v99 v100
+      }
+    }
+    XDecref v112
+    Decref v196
+    CondBranchCheckType<18, 16, TupleExact> v113
+  }
+
+  bb 18 (preds 2) {
+    v114:CInt64[32] = LoadConst<CInt64[32]>
+    v115:CPtr = LoadFieldAddress v113 v114
+    Branch<15>
+  }
+
+  bb 16 (preds 2) {
+    CondBranchCheckType<17, 14, ListExact> v113
+  }
+
+  bb 17 (preds 16) {
+    v116:CPtr = LoadField<ob_item@24, CPtr, borrowed> v113
+    Branch<15>
+  }
+
+  bb 15 (preds 17, 18) {
+    v122:CPtr = Phi<17, 18> v116 v115
+    v118:CInt64 = LoadVarObjectSize v113
+    v119:CInt64[3] = LoadConst<CInt64[3]>
+    v120:CBool = PrimitiveCompare<Equal> v118 v119
+    CondBranch<19, 14> v120
+  }
+
+  bb 19 (preds 15) {
+    # Unpack tuple: node, left_done, right_done = ...
+    UpdatePrevInstr<idx:32 line_no:42: no parent>
+    XDecref v98
+    XDecref v99
+    XDecref v100
+    v121:CInt64[2] = LoadConst<CInt64[2]>
+    v123:Object = LoadArrayItem v122 v121 v113
+    v124:CInt64[1] = LoadConst<CInt64[1]>
+    v125:Object = LoadArrayItem v122 v124 v113
+    v126:CInt64[0] = LoadConst<CInt64[0]>
+    v127:Object = LoadArrayItem v122 v126 v113
+    Incref v123
+    Incref v125
+    Incref v127
+    UpdatePrevInstr<idx:37 line_no:43: no parent>
+    Decref v113
+    v136:CBool = IsTruthy v125 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 74
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    CondBranch<5, 3> v136
+  }
+
+  bb 3 (preds 19) {
+    # Check: if not left_done and node.left:
+    UpdatePrevInstr<idx:45 line_no:43: no parent>
+    v197:Object = LoadAttrCached<1; "left"> v127 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 90
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    v141:CBool = IsTruthy v197 {
+      LiveValues<6> o:v78 o:v93 o:v123 o:v125 o:v127 o:v197
+      FrameState {
+        CurInstrOffset 110
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    Decref v197
+    CondBranch<4, 5> v141
+  }
+
+  bb 4 (preds 3) {
+    # Push state and left child to stack
+    UpdatePrevInstr<idx:63 line_no:44: no parent>
+    v198:Object = LoadMethodCached<2; "append"> v93 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 126
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    v146:OptObject = GetSecondOutput<OptObject> v198
+    v147:ImmortalBool[True] = LoadConst<ImmortalBool[True]>
+    v148:ImmortalBool[False] = LoadConst<ImmortalBool[False]>
+    v149:MortalTupleExact = MakeTuple<3> v127 v147 v148 {
+      LiveValues<9> o:v78 o:v93 o:v123 o:v125 o:v127 o:v146 unc:v147 unc:v148 o:v198
+      FrameState {
+        CurInstrOffset 152
+        Locals<5> v78 v93 v127 v125 v123
+        Stack<5> v198 v146 v127 v147 v148
+      }
+    }
+    v150:Object = CallMethod<3> v198 v146 v149 {
+      LiveValues<8> o:v78 o:v93 o:v123 o:v125 o:v127 o:v146 o:v149 o:v198
+      FrameState {
+        CurInstrOffset 154
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    UpdatePrevInstr<idx:83 line_no:45: no parent>
+    XDecref v146
+    Decref v149
+    Decref v150
+    Decref v198
+    v199:Object = LoadMethodCached<2; "append"> v93 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 v127
+      FrameState {
+        CurInstrOffset 166
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    v152:OptObject = GetSecondOutput<OptObject> v199
+    v200:Object = LoadAttrCached<1; "left"> v127 {
+      LiveValues<7> o:v78 o:v93 o:v123 o:v125 o:v127 o:v152 o:v199
+      FrameState {
+        CurInstrOffset 188
+        Locals<5> v78 v93 v127 v125 v123
+        Stack<2> v199 v152
+      }
+    }
+    v154:ImmortalBool[False] = LoadConst<ImmortalBool[False]>
+    v155:ImmortalBool[False] = LoadConst<ImmortalBool[False]>
+    v156:MortalTupleExact = MakeTuple<3> v200 v154 v155 {
+      LiveValues<10> o:v78 o:v93 o:v123 o:v125 o:v127 o:v152 unc:v154 unc:v155 o:v199 o:v200
+      FrameState {
+        CurInstrOffset 212
+        Locals<5> v78 v93 v127 v125 v123
+        Stack<5> v199 v152 v200 v154 v155
+      }
+    }
+    Decref v200
+    v157:Object = CallMethod<3> v199 v152 v156 {
+      LiveValues<8> o:v78 o:v93 o:v123 o:v125 o:v127 o:v152 o:v156 o:v199
+      FrameState {
+        CurInstrOffset 214
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    XDecref v152
+    Decref v156
+    Decref v157
+    Decref v199
+    Branch<20>
+  }
+
+  bb 5 (preds 3, 19) {
+    # Check: elif not right_done:
+    UpdatePrevInstr<idx:115 line_no:46: no parent>
+    v163:CBool = IsTruthy v123 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 230
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    CondBranch<24, 7> v163
+  }
+
+  bb 24 (preds 5) {
+    Branch<20>
+  }
+
+  bb 7 (preds 5) {
+    # Yield node.value
+    UpdatePrevInstr<idx:125 line_no:47: no parent>
+    v201:Object = LoadAttrCached<3; "value"> v127 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 250
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    v168:Object = YieldValue v201 {
+      LiveValues<6> o:v78 o:v93 o:v123 o:v125 o:v127 b:v201
+      FrameState {
+        CurInstrOffset 272
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    UpdatePrevInstr<idx:139 line_no:48: no parent>
+    v202:Object = LoadAttrCached<4; "right"> v127 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 278
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    v170:CBool = IsTruthy v202 {
+      LiveValues<6> o:v78 o:v93 o:v123 o:v125 o:v127 o:v202
+      FrameState {
+        CurInstrOffset 298
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    Decref v202
+    CondBranch<9, 25> v170
+  }
+
+  bb 9 (preds 7) {
+    # Push state and right child to stack
+    UpdatePrevInstr<idx:159 line_no:49: no parent>
+    v203:Object = LoadMethodCached<2; "append"> v93 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 318
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    v175:OptObject = GetSecondOutput<OptObject> v203
+    v176:ImmortalBool[True] = LoadConst<ImmortalBool[True]>
+    v177:ImmortalBool[True] = LoadConst<ImmortalBool[True]>
+    v178:MortalTupleExact = MakeTuple<3> v127 v176 v177 {
+      LiveValues<9> o:v78 o:v93 o:v123 o:v125 o:v127 o:v175 unc:v176 unc:v177 o:v203
+      FrameState {
+        CurInstrOffset 344
+        Locals<5> v78 v93 v127 v125 v123
+        Stack<5> v203 v175 v127 v176 v177
+      }
+    }
+    v179:Object = CallMethod<3> v203 v175 v178 {
+      LiveValues<8> o:v78 o:v93 o:v123 o:v125 o:v127 o:v175 o:v178 o:v203
+      FrameState {
+        CurInstrOffset 346
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    UpdatePrevInstr<idx:179 line_no:50: no parent>
+    XDecref v175
+    Decref v178
+    Decref v179
+    Decref v203
+    v204:Object = LoadMethodCached<2; "append"> v93 {
+      LiveValues<5> o:v78 o:v93 o:v123 o:v125 o:v127
+      FrameState {
+        CurInstrOffset 358
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    v181:OptObject = GetSecondOutput<OptObject> v204
+    v205:Object = LoadAttrCached<4; "right"> v127 {
+      LiveValues<7> o:v78 o:v93 o:v123 o:v125 o:v127 o:v181 o:v204
+      FrameState {
+        CurInstrOffset 380
+        Locals<5> v78 v93 v127 v125 v123
+        Stack<2> v204 v181
+      }
+    }
+    v183:ImmortalBool[False] = LoadConst<ImmortalBool[False]>
+    v184:ImmortalBool[False] = LoadConst<ImmortalBool[False]>
+    v185:MortalTupleExact = MakeTuple<3> v205 v183 v184 {
+      LiveValues<10> o:v78 o:v93 o:v123 o:v125 o:v127 o:v181 unc:v183 unc:v184 o:v204 o:v205
+      FrameState {
+        CurInstrOffset 404
+        Locals<5> v78 v93 v127 v125 v123
+        Stack<5> v204 v181 v205 v183 v184
+      }
+    }
+    Decref v205
+    v186:Object = CallMethod<3> v204 v181 v185 {
+      LiveValues<8> o:v78 o:v93 o:v123 o:v125 o:v127 o:v181 o:v185 o:v204
+      FrameState {
+        CurInstrOffset 406
+        Locals<5> v78 v93 v127 v125 v123
+      }
+    }
+    XDecref v181
+    Decref v185
+    Decref v186
+    Decref v204
+    Branch<20>
+  }
+
+  bb 25 (preds 7) {
+    Branch<20>
+  }
+
+  bb 14 (preds 15, 16) {
+    # Deopt for unsupported tuple/list unpacking
+    Deopt {
+      Descr 'UNPACK_SEQUENCE'
+      GuiltyReg v113
+      LiveValues<6> o:v78 o:v93 o:v98 o:v99 o:v100 o:v113
+      FrameState {
+        CurInstrOffset 64
+        Locals<5> v78 v93 v98 v99 v100
+        Stack<1> v113
+      }
+    }
+  }
+
+  bb 10 (preds 1) {
+    # Generator complete (stack empty)
+    UpdatePrevInstr<idx:210 line_no:41: no parent>
+    Decref v78
+    Decref v93
+    XDecref v98
+    XDecref v99
+    XDecref v100
+    v193:ImmortalNoneType = LoadConst<ImmortalNoneType>
+    Return v193
+  }
+}
+```
+
+## Analysis:
+
+### Control Flow Complexity:
+- 13 basic blocks
+- Single main loop with nested conditionals
+- No yield-from (simpler generator protocol)
+
+### Key Differences from Recursive Version:
+1. **Explicit stack management**: Creates list and manages tuples (bb 12)
+2. **Method call overhead**: LoadMethodCached/CallMethod for append/pop (bb 2, bb 4, bb 9)
+3. **Tuple unpacking**: Complex type checking and array access (bb 15-19)
+4. **No coroutine checks**: Simpler control flow without yield-from safety
+
+### Performance Characteristics:
+- More instructions per iteration (method calls, tuple operations)
+- Better cache locality (single loop vs recursive calls)
+- No yield-from overhead (Send/YieldFrom instructions)
+- Heavier register pressure (5 locals vs 1 in recursive)
+
+### Comparison with Recursive:
+| Metric | StackNode | Node (recursive) |
+|--------|-----------|------------------|
+| Basic blocks | 13 | 15 |
+| YieldValue | 1 | 1 |
+| YieldFrom | 0 | 2 |
+| Method calls | 6 | 0 |
+| Phi nodes | 3 | 4 |

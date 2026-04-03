@@ -550,6 +550,28 @@ JITRT_GenSendRes JITRT_GenSendHandleStopAsyncIteration(
 #endif
 );
 
+// JITRT_GetGenResumeEntry - 获取子生成器的 JIT resume 入口点并直接调用。
+// 用于 OptimizedYieldFrom 尾调用优化，跳过 PyIter_Send 调用链。
+// 返回值: 子生成器的 yield 值，或 nullptr（子生成器结束或未 JIT 编译）。
+// 注意: 如果返回值是 nullptr 且发生了异常，返回 nullptr 让调用者处理异常；
+// 如果返回值是 nullptr 但无异常，表示子生成器正常结束（StopIteration）。
+extern PyObject* JITRT_GetGenResumeEntry(
+    PyObject* gen,
+    PyObject* send_value,
+    uint64_t finish_yield_from);
+
+// JITRT_YieldFromInlineHelper - 内联 yield from 辅助函数（树遍历状态机）
+// 用于 YieldFromInline 指令，直接调用迭代器的 next() 并更新状态。
+// 参数:
+//   - iter: 子迭代器
+//   - next_state: 状态机的下一个状态值
+// 返回值:
+//   - 非 nullptr: yield 的值
+//   - nullptr: 迭代完成或异常
+extern PyObject* JITRT_YieldFromInlineHelper(
+    PyObject* iter,
+    int32_t next_state);
+
 /* Unpack a sequence as in unpack_iterable(), and save the
  * results in a tuple.
  */
@@ -706,3 +728,19 @@ extern PyObject JITRT_IterDoneSentinel;
  * Returns the next value, or JITRT_IterDoneSentinel if the iterator is done.
  */
 PyObject* JITRT_InvokeIterNext(PyObject* iterator);
+
+// Phase 3.2: State machine stack operations
+// These functions get GenDataFooter from the current generator's thread state.
+// Used to replace buggy inline assembly with portable C runtime calls.
+void JITRT_StateStackPush(PyObject* node, int32_t phase);
+PyObject* JITRT_StateStackPop();
+int32_t JITRT_LoadPoppedPhase();
+int32_t JITRT_LoadStackTop();
+
+// Phase 3.2: State machine current node/phase operations
+// These store/load the current tree node and phase directly in GenDataFooter,
+// eliminating the need for SSA Phi nodes and their type inference issues.
+void JITRT_SaveCurrentNode(PyObject* node);
+PyObject* JITRT_LoadCurrentNode();
+void JITRT_SavePhase(int32_t phase);
+int32_t JITRT_LoadPhase();

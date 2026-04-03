@@ -1,0 +1,32 @@
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:925 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:928 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:925 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:928 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:925 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:928 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:925 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:928 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:925 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:928 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:925 -- simplifyYieldFrom CALLED for 
+JIT: /Users/luchen/Agents-Repo/Claude-Code/cinderx/cinderx/Jit/hir/simplify.cpp:928 -- simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled
+============================================================
+递归生成器性能诊断
+============================================================
+
+[1] 递归生成器 (Tree.__iter__)
+    时间: 8.919ms ± 0.137ms
+
+[2] 栈式迭代器 (StackNode.__iter__)
+    时间: 7.438ms ± 0.083ms
+    加速比: 1.20x
+
+[3] CinderX JIT（递归生成器）
+    时间: 18.792ms ± 0.270ms
+    vs 基线: 0.47x
+    vs 栈式: 0.40x
+
+    已编译: True
+    代码大小: 3200 bytes
+
+============================================================

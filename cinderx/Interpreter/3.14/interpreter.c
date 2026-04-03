@@ -382,6 +382,13 @@ primitive_compare_op(PyObject *l, PyObject *r, int oparg)
 PyObject* _Py_HOT_FUNCTION
 Ci_EvalFrame(PyThreadState *tstate, _PyInterpreterFrame *frame, int throwflag);
 
+int load_method_static_cached_oparg(Py_ssize_t slot, bool is_classmethod);
+bool load_method_static_cached_oparg_is_classmethod(int oparg);
+Py_ssize_t load_method_static_cached_oparg_slot(int oparg);
+
+// Forward declaration for functions used by generated_cases.c.h
+int load_method_static_cached_oparg(Py_ssize_t slot, bool is_classmethod);
+
 #include "cinderx/Interpreter/3.14/ceval.h"
 
 #endif
@@ -530,6 +537,8 @@ Ci_EvalFrame(PyThreadState *tstate, _PyInterpreterFrame *frame, int throwflag)
 #   endif
 #else
     goto start_frame;
+// Forward declaration for functions used by generated_cases.c.h
+int load_method_static_cached_oparg(Py_ssize_t slot, bool is_classmethod);
 #include "cinderx/Interpreter/3.14/Includes/generated_cases.c.h"
 #endif
 

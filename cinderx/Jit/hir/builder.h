@@ -463,6 +463,7 @@ class HIRBuilder {
       TranslationContext& tc,
       const jit::BytecodeInstruction& bc_instr);
   void emitYieldFrom(TranslationContext& tc, Register* out);
+  bool canInlineYieldFrom(Register* iter_reg);
   void emitDispatchEagerCoroResult(
       CFG& cfg,
       TranslationContext& tc,
