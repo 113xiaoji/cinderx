@@ -49,19 +49,57 @@ worker = _has_token("--worker") or os.environ.get("PYPERFORMANCE_RUNID") not in 
     "",
 )
 
+
+def _iter_jitlist_entries(raw: str):
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if entry:
+            yield entry
+
+
+def _worker_jit_api():
+    try:
+        import cinderjit as jit_ext
+
+        return jit_ext
+    except Exception:
+        try:
+            import cinderx.jit as jit_ext
+
+            return jit_ext
+        except Exception:
+            return None
+
+
+def _append_worker_jitlists(jit_ext, raw_entries: str) -> None:
+    if not raw_entries:
+        return
+
+    script_main = argv0.endswith("run_benchmark.py")
+    seen = set()
+    for entry in _iter_jitlist_entries(raw_entries):
+        if entry not in seen:
+            jit_ext.append_jit_list(entry)
+            seen.add(entry)
+        if not script_main or ":" not in entry:
+            continue
+        module, qualname = entry.split(":", 1)
+        if module == "__main__":
+            continue
+        main_entry = f"__main__:{qualname}"
+        if main_entry not in seen:
+            jit_ext.append_jit_list(main_entry)
+            seen.add(main_entry)
+
+
 if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
     if os.environ.get("PYPERFORMANCE_RUNID"):
         # pyperf metadata collection can trip over os._Environ methods after
         # JIT-enabled startup. A plain dict avoids that worker-only bug.
         os.environ = dict(os.environ)
 
-    # Keep the pyperformance driver process on the safe side by allowing it to
-    # start with PYTHONJITDISABLE=1. Workers can still opt back into JIT by
-    # inheriting a dedicated worker-only autojit setting.
     worker_autojit = os.environ.get("CINDERX_WORKER_PYTHONJITAUTO")
-    if worker_autojit not in (None, ""):
-        os.environ["PYTHONJITAUTO"] = worker_autojit
-        os.environ.pop("PYTHONJITDISABLE", None)
+    raw_jitlist = os.environ.get("CINDERX_JITLIST_ENTRIES", "")
 
     try:
         if os.environ.get("PYPERFORMANCE_RUNID"):
@@ -71,17 +109,24 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
                 lambda executable=None, bits="", linkage="": ("64bit", "ELF")
             )
 
-        import cinderx.jit as jit
+        jit = _worker_jit_api()
+        if jit is None:
+            raise RuntimeError("unable to import cinderjit or cinderx.jit")
 
-        if os.environ.get("PYTHONJITDISABLE") in (None, "", "0"):
-            jit.enable()
-            if _is_truthy(os.environ.get("CINDERX_ENABLE_SPECIALIZED_OPCODES")):
-                jit.enable_specialized_opcodes()
-            entries = os.environ.get("CINDERX_JITLIST_ENTRIES", "")
-            if entries:
-                for entry in entries.split(","):
-                    entry = entry.strip()
-                    if entry:
-                        jit.append_jit_list(entry)
+        jit.enable()
+        if _is_truthy(os.environ.get("CINDERX_ENABLE_SPECIALIZED_OPCODES")):
+            jit.enable_specialized_opcodes()
+
+        if raw_jitlist:
+            # JIT-list entries are compiled on first call when auto-JIT is at
+            # the eager setting. Keep the scope narrow by using the JIT list as
+            # the filter rather than broad worker-wide auto-JIT.
+            jit.compile_after_n_calls(0)
+            _append_worker_jitlists(jit, raw_jitlist)
+        elif worker_autojit not in (None, ""):
+            try:
+                jit.compile_after_n_calls(int(worker_autojit))
+            except Exception:
+                pass
     except Exception:
         pass
