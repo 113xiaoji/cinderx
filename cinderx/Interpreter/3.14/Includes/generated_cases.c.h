@@ -9369,7 +9369,10 @@
                 }
                 if (osr_entered > 0) {
                     for (int _i = 0; _i < _PyFrame_GetCode(frame)->co_nlocalsplus; _i++) {
-                        frame->localsplus[_i] = PyStackRef_NULL;
+                        if (!PyStackRef_IsNull(frame->localsplus[_i])) {
+                            PyStackRef_CLOSE(frame->localsplus[_i]);
+                            frame->localsplus[_i] = PyStackRef_NULL;
+                        }
                     }
                     if (osr_finalize_func != NULL) {
                         _PyJIT_FinalizeHotLoopCompile(osr_finalize_func);

@@ -355,6 +355,10 @@ bool codeHasBackedge(BorrowedRef<PyCodeObject> code) {
     switch (bc_instr.opcode()) {
       case JUMP_BACKWARD:
       case JUMP_BACKWARD_NO_INTERRUPT:
+#if PY_VERSION_HEX >= 0x030E0000
+      case JUMP_BACKWARD_JIT:
+      case JUMP_BACKWARD_NO_JIT:
+#endif
         return true;
       default:
         break;
@@ -388,12 +392,20 @@ bool hasStableExactReceiverType(Register* reg) {
   return type.isExact() && type.runtimePyType() != nullptr;
 }
 
+bool isBuiltinListMethodDescr(PyObject* descr) {
+  if (descr == nullptr || Py_TYPE(descr) != &PyMethodDescr_Type) {
+    return false;
+  }
+  auto* method = reinterpret_cast<PyMethodDescrObject*>(descr);
+  return method->d_common.d_type == &PyList_Type;
+}
+
 bool canUseMethodWithValuesFastPath(
     Register* receiver,
-    PyObject* /*descr*/,
+    PyObject* descr,
     BorrowedRef<PyCodeObject> /*code*/,
     BorrowedRef<PyDictObject> /*globals*/) {
-  return hasStableExactReceiverType(receiver);
+  return hasStableExactReceiverType(receiver) || isBuiltinListMethodDescr(descr);
 }
 
 bool isBuiltinSetType(Register* reg) {

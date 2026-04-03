@@ -116,54 +116,9 @@ void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
   }
 }
 
-std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappingsFromDeopt(
-    CodeRuntime* code_rt,
-    BCOffset bc_offset) {
-  auto make_mappings = [](const DeoptMetadata& meta) {
-    const DeoptFrameMetadata& frame = meta.outermostFrame();
-    std::vector<OSREntryMetadata::LocalMapping> mappings;
-    for (size_t i = 0; i < frame.localsplus.size(); ++i) {
-      int live_idx = frame.localsplus[i];
-      if (live_idx < 0) {
-        continue;
-      }
-      mappings.push_back(OSREntryMetadata::LocalMapping{
-          static_cast<int>(i),
-          meta.live_values.at(live_idx).location,
-      });
-    }
-    return mappings;
-  };
-
-  const DeoptMetadata* nearest = nullptr;
-  int nearest_distance = std::numeric_limits<int>::max();
-  for (const DeoptMetadata& meta : code_rt->deoptMetadatas()) {
-    if (meta.frame_meta.size() == 0) {
-      continue;
-    }
-    const DeoptFrameMetadata& frame = meta.outermostFrame();
-    if (frame.cause_instr_idx.value() != bc_offset.value()) {
-      int distance = frame.cause_instr_idx.value() - bc_offset.value();
-      if (distance < 0) {
-        distance = -distance;
-      }
-      if (distance < nearest_distance) {
-        nearest_distance = distance;
-        nearest = &meta;
-      }
-      continue;
-    }
-    return make_mappings(meta);
-  }
-  if (nearest != nullptr) {
-    return make_mappings(*nearest);
-  }
-  return {};
-}
-
 std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
     const Environ::Phase0OSREntryBlock& osr_block,
-    CodeRuntime* code_rt) {
+    CodeRuntime* /* code_rt */) {
   std::vector<OSREntryMetadata::LocalMapping> mappings;
   mappings.reserve(osr_block.local_bindings.size());
 
@@ -201,7 +156,51 @@ std::vector<OSREntryMetadata::LocalMapping> derivePhase0LocalMappings(
   if (have_precise_bindings) {
     return mappings;
   }
-  return derivePhase0LocalMappingsFromDeopt(code_rt, osr_block.bc_offset);
+
+  for (const auto& instr_ptr : osr_block.entry_lir_block->instructions()) {
+    const auto* instr = instr_ptr.get();
+    if (instr == nullptr || instr->origin() == nullptr) {
+      continue;
+    }
+    const auto* deopt = instr->origin()->asDeoptBase();
+    if (deopt == nullptr) {
+      continue;
+    }
+
+    const auto& live_regs = deopt->live_regs();
+    size_t n_live = live_regs.size();
+    if (n_live == 0 || instr->getNumInputs() < n_live) {
+      continue;
+    }
+
+    size_t live_begin = instr->getNumInputs() - n_live;
+    std::vector<OSREntryMetadata::LocalMapping> entry_mappings;
+    entry_mappings.reserve(osr_block.local_bindings.size());
+    bool found_all = true;
+    for (const auto& [local_index, reg] : osr_block.local_bindings) {
+      size_t live_index = 0;
+      while (live_index < n_live && live_regs[live_index].reg != reg) {
+        live_index++;
+      }
+      if (live_index == n_live) {
+        found_all = false;
+        break;
+      }
+      auto loc =
+          instr->getInput(live_begin + live_index)->getPhyRegOrStackSlot();
+      if (!(loc.is_register() || loc.is_memory())) {
+        found_all = false;
+        break;
+      }
+      entry_mappings.push_back(
+          OSREntryMetadata::LocalMapping{local_index, loc});
+    }
+    if (found_all) {
+      return entry_mappings;
+    }
+  }
+
+  return {};
 }
 
 uint64_t getAarch64HotCallTarget(const Instruction& instr) {

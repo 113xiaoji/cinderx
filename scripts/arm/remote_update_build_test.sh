@@ -103,6 +103,8 @@ import pathlib
 import sys
 import unittest
 
+import cinderx.jit as jit
+
 skip_tokens = [
     token.strip()
     for token in os.environ.get("ARM_RUNTIME_SKIP_TESTS", "").split(",")
@@ -110,6 +112,11 @@ skip_tokens = [
 ]
 if not skip_tokens:
     raise SystemExit("ARM_RUNTIME_SKIP_TESTS is empty")
+
+# Keep the helper runner itself interpreted. Parent-process auto-JIT can trip
+# unrelated stdlib annotation compilation while we're only trying to filter and
+# run child-process-based ARM runtime probes.
+jit.compile_after_n_calls(1000000)
 
 test_path = pathlib.Path("cinderx/PythonLib/test_cinderx/test_arm_runtime.py")
 spec = importlib.util.spec_from_file_location("test_arm_runtime", test_path)

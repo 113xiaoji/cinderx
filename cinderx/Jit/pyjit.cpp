@@ -126,6 +126,13 @@ struct Phase1OSRArgs {
   std::vector<PyObject*> raw;
 };
 
+void releaseOwnedOSRRefs(Phase1OSRArgs& args) {
+  for (auto& ref : args.owned) {
+    ref.release();
+  }
+  args.owned.clear();
+}
+
 std::optional<Phase1OSRArgs> buildPhase1OSRArgs(
     _PyInterpreterFrame* frame,
     const OSREntryMetadata& entry) {
@@ -2600,8 +2607,27 @@ PyObject* run_osr_test_entry(PyObject* /* self */, PyObject* args) {
   }
   Py_ssize_t nargs = PySequence_Fast_GET_SIZE(fast_locals);
   auto stack = PySequence_Fast_ITEMS(fast_locals.get());
+
+  Phase1OSRArgs osr_args;
+  osr_args.raw.assign(stack, stack + nargs);
+  osr_args.owned.reserve(entry.local_mappings.size());
+  for (const auto& mapping : entry.local_mappings) {
+    if (mapping.local_index < 0 || mapping.local_index >= nargs) {
+      PyErr_SetString(
+          PyExc_ValueError,
+          "locals sequence shorter than required OSR local mapping");
+      return nullptr;
+    }
+    osr_args.owned.emplace_back(Ref<>::create(stack[mapping.local_index]));
+  }
+
   auto osr_entry = reinterpret_cast<vectorcallfunc>(entry.test_entry_address);
-  return osr_entry(reinterpret_cast<PyObject*>(func.get()), stack, nargs, nullptr);
+  PyObject* result = osr_entry(
+      reinterpret_cast<PyObject*>(func.get()), osr_args.raw.data(), nargs, nullptr);
+  if (result != nullptr) {
+    releaseOwnedOSRRefs(osr_args);
+  }
+  return result;
 }
 
 PyObject* jit_frame_mode(PyObject* /* self */, PyObject*) {
@@ -3704,6 +3730,7 @@ extern "C" int _PyJIT_TryHotLoopOSR(
     return -1;
   }
 
+  releaseOwnedOSRRefs(*args);
   jitCtx()->recordOSR(compiled_func->runtime(), bc_offset);
   if (compile_state.needs_finalize) {
     *finalize_func_out = func.get();
