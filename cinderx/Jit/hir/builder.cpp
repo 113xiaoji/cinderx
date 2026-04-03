@@ -113,6 +113,9 @@ BorrowedRef<PyTypeObject> getStdlibArrayType() {
     return array_type;
   }
 
+  // 多线程编译时 worker 线程不持有 GIL，不能调用 PyImport_ImportModule
+  RETURN_MULTITHREADED_COMPILE(nullptr);
+
   ThreadedCompileSerialize guard;
   Ref<> mod = Ref<>::steal(PyImport_ImportModule("array"));
   if (mod == nullptr) {
