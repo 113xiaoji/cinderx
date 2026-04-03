@@ -39,8 +39,6 @@ try:
         get_compile_after_n_calls,
         get_compiled_functions,
         get_compiled_size,
-        get_deopt_entries,
-        get_osr_entries,
         get_compiled_spill_stack_size,
         get_compiled_stack_size,
         get_function_compilation_time,
@@ -60,8 +58,14 @@ try:
         page_in_profiler_dependencies,
         precompile_all,
         read_jit_list,
-        run_osr_test_entry,
         set_max_code_size,
+    )
+    import cinderjit as _cinderjit
+
+    get_osr_entries = getattr(_cinderjit, "get_osr_entries", lambda func: [])
+    get_deopt_entries = getattr(_cinderjit, "get_deopt_entries", lambda func: [])
+    run_osr_test_entry = getattr(
+        _cinderjit, "run_osr_test_entry", lambda func, locals_seq: None
     )
 
 except ImportError:
