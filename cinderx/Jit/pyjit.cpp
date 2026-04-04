@@ -25,6 +25,7 @@
 #include "cinderx/Common/type.h"
 #include "cinderx/Common/util.h"
 #include "cinderx/Interpreter/interpreter.h"
+#include "cinderx/Jit/bytecode.h"
 #include "cinderx/Jit/code_allocator.h"
 #include "cinderx/Jit/compiled_function.h"
 #include "cinderx/Jit/compiler.h"
@@ -110,15 +111,84 @@ uint64_t countCalls(PyCodeObject* code) {
 #endif
 }
 
-BCOffset hotLoopBCOffset(_PyInterpreterFrame* frame, _Py_CODEUNIT* loop_start) {
-  auto* code = _PyFrame_GetCode(frame);
+BCOffset bytecodeUnitOffset(BorrowedRef<PyCodeObject> code, _Py_CODEUNIT* target) {
 #if PY_VERSION_HEX >= 0x030D0000
   auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
 #else
   auto* bytecode = _PyCode_CODE(code);
 #endif
-  return BCOffset{
-      static_cast<int>((loop_start - bytecode) * sizeof(_Py_CODEUNIT))};
+  return BCOffset{static_cast<int>((target - bytecode) * sizeof(_Py_CODEUNIT))};
+}
+
+BCOffset hotLoopBCOffset(_PyInterpreterFrame* frame, _Py_CODEUNIT* loop_start) {
+  return bytecodeUnitOffset(_PyFrame_GetCode(frame), loop_start);
+}
+
+bool isBackwardJumpOpcode(int opcode) {
+  switch (opcode) {
+    case JUMP_BACKWARD:
+    case JUMP_BACKWARD_NO_INTERRUPT:
+#if PY_VERSION_HEX >= 0x030E0000
+    case JUMP_BACKWARD_JIT:
+    case JUMP_BACKWARD_NO_JIT:
+#endif
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isCallOpcode(int opcode) {
+  switch (opcode) {
+    case CALL:
+    case CALL_FUNCTION:
+    case CALL_FUNCTION_EX:
+    case CALL_FUNCTION_KW:
+    case CALL_INTRINSIC_1:
+    case CALL_INTRINSIC_2:
+    case CALL_KW:
+    case CALL_METHOD:
+      return true;
+    default:
+      return false;
+  }
+}
+
+UnorderedMap<PyCodeObject*, bool> hot_loop_osr_skip_cache;
+
+bool computeSkipHotLoopOSRForHighCallWrapper(BorrowedRef<PyCodeObject> code) {
+  constexpr int kMaxWrapperBackedges = 2;
+  constexpr int kMinTotalCalls = 8;
+
+  int total_backedges = 0;
+  int total_calls = 0;
+
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    int opcode = bc_instr.opcode();
+    if (isBackwardJumpOpcode(opcode)) {
+      total_backedges++;
+      if (total_backedges > kMaxWrapperBackedges) {
+        return false;
+      }
+    }
+    if (!isCallOpcode(opcode)) {
+      continue;
+    }
+    total_calls++;
+  }
+
+  return total_calls >= kMinTotalCalls;
+}
+
+bool shouldSkipHotLoopOSRForHighCallWrapper(BorrowedRef<PyCodeObject> code) {
+  auto it = hot_loop_osr_skip_cache.find(code);
+  if (it != hot_loop_osr_skip_cache.end()) {
+    return it->second;
+  }
+
+  bool skip = computeSkipHotLoopOSRForHighCallWrapper(code);
+  hot_loop_osr_skip_cache.emplace(code.get(), skip);
+  return skip;
 }
 
 struct Phase1OSRArgs {
@@ -3699,6 +3769,10 @@ extern "C" int _PyJIT_TryHotLoopOSR(
     return 0;
   }
 
+  if (shouldSkipHotLoopOSRForHighCallWrapper(code)) {
+    return 0;
+  }
+
   HotLoopCompiledState compile_state = ensureCompiledForHotLoopOSR(func);
   if (compile_state.status < 0) {
     return -1;
@@ -4209,6 +4283,7 @@ std::vector<BorrowedRef<PyFunctionObject>> preloadFuncAndDeps(
 }
 
 void codeDestroyed(BorrowedRef<PyCodeObject> code) {
+  hot_loop_osr_skip_cache.erase(code.get());
   if (isJitUsable()) {
     auto mod_state = cinderx::getModuleState();
     auto& jit_reg_units = mod_state->registered_compilation_units;
