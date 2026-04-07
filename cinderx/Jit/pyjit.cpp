@@ -25,7 +25,6 @@
 #include "cinderx/Common/type.h"
 #include "cinderx/Common/util.h"
 #include "cinderx/Interpreter/interpreter.h"
-#include "cinderx/Jit/bytecode.h"
 #include "cinderx/Jit/code_allocator.h"
 #include "cinderx/Jit/compiled_function.h"
 #include "cinderx/Jit/compiler.h"
@@ -154,41 +153,34 @@ bool isCallOpcode(int opcode) {
   }
 }
 
-UnorderedMap<PyCodeObject*, bool> hot_loop_osr_skip_cache;
+bool shouldSkipHotLoopOSRForHighCallWrapper(
+    BorrowedRef<PyCodeObject> code,
+    _Py_CODEUNIT* loop_start,
+    _Py_CODEUNIT* this_instr) {
+  constexpr int kMinLoopCalls = 8;
 
-bool computeSkipHotLoopOSRForHighCallWrapper(BorrowedRef<PyCodeObject> code) {
-  constexpr int kMaxWrapperBackedges = 2;
-  constexpr int kMinTotalCalls = 8;
+#if PY_VERSION_HEX >= 0x030D0000
+  auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
+#else
+  auto* bytecode = _PyCode_CODE(code);
+#endif
 
-  int total_backedges = 0;
-  int total_calls = 0;
+  int idx = static_cast<int>(loop_start - bytecode);
+  int end_idx = static_cast<int>(this_instr - bytecode);
+  int loop_calls = 0;
 
-  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
-    int opcode = bc_instr.opcode();
-    if (isBackwardJumpOpcode(opcode)) {
-      total_backedges++;
-      if (total_backedges > kMaxWrapperBackedges) {
-        return false;
+  while (idx < end_idx) {
+    int opcode = unspecialize(uninstrument(code, idx));
+    if (isCallOpcode(opcode)) {
+      loop_calls++;
+      if (loop_calls >= kMinLoopCalls) {
+        return true;
       }
     }
-    if (!isCallOpcode(opcode)) {
-      continue;
-    }
-    total_calls++;
+    idx += inlineCacheSize(code, idx) + 1;
   }
 
-  return total_calls >= kMinTotalCalls;
-}
-
-bool shouldSkipHotLoopOSRForHighCallWrapper(BorrowedRef<PyCodeObject> code) {
-  auto it = hot_loop_osr_skip_cache.find(code);
-  if (it != hot_loop_osr_skip_cache.end()) {
-    return it->second;
-  }
-
-  bool skip = computeSkipHotLoopOSRForHighCallWrapper(code);
-  hot_loop_osr_skip_cache.emplace(code.get(), skip);
-  return skip;
+  return false;
 }
 
 struct Phase1OSRArgs {
@@ -3769,7 +3761,7 @@ extern "C" int _PyJIT_TryHotLoopOSR(
     return 0;
   }
 
-  if (shouldSkipHotLoopOSRForHighCallWrapper(code)) {
+  if (shouldSkipHotLoopOSRForHighCallWrapper(code, loop_start, this_instr)) {
     return 0;
   }
 
@@ -4283,7 +4275,6 @@ std::vector<BorrowedRef<PyFunctionObject>> preloadFuncAndDeps(
 }
 
 void codeDestroyed(BorrowedRef<PyCodeObject> code) {
-  hot_loop_osr_skip_cache.erase(code.get());
   if (isJitUsable()) {
     auto mod_state = cinderx::getModuleState();
     auto& jit_reg_units = mod_state->registered_compilation_units;
