@@ -35,6 +35,7 @@
 #include "cinderx/Jit/frame.h"
 #include "cinderx/Jit/generators_rt.h"
 #include "cinderx/Jit/hir/annotation_index.h"
+#include "cinderx/Jit/hir/builder.h"
 #include "cinderx/Jit/hir/preload.h"
 #include "cinderx/Jit/inline_cache.h"
 #include "cinderx/Jit/jit_flag_processor.h"
@@ -1590,6 +1591,9 @@ PyObject* compile_after_n_calls(PyObject* /* self */, PyObject* arg) {
 }
 
 PyObject* auto_jit(PyObject* /* self */, PyObject* /* arg */) {
+  // 预缓存 stdlib 类型 — 必须在任何编译之前完成，避免 HIR 构建期间 import
+  jit::hir::precacheStdlibArray();
+
   // Default value that works well for most applications.
   if (compile_after_n_calls_impl(1000) < 0) {
     return nullptr;

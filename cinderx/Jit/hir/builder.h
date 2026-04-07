@@ -654,3 +654,10 @@ class HIRBuilder {
 };
 
 } // namespace jit::hir
+
+namespace jit::hir {
+
+// 预缓存 array.array 类型（必须在 JIT 初始化期间调用，GIL 持有时安全）
+void precacheStdlibArray();
+
+} // namespace jit::hir

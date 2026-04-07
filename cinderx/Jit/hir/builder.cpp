@@ -107,31 +107,40 @@ struct StdlibArrayObject {
   Py_ssize_t ob_exports;
 };
 
+namespace {
+// 共享的 array.array 类型缓存
+Ref<PyTypeObject>& stdlibArrayTypeCache() {
+  static Ref<PyTypeObject> cache;
+  return cache;
+}
+} // anonymous namespace
+
 BorrowedRef<PyTypeObject> getStdlibArrayType() {
-  static Ref<PyTypeObject> array_type;
+  // HIR 构建期间绝不调用 PyImport_ImportModule：
+  // 1. 多线程编译时 worker 线程不持有 GIL
+  // 2. 主线程编译时 import 可能触发重入 JIT 编译导致 segfault
+  // 缓存由 precacheStdlibArray() 在 JIT 初始化时填充。
+  return stdlibArrayTypeCache();
+}
+
+void precacheStdlibArray() {
+  // 仅在 JIT 初始化期间调用（此时 GIL 持有且解释器状态一致）
+  auto& array_type = stdlibArrayTypeCache();
   if (array_type != nullptr) {
-    return array_type;
+    return;
   }
-
-  // 多线程编译时 worker 线程不持有 GIL，不能调用 PyImport_ImportModule
-  RETURN_MULTITHREADED_COMPILE(nullptr);
-
-  ThreadedCompileSerialize guard;
   Ref<> mod = Ref<>::steal(PyImport_ImportModule("array"));
   if (mod == nullptr) {
     PyErr_Clear();
-    return nullptr;
+    return;
   }
-
   Ref<> type = Ref<>::steal(PyObject_GetAttrString(mod, "array"));
   if (type == nullptr || !PyType_Check(type)) {
     PyErr_Clear();
-    return nullptr;
+    return;
   }
-
   array_type =
       Ref<PyTypeObject>::steal(reinterpret_cast<PyTypeObject*>(type.release()));
-  return array_type;
 }
 
 // Check that an opcode is one we know how to translate into HIR.
