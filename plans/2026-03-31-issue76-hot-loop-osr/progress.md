@@ -112,3 +112,28 @@
 - Observed an additional follow-up issue:
   - when the new unittest cases are run through a tiny custom runner process, the test bodies report `ok`, but the runner process can still segfault on exit
   - this appears narrower than the main runtime path because the standalone probe and standard helper both exit cleanly
+
+## 2026-04-07
+
+- Revalidated the wrapper-shape profitability follow-up on ARM and kept iterating on the same-activation OSR gate.
+- Landed and pushed three profitability follow-up commits across this round:
+  - `ccfe9126` `jit: skip same-activation osr for high-call wrappers`
+  - `d3b45b32` `jit: localize wrapper osr gate to loop bodies`
+  - `fb105b6b` `jit: lower wrapper osr call threshold`
+- Added a second regression guard for a moderate-call wrapper shape:
+  - `test_phase1_loop_osr_skips_moderate_call_wrapper_shape`
+- Fresh ARM targeted validation after the final threshold update:
+  - high-call wrapper skip: pass
+  - moderate-call wrapper skip: pass
+  - Phase 1 happy path: pass
+  - active-exception skip: pass
+- Fresh direct ARM profitability checks:
+  - `go` no longer enters same-activation OSR in the measured path and improved slightly
+  - `fannkuch` stayed effectively flat while preserving the intended Phase 1 `osr` event
+  - `comprehensions` did not show a stable regression after deeper re-checks
+- Wrote the current issue boundary summary into:
+  - `issue76-completion-checklist.zh.md`
+  - updated `findings.md`
+- Current status:
+  - `#76` is still best understood as Phase 1 MVP complete
+  - object-heavy / search-heavy profitability remains follow-up work rather than a blocker for the main issue

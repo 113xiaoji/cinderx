@@ -6,6 +6,55 @@ entrypoint:
 
 `scripts/push_to_arm.ps1` -> `scripts/arm/remote_update_build_test.sh`
 
+### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
+
+- Date: `2026-04-07`
+- Branch/worktree:
+  - `codex/issue76-hot-loop-osr-finalize`
+  - `C:/work/code/cinderx1/cinderx`
+- Status:
+  - case setup started
+  - current issue76 mainline remains Phase 1 MVP complete
+  - new work is focused on profitability follow-up rather than correctness
+
+- Current evidence:
+  - object-heavy / search-heavy representative cases:
+    - `bm_go`
+    - `bm_chaos`
+  - these shapes are characterized by:
+    - heavy object state mutation
+    - heavy attribute access and method calls
+    - search/state-graph traversal or geometry-style work
+    - not a single stable loop kernel dominating runtime
+
+- Current working boundary:
+  - `#76`:
+    - Phase 1 MVP correctness
+    - narrow same-activation hot-loop entry
+  - `#85`:
+    - object-heavy / search-heavy profitability
+    - follow-up shape policy work
+
+- Reproducer status after latest branch refresh:
+  - `attr_stateful`
+    - `osr_count = 0`
+    - `jit.is_jit_compiled(hot) = False`
+    - `jit.is_jit_compiled(Cell.step) = False`
+  - `search_like`
+    - `osr_count = 0`
+    - `jit.is_jit_compiled(hot) = False`
+  - interpretation:
+    - the original `#85` same-activation false-positive bucket no longer has a
+      clean current reproducer on the latest branch state
+    - the two synthetic shapes are still useful as regression guards, but not
+      as current blockers
+    - this shifts `#85` from “active bug with a red test” toward “follow-up
+      profitability / shape-policy work”
+
+- Current planning artifacts:
+  - `plans/cases/issue85-object-heavy-osr-profitability/`
+  - `plans/2026-04-04-hot-loop-osr-object-heavy-issue-draft.md`
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`

@@ -337,6 +337,168 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(lines[-1], "False", proc.stdout)
 
+    def test_phase1_loop_osr_skips_object_stateful_shape(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Cell:
+                def __init__(self, value: int) -> None:
+                    self.value = value
+                    self.flag = value & 1
+                    self.other = None
+
+                def step(self) -> int:
+                    base = self.value
+                    if self.flag:
+                        base += self.other.value
+                    else:
+                        base -= self.other.value
+                    self.value = base
+                    self.flag = base & 1
+                    return base
+
+            cells = [Cell(i) for i in range(32)]
+            for i, cell in enumerate(cells):
+                cell.other = cells[(i + 1) % len(cells)]
+
+            def hot(n: int) -> int:
+                total = 0
+                idx = 0
+                while n > 0:
+                    cell = cells[idx]
+                    total += cell.value
+                    total += cell.step()
+                    total += cell.other.value
+                    idx += 1
+                    if idx == len(cells):
+                        idx = 0
+                    n -= 1
+                return total
+
+            jit.get_and_clear_runtime_stats()
+            result = hot(20000)
+            stats = jit.get_and_clear_runtime_stats()
+            osr_entries = [
+                entry for entry in stats.get("osr", [])
+                if entry["normal"]["func_qualname"] in {"hot", "Cell.step"}
+            ]
+
+            print(result)
+            print(sum(entry["int"]["count"] for entry in osr_entries))
+            print(jit.is_jit_compiled(hot))
+            print(jit.is_jit_compiled(Cell.step))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/phase1_object_stateful_shape.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertEqual(
+                int(lines[-4]),
+                1206418709182915639832114482075503283262244931370355261524105048419686215115858330871645890759841136380646345631675594673136264922430938,
+                proc.stdout,
+            )
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertEqual(lines[-2], "False", proc.stdout)
+            self.assertEqual(lines[-1], "False", proc.stdout)
+
+    def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Node:
+                def __init__(self, value: int) -> None:
+                    self.value = value
+                    self.left = None
+                    self.right = None
+                    self.parent = None
+
+            nodes = [Node(i) for i in range(64)]
+            for i, node in enumerate(nodes):
+                node.left = nodes[(2 * i + 1) % len(nodes)]
+                node.right = nodes[(2 * i + 2) % len(nodes)]
+                node.parent = nodes[(i - 1) % len(nodes)]
+
+            def hot(n: int) -> int:
+                cur = nodes[0]
+                total = 0
+                while n > 0:
+                    if cur.value & 1:
+                        cur = cur.left
+                    else:
+                        cur = cur.right
+                    total += cur.value
+                    total += cur.parent.value
+                    if total & 7:
+                        cur = cur.parent
+                    n -= 1
+                return total
+
+            jit.get_and_clear_runtime_stats()
+            result = hot(40000)
+            stats = jit.get_and_clear_runtime_stats()
+            osr_entries = [
+                entry for entry in stats.get("osr", [])
+                if entry["normal"]["func_qualname"] == "hot"
+            ]
+
+            print(result)
+            print(sum(entry["int"]["count"] for entry in osr_entries))
+            print(jit.is_jit_compiled(hot))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/phase1_search_state_transition_shape.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertEqual(int(lines[-3]), 3759672, proc.stdout)
+            self.assertEqual(int(lines[-2]), 0, proc.stdout)
+            self.assertEqual(lines[-1], "False", proc.stdout)
+
     def test_phase0_osr_test_entry_preserves_live_local_refcounts(self) -> None:
         code = textwrap.dedent(
             """

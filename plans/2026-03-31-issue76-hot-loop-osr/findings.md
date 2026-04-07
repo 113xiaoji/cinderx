@@ -713,3 +713,52 @@
 - Important boundary:
   - the standard remote helper path and the standalone probe both exit cleanly now
   - the remaining issue appears specific to the ad-hoc test-runner process shape, not to the main Phase 1 runtime path already validated above
+
+## 2026-04-07 Phase 1 profitability follow-up status
+
+- High-call wrapper same-activation OSR follow-up has now gone through three rounds:
+  - `ccfe9126` `jit: skip same-activation osr for high-call wrappers`
+  - `d3b45b32` `jit: localize wrapper osr gate to loop bodies`
+  - `fb105b6b` `jit: lower wrapper osr call threshold`
+- The current retained policy is:
+  - only inspect the current hot loop body
+  - skip same-activation OSR when the loop body contains at least 6 call opcodes
+- New regression coverage now includes both:
+  - `test_phase1_loop_osr_skips_high_call_wrapper_shape`
+  - `test_phase1_loop_osr_skips_moderate_call_wrapper_shape`
+- Fresh ARM targeted verification after the threshold reduction:
+  - `test_phase1_loop_osr_skips_high_call_wrapper_shape`: pass
+  - `test_phase1_loop_osr_skips_moderate_call_wrapper_shape`: pass
+  - `test_phase1_once_call_hot_loop_enters_jit_same_activation`: pass
+  - `test_phase1_loop_osr_skips_active_exception_shape`: pass
+- Fresh `HEAD -> current` direct A/B on ARM for the key profitability cases:
+  - `go`: about `-1.95%`
+    - `osr_count` changed from `1` to `0`
+  - `comprehensions`: about `-1.94%`
+    - `osr_count` remained `0`
+  - `fannkuch`: about `+0.35%`
+    - effectively flat
+    - `osr_count` remained `1`
+- Additional bytecode-shape evidence:
+  - `UCTNode.play` loop body contains `6` call opcodes and `10` attribute ops
+  - `fannkuch` hot loops contain `0-2` call opcodes
+  - `WidgetTray._add_widgets` loops contain `1-2` call opcodes
+- Interpretation:
+  - the wrapper gate now meaningfully addresses the `go`-style false-positive OSR shape
+  - the current retained heuristic is acceptable as a Phase 1 profitability stopgap
+  - the broader object-heavy / search-heavy class should still be treated as follow-up work, not as a blocker on issue `#76`
+
+## 2026-04-07 Issue boundary check
+
+- `#76` mainline status:
+  - Phase 1 MVP correctness is complete
+  - same-activation hot-loop OSR is working on the intended narrow slice
+  - the branch is review-ready for the Phase 1 scope
+- Explicitly not complete inside `#76`:
+  - generators / coroutines / async generators
+  - active exception-region OSR
+  - inlined-frame OSR
+  - generalized primitive live-ins
+  - benchmark harness stabilization as the primary performance oracle
+- Split-out follow-up:
+  - object-heavy / search-heavy profitability is now tracked separately as issue `#85`
