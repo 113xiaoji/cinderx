@@ -19,7 +19,7 @@ namespace jit::hir {
 extern "C" int g_state_machine_pass_triggered{0};
 
 void TreeIterStateMachinePass::Run(Function& func) {
-  JIT_LOG("TreeIterStateMachinePass: Running on function {}", func.fullname);
+  JIT_DLOG("TreeIterStateMachinePass: Running on function {}", func.fullname);
 
   if (!isTreeIterGenerator(func)) {
     return;
@@ -38,7 +38,7 @@ void TreeIterStateMachinePass::Run(Function& func) {
     }
   }
 
-  JIT_LOG("TreeIterStateMachinePass: Pattern detected! Generating state machine");
+  JIT_DLOG("TreeIterStateMachinePass: Pattern detected! Generating state machine");
   g_state_machine_pass_triggered++;
 
   generateStateMachine(func, yield_froms);
@@ -169,7 +169,7 @@ void TreeIterStateMachinePass::generateStateMachine(
     return;
   }
 
-  JIT_LOG(
+  JIT_DLOG(
       "Field offsets: left={}, right={}, value={}",
       field_map["left"].offset,
       field_map["right"].offset,
@@ -214,7 +214,7 @@ void TreeIterStateMachinePass::generateStateMachine(
       break;
     }
   }
-  JIT_LOG("TreeIterStateMachinePass: yield_frame_state={}",
+  JIT_DLOG("TreeIterStateMachinePass: yield_frame_state={}",
           (void*)yield_frame_state);
 
   StateMachineContext ctx;
@@ -247,7 +247,7 @@ void TreeIterStateMachinePass::generateStateMachine(
   // 会返回 kObject，导致 RefcountInsertion 为原始值插入 XDecref。
   reflowTypes(func);
 
-  JIT_LOG("TreeIterStateMachinePass: State machine generated and integrated");
+  JIT_DLOG("TreeIterStateMachinePass: State machine generated and integrated");
 }
 
 // === StateMachineGenerator ===
@@ -274,7 +274,7 @@ void StateMachineGenerator::Generate(
   auto& env = func.env;
   auto& cfg = func.cfg;
 
-  JIT_LOG("StateMachineGenerator: Generating GenDataFooter-based state machine");
+  JIT_DLOG("StateMachineGenerator: Generating GenDataFooter-based state machine");
 
   // === 分配所有基本块 ===
   bb_init_ = ctx_.init_block;
@@ -485,7 +485,7 @@ void StateMachineGenerator::Generate(
   bb_done->append<LoadConst>(none_result, Type::fromObject(Py_None));
   bb_done->append<Return>(none_result, TObject);
 
-  JIT_LOG(
+  JIT_DLOG(
       "StateMachineGenerator: GenDataFooter-based state machine generated (no Phi)");
 }
 
