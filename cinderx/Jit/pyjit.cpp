@@ -157,7 +157,7 @@ bool shouldSkipHotLoopOSRForHighCallWrapper(
     BorrowedRef<PyCodeObject> code,
     _Py_CODEUNIT* loop_start,
     _Py_CODEUNIT* this_instr) {
-  constexpr int kMinLoopCalls = 8;
+  constexpr int kMinLoopCalls = 6;
 
 #if PY_VERSION_HEX >= 0x030D0000
   auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
