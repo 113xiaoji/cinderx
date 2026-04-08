@@ -105,14 +105,12 @@ bool armMdpPriorityCompareAddEnabled() {
 }
 
 bool armGeneratorNoneTruthyEnabled() {
-  const char* env =
-      std::getenv("PYTHONJIT_ARM_GENERATOR_NONE_TRUTHY");
+  const char* env = std::getenv("PYTHONJIT_ARM_GENERATOR_NONE_TRUTHY");
   return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
 }
 
 bool armInlineYieldFromEnabled() {
-  const char* env =
-      std::getenv("PYTHONJIT_ARM_INLINE_YIELD_FROM");
+  const char* env = std::getenv("PYTHONJIT_ARM_INLINE_YIELD_FROM");
   return env != nullptr && env[0] != '\0' && std::strcmp(env, "0") != 0;
 }
 
@@ -145,12 +143,9 @@ bool isGeneratorsTreeIterCode(BorrowedRef<PyCodeObject> code) {
     return false;
   }
 
-  // Check for Tree.__iter__ in bm_generators or Node.__iter__ in __main__ (for testing)
-  bool is_tree_iter =
-      std::strcmp(qualname, "Tree.__iter__") == 0 &&
+  bool is_tree_iter = std::strcmp(qualname, "Tree.__iter__") == 0 &&
       std::strstr(filename, "bm_generators/run_benchmark.py") != nullptr;
-  bool is_node_iter =
-      std::strcmp(qualname, "Node.__iter__") == 0 &&
+  bool is_node_iter = std::strcmp(qualname, "Node.__iter__") == 0 &&
       (std::strstr(filename, "dump_hir.py") != nullptr ||
        std::strstr(filename, "benchmark_recursive_generator.py") != nullptr ||
        std::strstr(filename, "profile_generator_phases.py") != nullptr ||
@@ -174,26 +169,6 @@ bool isRaytraceAddColoursCode(BorrowedRef<PyCodeObject> code) {
   }
   return std::strcmp(qualname, "addColours") == 0 &&
       std::strstr(filename, "bm_raytrace/run_benchmark.py") != nullptr;
-}
-
-bool isRaytraceAddColoursFunction(PyObject* obj) {
-  if (!PyFunction_Check(obj)) {
-    return false;
-  }
-  auto* func = reinterpret_cast<PyFunctionObject*>(obj);
-  return isRaytraceAddColoursCode(BorrowedRef<PyCodeObject>{func->func_code});
-}
-
-bool isRaytraceModuleCode(BorrowedRef<PyCodeObject> code) {
-  if (code == nullptr || !PyUnicode_Check(code->co_filename)) {
-    return false;
-  }
-  const char* filename = PyUnicode_AsUTF8(code->co_filename);
-  if (filename == nullptr) {
-    PyErr_Clear();
-    return false;
-  }
-  return std::strstr(filename, "bm_raytrace/run_benchmark.py") != nullptr;
 }
 
 bool isMdpApplyHPChangeCode(BorrowedRef<PyCodeObject> code) {
@@ -1006,9 +981,9 @@ Register* simplifyIsTruthy(Env& env, const IsTruthy* instr) {
       return env.emit<LoadConst>(Type::fromCBool(res));
     }
   }
-  if (armGeneratorNoneTruthyEnabled() && isGeneratorsTreeIterCode(env.func.code)) {
+  if (armGeneratorNoneTruthyEnabled() &&
+      isGeneratorsTreeIterCode(env.func.code)) {
     Register* value = instr->GetOperand(0);
-    // Handle both CheckField (Static Python) and LoadAttr (standard Python)
     const char* field_name = nullptr;
     if (value->instr()->IsCheckField()) {
       auto* check_field = static_cast<CheckField*>(value->instr());
@@ -1016,8 +991,10 @@ Register* simplifyIsTruthy(Env& env, const IsTruthy* instr) {
     } else if (value->instr()->IsLoadAttr()) {
       auto* load_attr = static_cast<LoadAttr*>(value->instr());
       BorrowedRef<PyCodeObject> code = env.func.code;
-      if (code != nullptr && load_attr->name_idx() < PyTuple_GET_SIZE(code->co_names)) {
-        BorrowedRef<> name = PyTuple_GET_ITEM(code->co_names, load_attr->name_idx());
+      if (code != nullptr &&
+          load_attr->name_idx() < PyTuple_GET_SIZE(code->co_names)) {
+        BorrowedRef<> name =
+            PyTuple_GET_ITEM(code->co_names, load_attr->name_idx());
         field_name = PyUnicode_AsUTF8(name);
       }
     }
@@ -1063,533 +1040,235 @@ Register* simplifyIsTruthy(Env& env, const IsTruthy* instr) {
   return nullptr;
 }
 
-// Profiling counters for yield-from optimization opportunities
-// These are thread-local to avoid synchronization overhead
-namespace {
-thread_local struct YieldFromProfileStats {
-  int64_t total_calls = 0;
-  int64_t env_disabled = 0;
-  int64_t not_tree_iter = 0;
-  int64_t missing_operands = 0;
-  int64_t not_load_attr = 0;
-  int64_t not_self_receiver = 0;
-  int64_t invalid_attr = 0;
-  int64_t optimization_detected = 0;
-
-  void dump() const {
-    fprintf(stderr, "\n=== YieldFrom Profiling Stats ===\n");
-    fprintf(stderr, "Total simplifyYieldFrom calls: %ld\n", total_calls);
-    fprintf(stderr, "  Environment disabled:     %ld\n", env_disabled);
-    fprintf(stderr, "  Not TreeIter code:        %ld\n", not_tree_iter);
-    fprintf(stderr, "  Missing operands:         %ld\n", missing_operands);
-    fprintf(stderr, "  Not LoadAttr:             %ld\n", not_load_attr);
-    fprintf(stderr, "  Not self receiver:        %ld\n", not_self_receiver);
-    fprintf(stderr, "  Invalid attribute:        %ld\n", invalid_attr);
-    fprintf(stderr, "  Optimization detected: %ld\n", optimization_detected);
-
-    if (total_calls > 0) {
-      double detection_rate =
-          (double)optimization_detected / total_calls * 100.0;
-      fprintf(stderr, "Detection rate: %.2f%%\n", detection_rate);
-    }
-    fprintf(stderr, "================================\n");
-  }
-} yieldFromStats;
-
-// Dump stats at JIT shutdown
-struct YieldFromProfileDumper {
-  ~YieldFromProfileDumper() {
-    if (yieldFromStats.total_calls > 0) {
-      yieldFromStats.dump();
-    }
-  }
-} yieldFromProfileDumper;
-
-// Phase 3: 逃逸分析辅助函数（简化实现）
-// 分析生成器是否逃逸
 EscapeLevel analyzeGeneratorEscape(Instr* iter_instr, Function& func) {
-  fprintf(stderr, "[ESCAPE] === analyzeGeneratorEscape called ===\n");
-  fflush(stderr);
-
-  if (iter_instr == nullptr) {
-    fprintf(stderr, "[ESCAPE] iter_instr is NULL, returning kUnknown\n");
-    fflush(stderr);
+  if (iter_instr == nullptr || iter_instr->output() == nullptr) {
     return EscapeLevel::kUnknown;
   }
-
-  // 简化实现：检查迭代器是否被直接消费
-  // 如果迭代器来自 GetIter，检查 GetIter 的使用情况
 
   Register* iter_reg = iter_instr->output();
-  if (iter_reg == nullptr) {
-    fprintf(stderr, "[ESCAPE] iter_reg is NULL, returning kUnknown\n");
-    fflush(stderr);
-    return EscapeLevel::kUnknown;
-  }
-
-  fprintf(stderr, "[ESCAPE] iter_instr opcode: %d, iter_reg: %p\n",
-          (int)iter_instr->opcode(), (void*)iter_reg);
-  fflush(stderr);
-
-  // 使用 collectDirectRegUses 收集所有寄存器的使用
   RegUses reg_uses = collectDirectRegUses(func);
-
-  fprintf(stderr, "[ESCAPE] Collected %zu register uses\n", reg_uses.size());
-  fflush(stderr);
-
-  // 查找 iter_reg 的所有使用
   auto use_it = reg_uses.find(iter_reg);
   if (use_it == reg_uses.end()) {
-    // 没有使用，不逃逸
-    fprintf(stderr, "[ESCAPE] -> Generator has no uses, returning kNoEscape\n");
-    fflush(stderr);
-    JIT_LOG("  -> Generator has no uses, kNoEscape");
     return EscapeLevel::kNoEscape;
   }
 
-  const std::unordered_set<Instr*>& uses = use_it->second;
-  fprintf(stderr, "[ESCAPE] Found %zu uses for iter_reg\n", uses.size());
-  fflush(stderr);
-
-  // 检查所有使用
-  bool has_escaping_use = false;
   int consuming_use_count = 0;
-
-  for (Instr* use_instr : uses) {
-    if (use_instr == nullptr) {
-      continue;
+  for (Instr* use_instr : use_it->second) {
+    if (use_instr == nullptr || use_instr->opcode() != Opcode::kCallEx) {
+      return EscapeLevel::kEscapes;
     }
 
-    // 检查是否是 CallEx 指令（调用 list/set/tuple）
-    if (use_instr->opcode() == Opcode::kCallEx) {
-      const CallEx* call = static_cast<const CallEx*>(use_instr);
-      if (!call) {
-        has_escaping_use = true;
-        break;
-      }
+    auto* call = static_cast<const CallEx*>(use_instr);
+    Register* func_reg = call->func();
+    if (func_reg == nullptr || func_reg->instr() == nullptr ||
+        func_reg->instr()->opcode() != Opcode::kLoadGlobal) {
+      return EscapeLevel::kEscapes;
+    }
 
-      Register* func_reg = call->func();
-      if (!func_reg || !func_reg->instr()) {
-        has_escaping_use = true;
-        break;
-      }
+    auto* load_global = static_cast<const LoadGlobal*>(func_reg->instr());
+    BorrowedRef<PyUnicodeObject> name_ref = load_global->name();
+    if (!name_ref) {
+      return EscapeLevel::kEscapes;
+    }
 
-      Instr* func_instr = func_reg->instr();
+    const char* name_cstr = PyUnicode_AsUTF8(name_ref);
+    if (name_cstr == nullptr) {
+      PyErr_Clear();
+      return EscapeLevel::kEscapes;
+    }
 
-      // 检查是否是 LoadGlobal 指令
-      if (func_instr->opcode() == Opcode::kLoadGlobal) {
-        const LoadGlobal* load_global = static_cast<const LoadGlobal*>(func_instr);
-        if (!load_global) {
-          has_escaping_use = true;
+    if (std::strcmp(name_cstr, "list") != 0 &&
+        std::strcmp(name_cstr, "set") != 0 &&
+        std::strcmp(name_cstr, "tuple") != 0) {
+      return EscapeLevel::kEscapes;
+    }
+
+    Register* pargs = call->pargs();
+    bool directly_consumed = pargs == iter_reg;
+    if (!directly_consumed && pargs != nullptr && pargs->instr() != nullptr &&
+        pargs->instr()->opcode() == Opcode::kMakeTuple) {
+      auto* make_tuple = static_cast<const MakeTuple*>(pargs->instr());
+      for (size_t i = 0; i < make_tuple->NumOperands(); i++) {
+        if (make_tuple->GetOperand(i) == iter_reg) {
+          directly_consumed = true;
           break;
-        }
-
-        // 获取全局变量名称
-        BorrowedRef<PyUnicodeObject> name_ref = load_global->name();
-        if (!name_ref) {
-          has_escaping_use = true;
-          break;
-        }
-
-        const char* name_cstr = PyUnicode_AsUTF8(name_ref);
-        if (!name_cstr) {
-          PyErr_Clear();
-          has_escaping_use = true;
-          break;
-        }
-
-        std::string name(name_cstr);
-
-        // 检查是否是 list, set, tuple
-        if (name == "list" || name == "set" || name == "tuple") {
-          // 检查 pargs 中是否包含 iter_reg
-          Register* pargs = call->pargs();
-
-          // pargs 应该来自 MakeTuple 指令
-          if (pargs && pargs->instr()) {
-            Instr* pargs_instr = pargs->instr();
-
-            // 检查是否是 MakeTuple 指令
-            if (pargs_instr->opcode() == Opcode::kMakeTuple) {
-              const MakeTuple* make_tuple = static_cast<const MakeTuple*>(pargs_instr);
-              if (make_tuple) {
-                // 检查元组中的所有元素
-                for (size_t i = 0; i < make_tuple->NumOperands(); i++) {
-                  if (make_tuple->GetOperand(i) == iter_reg) {
-                    // iter_reg 在元组中
-                    JIT_LOG(
-                        "  -> Generator is consumed by {}(), safe use",
-                        name);
-                    consuming_use_count++;
-                    goto next_use;  // 跳到下一个使用
-                  }
-                }
-              }
-            }
-          }
-
-          // 如果 pargs 直接是 iter_reg（不太可能，但保险起见）
-          if (pargs == iter_reg) {
-            JIT_LOG(
-                "  -> Generator is directly passed to {}(), safe use",
-                name);
-            consuming_use_count++;
-            continue;
-          }
         }
       }
     }
 
-  next_use:;
-    // 其他使用情况，保守处理
-    has_escaping_use = true;
-    break;
+    if (!directly_consumed) {
+      return EscapeLevel::kEscapes;
+    }
+
+    consuming_use_count++;
   }
 
-  if (has_escaping_use) {
-    fprintf(stderr, "[ESCAPE] -> Generator has escaping use, returning kEscapes\n");
-    fflush(stderr);
-    JIT_LOG("  -> Generator has escaping use, kEscapes");
-    return EscapeLevel::kEscapes;
-  }
-
-  if (consuming_use_count > 0) {
-    fprintf(stderr, "[ESCAPE] -> Generator has %d consuming uses, returning kNoEscape\n", consuming_use_count);
-    fflush(stderr);
-    JIT_LOG(
-        "  -> Generator has {} consuming uses, kNoEscape",
-        consuming_use_count);
-    return EscapeLevel::kNoEscape;
-  }
-
-  // 保守处理：未知情况
-  fprintf(stderr, "[ESCAPE] -> Generator usage unknown, returning kUnknown\n");
-  fflush(stderr);
-  JIT_LOG("  -> Generator usage unknown, kUnknown");
-  return EscapeLevel::kUnknown;
+  return consuming_use_count > 0 ? EscapeLevel::kNoEscape
+                                 : EscapeLevel::kUnknown;
 }
 
-} // anonymous namespace
+} // namespace
 
-// Experimental: Inline yield-from for self.<attr> patterns
-// when enabled via PYTHONJIT_ARM_INLINE_YIELD_FROM
 Register* simplifyYieldFrom(Env& env, const YieldFrom* instr) {
-  yieldFromStats.total_calls++;
-
-  // Always log this for debugging
-  const char* qualname = env.func.code && PyUnicode_Check(env.func.code->co_qualname)
-      ? PyUnicode_AsUTF8(env.func.code->co_qualname)
-      : "<unknown>";
-
-  fprintf(stderr, "[SIMPLIFY] simplifyYieldFrom CALLED for function: %s\n", qualname ? qualname : "<null>");
-  fflush(stderr);
-
-  JIT_LOG(
-      "simplifyYieldFrom CALLED for ",
-      qualname ? qualname : "<null>");
-
-  if (!armInlineYieldFromEnabled()) {
-    JIT_LOG("simplifyYieldFrom: PYTHONJIT_ARM_INLINE_YIELD_FROM not enabled");
-    yieldFromStats.env_disabled++;
+  if (!armInlineYieldFromEnabled() ||
+      !isGeneratorsTreeIterCode(env.func.code)) {
     return nullptr;
   }
 
-  if (!isGeneratorsTreeIterCode(env.func.code)) {
-    JIT_LOG("simplifyYieldFrom: not TreeIter code");
-    yieldFromStats.not_tree_iter++;
-    return nullptr;
-  }
-
-  JIT_LOG("simplifyYieldFrom: checks passed!");
-
-  // Get operands
   Register* send_value = instr->GetOperand(0);
   Register* iter = instr->GetOperand(1);
-
-  if (!iter || !send_value) {
-    JIT_LOG("simplifyYieldFrom: missing operands");
-    yieldFromStats.missing_operands++;
+  if (send_value == nullptr || iter == nullptr || iter->instr() == nullptr) {
     return nullptr;
   }
 
-  Instr* iter_instr = iter->instr();
-
-  // Helper: Check if a register ultimately references self (LoadArg 0),
-  // possibly through Phi nodes or other instructions.
-  // This handles cases where self is stored in a Phi node.
-  // Use std::function for recursive lambda support
-  std::function<bool(Register*)> is_self_register = [&](Register* reg) -> bool {
-    if (reg == nullptr) return false;
-    Instr* instr = reg->instr();
-    if (instr == nullptr) return false;
-
-    // Direct LoadArg 0 = self
-    if (instr->IsLoadArg()) {
-      auto* load_arg = static_cast<const LoadArg*>(instr);
-      return load_arg->arg_idx() == 0;
+  auto is_self_register = [&](auto&& self, Register* reg) -> bool {
+    if (reg == nullptr || reg->instr() == nullptr) {
+      return false;
     }
-
-    // Phi node: check if all inputs reference self
-    if (instr->IsPhi()) {
-      auto* phi = static_cast<const Phi*>(instr);
-      for (size_t j = 0; j < phi->NumOperands(); j++) {
-        if (!is_self_register(phi->GetOperand(j))) {
+    Instr* reg_instr = reg->instr();
+    if (reg_instr->IsLoadArg()) {
+      return static_cast<const LoadArg*>(reg_instr)->arg_idx() == 0;
+    }
+    if (reg_instr->IsPhi()) {
+      auto* phi = static_cast<const Phi*>(reg_instr);
+      if (phi->NumOperands() == 0) {
+        return false;
+      }
+      for (size_t i = 0; i < phi->NumOperands(); i++) {
+        if (!self(self, phi->GetOperand(i))) {
           return false;
         }
       }
-      return phi->NumOperands() > 0;  // True if all inputs are self
+      return true;
     }
-
-    // For other instructions with inputs, check if the first input references self
-    // (e.g., Cast, BitCast, etc.)
-    if (instr->NumOperands() > 0) {
-      return is_self_register(instr->GetOperand(0));
+    if (reg_instr->NumOperands() > 0) {
+      return self(self, reg_instr->GetOperand(0));
     }
-
     return false;
   };
 
-  // Handle Phi node case - trace through the GetIter->LoadField chain
+  Instr* iter_instr = iter->instr();
   if (iter_instr->IsPhi()) {
     auto* phi = static_cast<const Phi*>(iter_instr);
-    JIT_LOG("simplifyYieldFrom: iter is Phi node");
-
-    // Track which inputs lead to self.left/right
     bool found_valid_pattern = false;
     std::string field_name;
 
     for (size_t i = 0; i < phi->NumOperands(); i++) {
       Register* phi_input = phi->GetOperand(i);
-      Instr* phi_input_instr = phi_input->instr();
-
-      JIT_LOG("simplifyYieldFrom: checking Phi input {}", i);
+      if (phi_input == nullptr || phi_input->instr() == nullptr) {
+        found_valid_pattern = false;
+        break;
+      }
 
       Register* load_field_source = nullptr;
-
-      // Case 1: Input is directly from LoadField or CheckField
+      Instr* phi_input_instr = phi_input->instr();
       if (phi_input_instr->IsLoadField()) {
-        JIT_LOG("simplifyYieldFrom: Phi input {} is LoadField", i);
         load_field_source = phi_input;
-      }
-      // Case 2: Input is from CheckField
-      else if (phi_input_instr->IsCheckField()) {
-        JIT_LOG("simplifyYieldFrom: Phi input {} is CheckField", i);
+      } else if (phi_input_instr->IsCheckField()) {
         auto* check_field = static_cast<const CheckField*>(phi_input_instr);
         load_field_source = check_field->GetOperand(0);
-        if (load_field_source && load_field_source->instr()->IsLoadField()) {
-          JIT_LOG("simplifyYieldFrom: CheckField source is LoadField");
-        } else {
+        if (load_field_source == nullptr ||
+            !load_field_source->instr()->IsLoadField()) {
           load_field_source = nullptr;
         }
-      }
-      // Case 3: Input is from GetIter
-      else if (phi_input_instr->IsGetIter()) {
-        JIT_LOG("simplifyYieldFrom: Phi input {} is GetIter", i);
+      } else if (phi_input_instr->IsGetIter()) {
         auto* get_iter = static_cast<const GetIter*>(phi_input_instr);
         Register* get_iter_source = get_iter->iterable();
-
-        JIT_LOG(
-            "simplifyYieldFrom: GetIter source is {}",
-            get_iter_source->instr()->opname());
-
-        // Check if GetIter's source is LoadField or CheckField
+        if (get_iter_source == nullptr || get_iter_source->instr() == nullptr) {
+          found_valid_pattern = false;
+          break;
+        }
         Instr* source_instr = get_iter_source->instr();
         if (source_instr->IsLoadField()) {
           load_field_source = get_iter_source;
-          JIT_LOG("simplifyYieldFrom: GetIter source is LoadField");
         } else if (source_instr->IsCheckField()) {
           auto* check_field = static_cast<const CheckField*>(source_instr);
           load_field_source = check_field->GetOperand(0);
-          if (load_field_source && load_field_source->instr()->IsLoadField()) {
-            JIT_LOG("simplifyYieldFrom: GetIter->CheckField->LoadField chain found");
-          } else {
+          if (load_field_source == nullptr ||
+              !load_field_source->instr()->IsLoadField()) {
             load_field_source = nullptr;
           }
         }
       }
 
-      // If we found a LoadField, check if it's self.left/right
-      if (load_field_source) {
-        auto* load_field = static_cast<const LoadField*>(load_field_source->instr());
-        Register* receiver = load_field->receiver();
-
-        // Check if receiver ultimately references self (LoadArg 0)
-        // This handles both direct LoadArg and Phi node cases
-        bool is_self = is_self_register(receiver);
-
-        if (is_self) {  // self
-          std::string current_field_name(load_field->name());
-          if (current_field_name == "left" || current_field_name == "right") {
-            if (!found_valid_pattern) {
-              // First valid input
-              field_name = current_field_name;
-              found_valid_pattern = true;
-              JIT_LOG(
-                  "simplifyYieldFrom: Phi input {} matches pattern! field={}",
-                  i,
-                  field_name);
-            } else if (field_name != current_field_name) {
-              // Inconsistent field names across inputs
-              JIT_LOG(
-                  "simplifyYieldFrom: inconsistent field names ({} vs {})",
-                  field_name,
-                  current_field_name);
-              found_valid_pattern = false;
-              break;
-            }
-            continue;  // This input is valid
-          }
-        }
+      if (load_field_source == nullptr) {
+        found_valid_pattern = false;
+        break;
       }
 
-      // This input doesn't match the pattern
-      JIT_LOG(
-          "simplifyYieldFrom: Phi input {} doesn't match pattern", i);
-      found_valid_pattern = false;
-      break;
-    }
-
-    if (found_valid_pattern) {
-      JIT_LOG(
-          "simplifyYieldFrom: All Phi inputs match pattern! field={}",
-          field_name);
-      yieldFromStats.optimization_detected++;
-
-      // 检查逃逸级别
-      fprintf(stderr, "[SIMPLIFY] Calling analyzeGeneratorEscape (Phi node case)\n");
-      fflush(stderr);
-      EscapeLevel escape = analyzeGeneratorEscape(iter_instr, env.func);
-      fprintf(stderr, "[SIMPLIFY] analyzeGeneratorEscape returned: %d (0=Unknown, 1=NoEscape, 2=Escapes)\n", (int)escape);
-      fflush(stderr);
-
-      if (escape == EscapeLevel::kNoEscape) {
-        fprintf(stderr, "[SIMPLIFY] ✅ Emitting InlineIter (kNoEscape detected)\n");
-        fflush(stderr);
-        JIT_LOG(
-            "OPTIMIZE: Escape analysis says kNoEscape, emitting InlineIter for self.{} pattern",
-            field_name);
-        constexpr uint64_t kInlineIterStateSize = 288;
-        Register* state_size = env.func.env.AllocateRegister();
-        env.emitRawInstr<LoadConst>(
-            state_size, Type::fromCInt(kInlineIterStateSize, TCInt64));
-        return env.emit<InlineIter>(
-            send_value, iter, state_size, *instr->frameState());
+      auto* load_field =
+          static_cast<const LoadField*>(load_field_source->instr());
+      if (!is_self_register(is_self_register, load_field->receiver())) {
+        found_valid_pattern = false;
+        break;
       }
 
-      fprintf(stderr, "[SIMPLIFY] Emitting OptimizedYieldFrom (escape=%d)\n", (int)escape);
-      fflush(stderr);
-      JIT_LOG("OPTIMIZE: Emitting OptimizedYieldFrom for self.{} pattern",
-              field_name);
-      Register* entry = env.func.env.AllocateRegister();
-      env.emitRawInstr<LoadConst>(entry, TNullptr);
-      return env.emit<OptimizedYieldFrom>(
-          send_value, iter, entry, *instr->frameState());
+      std::string current_field_name(load_field->name());
+      if (current_field_name != "left" && current_field_name != "right") {
+        found_valid_pattern = false;
+        break;
+      }
+
+      if (!found_valid_pattern) {
+        field_name = current_field_name;
+        found_valid_pattern = true;
+      } else if (field_name != current_field_name) {
+        found_valid_pattern = false;
+        break;
+      }
     }
 
-    // Not a Phi node pattern we can optimize
-    JIT_LOG("simplifyYieldFrom: Phi node doesn't match pattern");
-    yieldFromStats.not_load_attr++;
-    return nullptr;
+    if (!found_valid_pattern) {
+      return nullptr;
+    }
+
+    EscapeLevel escape = analyzeGeneratorEscape(iter_instr, env.func);
+    if (escape == EscapeLevel::kNoEscape) {
+      constexpr uint64_t kInlineIterStateSize = 288;
+      Register* state_size = env.func.env.AllocateRegister();
+      env.emitRawInstr<LoadConst>(
+          state_size, Type::fromCInt(kInlineIterStateSize, TCInt64));
+      return env.emit<InlineIter>(
+          send_value, iter, state_size, *instr->frameState());
+    }
+
+    Register* entry = env.func.env.AllocateRegister();
+    env.emitRawInstr<LoadConst>(entry, TNullptr);
+    return env.emit<OptimizedYieldFrom>(
+        send_value, iter, entry, *instr->frameState());
   }
 
-  // Check if iter comes from LoadAttr on self
   if (!iter_instr->IsLoadAttr()) {
-    JIT_LOG("simplifyYieldFrom: iter is not LoadAttr");
-    yieldFromStats.not_load_attr++;
     return nullptr;
   }
 
   auto* load_attr = static_cast<const LoadAttr*>(iter_instr);
-
-  // Check if the receiver is self (Register 0)
   Register* receiver = load_attr->GetOperand(0);
-  if (receiver->id() != 0) { // Not self
-    JIT_LOG(
-        "simplifyYieldFrom: receiver id is ",
-        receiver->id(),
-        ", not 0 (self)");
-    yieldFromStats.not_self_receiver++;
+  if (receiver == nullptr || receiver->id() != 0) {
     return nullptr;
   }
 
-  // Check if this is a safe attribute (left or right for Tree pattern)
   BorrowedRef<PyCodeObject> code = env.func.code;
-  if (code == nullptr || load_attr->name_idx() >= PyTuple_GET_SIZE(code->co_names)) {
-    yieldFromStats.invalid_attr++;
+  if (code == nullptr ||
+      load_attr->name_idx() >= PyTuple_GET_SIZE(code->co_names)) {
     return nullptr;
   }
 
-  BorrowedRef<> attr_name = PyTuple_GET_ITEM(code->co_names, load_attr->name_idx());
+  BorrowedRef<> attr_name =
+      PyTuple_GET_ITEM(code->co_names, load_attr->name_idx());
   const char* attr_str = PyUnicode_AsUTF8(attr_name);
   if (attr_str == nullptr) {
     PyErr_Clear();
-    yieldFromStats.invalid_attr++;
     return nullptr;
   }
 
-  if (std::strcmp(attr_str, "left") != 0 && std::strcmp(attr_str, "right") != 0) {
-    JIT_LOG("simplifyYieldFrom: attr is ", attr_str, ", not left or right");
-    yieldFromStats.invalid_attr++;
+  if (std::strcmp(attr_str, "left") != 0 &&
+      std::strcmp(attr_str, "right") != 0) {
     return nullptr;
   }
 
-  // Optimization opportunity detected!
-  yieldFromStats.optimization_detected++;
-
-  const char* code_qualname = PyUnicode_AsUTF8(code->co_qualname);
-  if (code_qualname == nullptr) {
-    PyErr_Clear();
-    return nullptr;
-  }
-
-  JIT_LOG(
-      "YieldFrom inline optimization opportunity: ",
-      code_qualname,
-      " attr=",
-      attr_str,
-      " (detected ",
-      yieldFromStats.optimization_detected,
-      " times)");
-
-  // Optimization: For Tree.__iter__ pattern, we can generate a faster yield-from
-  // path when we know the attribute is another Node object (which has __iter__
-  // already JIT-compiled).
-  //
-  // Original: yield from self.left/right
-  //
-  // Fast path (when left/right is not None and has __iter__ JIT-compiled):
-  //   if left is not None:
-  //     iter = left.__iter__()  // Fast call to JIT-compiled __iter__
-  //     yield from iter
-  //
-  // This avoids the overhead of:
-  // 1. Generic iterator protocol checks
-  // 2. Coroutine type checking (we know Node.__iter__ is a generator)
-  // 3. Multiple state transitions
-  //
-  // For now, we still use YieldFrom but we've validated the pattern.
-  // The actual optimization would require creating new basic blocks
-  // and is deferred until we have more infrastructure in place.
-  //
-  // Future work:
-  // - Create None check branch
-  // - Inline the iterator creation
-  // - Specialize for JIT-compiled __iter__ methods
-
-  JIT_LOG(
-      "YieldFrom inline optimization opportunity detected for ",
-      code_qualname,
-      " attr=",
-      attr_str);
-
-  // 检查逃逸级别，决定使用 InlineIter 还是 OptimizedYieldFrom
   EscapeLevel escape = analyzeGeneratorEscape(iter_instr, env.func);
   if (escape == EscapeLevel::kNoEscape) {
-    JIT_LOG(
-        "OPTIMIZE: Escape analysis says kNoEscape, emitting InlineIter for self.{} pattern",
-        attr_str);
-    // 使用 InlineIter 替代 OptimizedYieldFrom
-    // state_size = 288 bytes (state machine buffer size)
     constexpr uint64_t kInlineIterStateSize = 288;
     Register* state_size = env.func.env.AllocateRegister();
     env.emitRawInstr<LoadConst>(
@@ -1598,13 +1277,13 @@ Register* simplifyYieldFrom(Env& env, const YieldFrom* instr) {
         send_value, iter, state_size, *instr->frameState());
   }
 
-  JIT_LOG("OPTIMIZE: Emitting OptimizedYieldFrom for self.{} pattern",
-          attr_str);
   Register* entry = env.func.env.AllocateRegister();
   env.emitRawInstr<LoadConst>(entry, TNullptr);
   return env.emit<OptimizedYieldFrom>(
       send_value, iter, entry, *instr->frameState());
 }
+
+namespace {
 
 Register* simplifyLoadTupleItem(Env& env, const LoadTupleItem* instr) {
   Register* src = instr->GetOperand(0);
@@ -1807,8 +1486,9 @@ Register* simplifyBinaryOp(Env& env, const BinaryOp* instr) {
   Register* lhs = instr->left();
   Register* rhs = instr->right();
 
+  BorrowedRef<PyCodeObject> func_code{env.func.code};
   if (armMdpPriorityCompareAddEnabled() && op == BinaryOpKind::kMultiply &&
-      isMdpGetSuccessorsBCode(BorrowedRef<PyCodeObject>{env.func.code})) {
+      isMdpGetSuccessorsBCode(func_code)) {
     Register* compare = nullptr;
     Register* bonus_const = nullptr;
     if (matchMdpPriorityBonusMultiply(instr->output(), &compare, &bonus_const)) {
@@ -2920,7 +2600,8 @@ static std::optional<TinyMethodResult> classifyTinyInstanceMethod(
   }
 
   std::vector<BytecodeInstruction> body;
-  for (auto bc_instr : BytecodeInstructionBlock{code}) {
+  BytecodeInstructionBlock bytecode_block{code};
+  for (auto bc_instr : bytecode_block) {
     if (bc_instr.opcode() == RESUME) {
       continue;
     }
@@ -4177,12 +3858,6 @@ Register* simplifyCIntToCBool(Env& env, const CIntToCBool* instr) {
 }
 
 Register* simplifyInstr(Env& env, const Instr* instr) {
-  // 调试输出：检查是否遇到 YieldFrom 指令
-  if (instr->opcode() == Opcode::kYieldFrom) {
-    fprintf(stderr, "[SIMPLIFY] Found YieldFrom instruction in simplifyInstr!\n");
-    fflush(stderr);
-  }
-
   switch (instr->opcode()) {
     case Opcode::kCheckVar:
     case Opcode::kCheckExc:
@@ -4297,7 +3972,6 @@ Register* simplifyInstr(Env& env, const Instr* instr) {
       return simplifyYieldFrom(env, static_cast<const YieldFrom*>(instr));
 
     case Opcode::kOptimizedYieldFrom:
-      // OptimizedYieldFrom is already optimized; no further simplification
       return nullptr;
 
     default:

@@ -9,7 +9,7 @@
 namespace jit::hir {
 
 void EscapeAnalysisPass::Run(Function& func) {
-  JIT_LOG("EscapeAnalysisPass: Running on function {}", func.fullname);
+  JIT_DLOG("EscapeAnalysisPass: Running on function {}", func.fullname);
   func_ = &func;
   
   // 逃逸分析是一个分析 pass，不修改 HIR
@@ -60,7 +60,7 @@ bool EscapeAnalysisPass::isReturned(const Register* gen_reg) {
         // 检查返回值是否是 gen_reg
         const Return* ret_instr = static_cast<const Return*>(&instr);
         if (ret_instr && ret_instr->GetOperand(0) == gen_reg) {
-          JIT_LOG("  -> Generator is returned");
+          JIT_DLOG("  -> Generator is returned");
           return true;
         }
       }
@@ -82,7 +82,7 @@ bool EscapeAnalysisPass::isStoredExternally(const Register* gen_reg) {
       if (instr.opcode() == Opcode::kStoreField) {
         const StoreField* store = static_cast<const StoreField*>(&instr);
         if (store && store->value() == gen_reg) {
-          JIT_LOG("  -> Generator is stored to field");
+          JIT_DLOG("  -> Generator is stored to field");
           return true;
         }
       }
@@ -107,7 +107,7 @@ bool EscapeAnalysisPass::isPassedToUnknownFunction(const Register* gen_reg) {
           // 检查 pargs 中是否包含 gen_reg
           Register* pargs = call->pargs();
           if (pargs == gen_reg) {
-            JIT_LOG("  -> Generator is passed to function");
+            JIT_DLOG("  -> Generator is passed to function");
             return true;
           }
         }
@@ -157,7 +157,7 @@ bool EscapeAnalysisPass::isDirectlyConsumed(const Register* gen_reg) {
                   // 检查第一个参数是否是 gen_reg
                   Register* pargs = call->pargs();
                   if (pargs == gen_reg) {
-                    JIT_LOG("  -> Generator is directly consumed by {}", name);
+                    JIT_DLOG("  -> Generator is directly consumed by {}", name);
                     return true;
                   }
                 }
