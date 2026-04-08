@@ -50,18 +50,32 @@ worker = _has_token("--worker") or os.environ.get("PYPERFORMANCE_RUNID") not in 
 )
 
 if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
+    # 从外层命令继承的环境变量读取 JIT 配置。
+    # 必须在 os.environ = dict(os.environ) 之前读取，因为替换后
+    # 虽然仍可读取已有值，但需要在这里处理 PYTHONJITAUTO 的特殊情况。
+
+    # PYTHONJITAUTO: 控制 compile_after_n_calls 阈值。
+    # 必须从 C environ 中移除，防止 module_exec 阶段过早设置
+    # compile_after_n_calls 导致内部启动函数（如 frozen importlib）
+    # 被编译引发崩溃。改为 JIT 初始化后从 Python 层面设置。
+    auto_threshold = os.environ.get("PYTHONJITAUTO")
+    os.environ.pop("PYTHONJITAUTO", None)
+
+    # PYTHONJITDISABLE: 控制是否禁用 JIT。
+    os.environ.pop("PYTHONJITDISABLE", None)
+
+    # 以下环境变量保留在 C environ 中，让 module_exec 的
+    # FlagProcessor 正常处理（只设配置标志，不触发编译）：
+    # - PYTHONJITENABLEJITLISTWILDCARDS: 允许 JIT list 使用通配符
+    # - CINDERX_ENABLE_SPECIALIZED_OPCODES: 启用特化操作码
+
+    # CINDERX_JIT_LIST: 逗号分隔的 JIT list 条目（如 "__main__:*,mymod:*"）
+    jit_list_str = os.environ.get("CINDERX_JIT_LIST", "")
+
     if os.environ.get("PYPERFORMANCE_RUNID"):
         # pyperf metadata collection can trip over os._Environ methods after
         # JIT-enabled startup. A plain dict avoids that worker-only bug.
         os.environ = dict(os.environ)
-
-    # Keep the pyperformance driver process on the safe side by allowing it to
-    # start with PYTHONJITDISABLE=1. Workers can still opt back into JIT by
-    # inheriting a dedicated worker-only autojit setting.
-    worker_autojit = os.environ.get("CINDERX_WORKER_PYTHONJITAUTO")
-    if worker_autojit not in (None, ""):
-        os.environ["PYTHONJITAUTO"] = worker_autojit
-        os.environ.pop("PYTHONJITDISABLE", None)
 
     try:
         if os.environ.get("PYPERFORMANCE_RUNID"):
@@ -75,13 +89,19 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
 
         if os.environ.get("PYTHONJITDISABLE") in (None, "", "0"):
             jit.enable()
+
             if _is_truthy(os.environ.get("CINDERX_ENABLE_SPECIALIZED_OPCODES")):
                 jit.enable_specialized_opcodes()
-            entries = os.environ.get("CINDERX_JITLIST_ENTRIES", "")
-            if entries:
-                for entry in entries.split(","):
+
+            # 从 CINDERX_JIT_LIST 环境变量加载 JIT list 条目
+            if jit_list_str:
+                for entry in jit_list_str.split(","):
                     entry = entry.strip()
                     if entry:
                         jit.append_jit_list(entry)
+
+            # 从 PYTHONJITAUTO 环境变量设置编译阈值
+            if auto_threshold is not None and auto_threshold.isdigit():
+                jit.compile_after_n_calls(int(auto_threshold))
     except Exception:
         pass
