@@ -273,3 +273,13 @@
   - `unpack_sequence`: about `+4.62%`
   - `scimark_monte_carlo`: about `-9.62%`
   - `go`: about `+10.07%`
+- Completed the remaining representative-set compares:
+  - `scimark_sor`: about `+0.67%`
+  - `scimark_lu`: about `-6.98%`
+  - `nbody`: about `+1.36%`
+  - `spectral_norm`: about `+9.38%`
+  - `chaos`: about `+1.91%`
+  - `raytrace`: about `-2.62%`
+- Updated conclusion:
+  - explicit-kernel compare is the only trustworthy fresh compare mode so far
+  - current representative set is mixed, not all-green

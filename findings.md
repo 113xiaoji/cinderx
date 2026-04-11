@@ -5088,16 +5088,46 @@ Conclusion:
     - baseline: `0.5210239990000218`
     - current: `0.5734823480000273`
     - delta: about `+10.07%`
+- Additional explicit-kernel representative results (same isolated compare mode):
+  - `scimark_sor`
+    - baseline: `0.2221047580000004`
+    - current: `0.22358974200005832`
+    - delta: about `+0.67%`
+  - `scimark_lu`
+    - baseline: `0.18117821800001366`
+    - current: `0.16852488200004245`
+    - delta: about `-6.98%`
+  - `nbody`
+    - baseline: `0.16208432999997058`
+    - current: `0.16428091399995992`
+    - delta: about `+1.36%`
+  - `spectral_norm`
+    - baseline: `0.1733933729999535`
+    - current: `0.18966300600004615`
+    - delta: about `+9.38%`
+  - `chaos`
+    - baseline: `0.14064295699995455`
+    - current: `0.1433338360000107`
+    - delta: about `+1.91%`
+  - `raytrace`
+    - baseline: `0.6207002759999796`
+    - current: `0.6044125829999984`
+    - delta: about `-2.62%`
 - Interpretation:
   - the explicit-kernel harness is now giving real JIT-on-kernel numbers
   - that story is not identical to the earlier `compile_strategy none` broad
     results
-  - current next step is to extend this explicit-kernel compare to:
-    - `scimark_sor`
-    - `scimark_lu`
-    - `nbody`
-    - `spectral_norm`
-    - `chaos`
-    - `raytrace`
-  - `chaos`/`raytrace` wrapper completion was interrupted by SSH resets, not by
-    a new code regression
+  - current representative set summary:
+    - clear positives:
+      - `fannkuch`
+      - `scimark_monte_carlo`
+      - `scimark_lu`
+      - `raytrace`
+    - near flat / slight regressions:
+      - `unpack_sequence`
+      - `scimark_sor`
+      - `nbody`
+      - `chaos`
+    - clear remaining regressions in this kernel-targeted mode:
+      - `go`
+      - `spectral_norm`

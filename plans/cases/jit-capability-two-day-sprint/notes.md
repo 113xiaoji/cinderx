@@ -271,11 +271,22 @@
   - `unpack_sequence` with `_unpack.do_unpacking`: about `+4.62%`
   - `scimark_monte_carlo` with `_scimark.MonteCarlo`: about `-9.62%`
   - `go` with `Board.useful + UCTNode.play + UCTNode.random_playout`: about `+10.07%`
+- Remaining representative-set results with the same explicit-kernel mode:
+  - `scimark_sor` with `_scimark.SOR_execute`: about `+0.67%`
+  - `scimark_lu` with `_scimark.LU_factor`: about `-6.98%`
+  - `nbody` with `bench_nbody + advance`: about `+1.36%`
+  - `spectral_norm` with `bench_spectral_norm + eval_AtA_times_u + part_A_times_u + part_At_times_u`: about `+9.38%`
+  - `chaos` with `create_image_chaos + transform_point + get_random_trafo`: about `+1.91%`
+  - `raytrace` with `Scene.render + Scene.rayColour + firstIntersection`: about `-2.62%`
 - Immediate conclusion:
   - the explicit-kernel compare path is the first trustworthy fresh compare
     mode after the harness cleanup
   - it also shows that some earlier “all-green” conclusions from the
     `compile_strategy none` path were overstated
+  - current representative-set picture is mixed rather than uniformly positive
+  - the clearest remaining regression signals in kernel-targeted mode are now:
+    - `go`
+    - `spectral_norm`
 
 ## Initial prioritization
 
