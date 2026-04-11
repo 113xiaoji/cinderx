@@ -4447,3 +4447,33 @@ Conclusion:
   - the standard helper remains blocked by build isolation on the ARM host
   - the workaround path proved that a manual no-isolation wheel build and reinstall can complete successfully
   - validation still did not reach an `OK` tier-test or tier-probe result because the freshly installed runtime segfaults on `import cinderx`
+
+- clean disposable-clone retest of the hypothesis "the import segfault came from the earlier partial/manual ARM sync":
+  - local setup:
+    - created a disposable clone from branch `codex/baseline-tier-fastmode-mvp`
+    - made the smallest helper-only change there:
+      - `scripts/arm/remote_update_build_test.sh`
+      - changed:
+        - `"$PY" -m build --wheel`
+      - to:
+        - `"$PY" -m build --wheel -n`
+    - committed that helper-only tweak in the disposable clone so `scripts/sync_upstream.ps1` would accept a clean tree
+  - standard helper rerun from the disposable clone:
+    - env:
+      - `ARM_RUNTIME_SKIP_TESTS=test_`
+      - `EXTRA_TEST_CMD=python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+      - `SKIP_DEFAULT_PYPERF_GATES=1`
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath <disposable-clone> -UpstreamRemote origin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/baseline-tier-fastmode-mvp -ArmHost 124.70.162.35 -Benchmark richards`
+  - result on a fully synced ARM tree:
+    - the helper successfully archived and rsynced the clean source tree into `/root/work/cinderx-main`
+    - the no-isolation build started from that clean tree
+    - the build then failed during C++ compilation before wheel install, before tier tests, and before any `import cinderx` check could run
+  - key compile evidence:
+    - `cinderx/Jit/pyjit.cpp:244:3: error: no member named 'printPythonException' in namespace '(anonymous namespace)::jit'; did you mean simply 'printPythonException'?`
+    - `cinderx/Jit/pyjit.cpp:339:5: error: no member named 'getConfig' in namespace '(anonymous namespace)::jit'; did you mean simply 'getConfig'?`
+    - `cinderx/Jit/pyjit.cpp:927:10: error: use of undeclared identifier 'compilePreloaderImplForTier'; did you mean 'jit::compilePreloaderImplForTier'?`
+    - `fatal error: too many errors emitted, stopping now [-ferror-limit=]`
+  - interpretation:
+    - on the clean full-source path, the earlier `import cinderx` segfault did **not** reproduce because the build never reached install/import
+    - this points to a different higher-priority blocker on the clean path: the fully synced source currently fails to compile on ARM in `pyjit.cpp`
