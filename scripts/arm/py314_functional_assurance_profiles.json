@@ -1,0 +1,56 @@
+{
+  "profiles": {
+    "py314-pr-core": {
+      "baseline": {
+        "remote_env": {
+          "SKIP_ARM_RUNTIME": "1",
+          "SKIP_JIT_EFFECTIVENESS_SMOKE": "1",
+          "SKIP_PYPERF_SETUP": "1",
+          "EXTRA_TEST_CMD": "python -m unittest tests/test_py314_functional_assurance_profiles.py -v"
+        }
+      },
+      "optimized": {
+        "remote_env": {
+          "SKIP_ARM_RUNTIME": "1",
+          "SKIP_PYPERF_SETUP": "1",
+          "CINDERX_ENABLE_SPECIALIZED_OPCODES": "1",
+          "EXTRA_TEST_CMD": "PYTHONPATH=cinderx/PythonLib python -m unittest test_cinderx.test_frame_evaluator test_cinderx.test_jit_specialization test_cinderx.test_jit_generators test_cinderx.test_jit_disable test_cinderx.test_jit_exception -v"
+        }
+      }
+    },
+    "py314-nightly-extended": {
+      "baseline": {
+        "remote_env": {
+          "SKIP_ARM_RUNTIME": "1",
+          "SKIP_JIT_EFFECTIVENESS_SMOKE": "1",
+          "SKIP_PYPERF_SETUP": "1",
+          "EXTRA_TEST_CMD": "PYTHONPATH=cinderx/PythonLib python -m unittest test_cinderx.test_cpython_overrides.test_asyncgen test_cinderx.test_cpython_overrides.test_coroutines test_cinderx.test_cpython_overrides.test_dis test_cinderx.test_cpython_overrides.test_generators test_cinderx.test_cpython_overrides.test_inspect test_cinderx.test_cpython_overrides.test_trace test_cinderx.test_cpython_overrides.test_tracemalloc test_cinderx.test_cpython_overrides.test_types -v"
+        }
+      },
+      "optimized": {
+        "remote_env": {
+          "SKIP_PYPERF_SETUP": "1",
+          "CINDERX_ENABLE_SPECIALIZED_OPCODES": "1",
+          "EXTRA_TEST_CMD": "PYTHONPATH=cinderx/PythonLib python -m unittest test_cinderx.test_frame_evaluator test_cinderx.test_jit_specialization test_cinderx.test_jit_generators test_cinderx.test_jit_disable test_cinderx.test_jit_exception -v"
+        }
+      }
+    },
+    "py314-release-full": {
+      "baseline": {
+        "remote_env": {
+          "SKIP_ARM_RUNTIME": "1",
+          "SKIP_JIT_EFFECTIVENESS_SMOKE": "1",
+          "SKIP_PYPERF_SETUP": "1",
+          "EXTRA_TEST_CMD": "python -m unittest tests/test_py314_functional_assurance_profiles.py -v"
+        }
+      },
+      "optimized": {
+        "remote_env": {
+          "SKIP_PYPERF_SETUP": "1",
+          "CINDERX_ENABLE_SPECIALIZED_OPCODES": "1",
+          "EXTRA_TEST_CMD": "PYTHONPATH=cinderx/PythonLib python -m unittest test_cinderx.test_frame_evaluator test_cinderx.test_jit_specialization test_cinderx.test_jit_generators test_cinderx.test_jit_disable test_cinderx.test_jit_exception -v"
+        }
+      }
+    }
+  }
+}

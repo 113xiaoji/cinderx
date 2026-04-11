@@ -447,6 +447,106 @@ entrypoint:
       method-with-values lowering
     - the outer-process trigger bulk-schedules arbitrary live functions, so the
       eventual crashing compile does not need to be `Holder.run` itself
+## 2026-04-07 Issue: Python 3.14 功能保障矩阵
+
+- 状态：
+  - in progress
+- 说明：
+  - 本节用于记录 `py314-pr-core`、`py314-nightly-extended`、`py314-release-full`
+    三个 profile 的正式远端验证结果
+
+### 2026-04-07 profile 契约与入口能力
+
+- 目标：
+  - 为 Python 3.14 功能保障矩阵建立命名 profile 契约，并把远端入口扩展到支持 lane 级环境变量展开
+- 代码变更：
+  - 新增：
+    - `scripts/arm/py314_functional_assurance_profiles.json`
+    - `tests/test_py314_functional_assurance_profiles.py`
+    - `docs/py314-functional-assurance-matrix.md`
+  - 修改：
+    - `scripts/push_to_arm.ps1`
+    - `scripts/arm/remote_update_build_test.sh`
+- 新增远端入口能力：
+  - `push_to_arm.ps1` 支持 `-Profile` / `-Lane`
+  - `remote_update_build_test.sh` 支持：
+    - `SKIP_ARM_RUNTIME`
+    - `SKIP_JIT_EFFECTIVENESS_SMOKE`
+    - `SKIP_PYPERF_SETUP`
+- 本地 wrapper smoke：
+  - `push_to_arm.ps1 -Profile py314-pr-core -Lane baseline`
+  - 结果：
+    - 参数已被正确识别
+    - 当前阻塞点前移到既有的 dirty-worktree 保护，而不是“未知参数”
+
+### py314-pr-core / baseline
+
+- 入口：
+  - 统一远端 helper：`scripts/arm/remote_update_build_test.sh`
+  - 本轮 TDD 使用 staged-tree archive 上传后执行同一 helper
+- 远端 workdir：
+  - `/root/work/cinderx-profile-test-20260407d`
+- 结果：
+  - `PASS`
+- 关键测试：
+  - `tests/test_py314_functional_assurance_profiles.py`
+- 结论：
+  - baseline lane 可以在跳过默认 ARM runtime / JIT smoke / pyperf setup 的情况下稳定执行 profile 契约测试
+
+### py314-pr-core / optimized
+
+- 入口：
+  - 统一远端 helper：`scripts/arm/remote_update_build_test.sh`
+- 远端 workdir：
+  - `/root/work/cinderx-py314-pr-core-optimized-20260407c`
+- 结果：
+  - `PASS`
+- 关键测试：
+  - `test_cinderx.test_frame_evaluator`
+  - `test_cinderx.test_jit_specialization`
+  - `test_cinderx.test_jit_generators`
+  - `test_cinderx.test_jit_disable`
+  - `test_cinderx.test_jit_exception`
+- 运行摘要：
+  - `Ran 91 tests ... OK (skipped=2)`
+- 结论：
+  - `py314-pr-core / optimized` 需要保持 OSS-safe 测试集合
+  - `test_jit_coroutines`、`test_type_cache` 不适合放进当前 OSS optimized lane
+
+### py314-nightly-extended / baseline
+
+- 入口：
+  - 统一远端 helper：`scripts/arm/remote_update_build_test.sh`
+- 远端 workdir：
+  - `/root/work/cinderx-py314-nightly-baseline-20260407c`
+- 结果：
+  - `PASS`
+- 关键测试：
+  - `test_cinderx.test_cpython_overrides.test_asyncgen`
+  - `test_cinderx.test_cpython_overrides.test_dis`
+  - `test_cinderx.test_cpython_overrides.test_generators`
+  - `test_cinderx.test_cpython_overrides.test_inspect`
+  - `test_cinderx.test_cpython_overrides.test_trace`
+  - `test_cinderx.test_cpython_overrides.test_tracemalloc`
+  - `test_cinderx.test_cpython_overrides.test_types`
+- 运行摘要：
+  - `Ran 12 tests ... OK (skipped=1)`
+- 结论：
+  - `test_cpython_overrides.test__opcode` 不应进入 Python 3.14 nightly baseline
+  - 原因是它仍依赖 `DUP_TOP_TWO`、`JUMP_IF_TRUE_OR_POP` 这类旧 opcode 名称
+
+### 本轮额外环境结论
+
+- 远端构建必须使用 fresh workdir 才稳定：
+  - 复用旧 `scratch/` 时出现过不稳定的 `.o.d` / 头文件错误
+- `CINDERX_BUILD_JOBS=1` 对当前 ARM 主机是必要的：
+  - 否则更容易放大构建阶段噪声
+- ARM 主机磁盘容易被 repeated fresh workdir + `arm-sync` 工件打满：
+  - 本轮在重跑 nightly 之前清理了：
+    - `/root/work/cinderx-profile-test-*`
+    - `/root/work/cinderx-py314-*`
+    - `/root/work/arm-sync/*`
+    - `/root/.cache/*`
 
 ### Open case: nqueens residual MakeFunction / issue #61
 
@@ -4705,7 +4805,6 @@ Conclusion:
   worker-startup verification problem (`jit was not enabled in the worker`)
   after the targeted tests and benchmark commands have already completed.
 
-<<<<<<< HEAD
 ## 2026-03-19 Issue 48: tomli_loads handled-subscript deopt loop
 
 ### Scope
