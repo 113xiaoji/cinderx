@@ -137,6 +137,16 @@ bool isBackwardJumpOpcode(int opcode) {
   }
 }
 
+void disableHotLoopOSRAtInstruction(_Py_CODEUNIT* this_instr) {
+#if PY_VERSION_HEX >= 0x030E0000
+  if (this_instr->op.code == JUMP_BACKWARD_JIT) {
+    this_instr->op.code = JUMP_BACKWARD_NO_JIT;
+  }
+#else
+  (void)this_instr;
+#endif
+}
+
 bool isCallOpcode(int opcode) {
   switch (opcode) {
     case CALL:
@@ -3812,6 +3822,7 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   if (const char* cached_reason =
           jitCtx()->lookupHotLoopSkipDecision(code.get(), bc_offset)) {
     jitCtx()->recordHotLoopSkipOnce(code, bc_offset, cached_reason);
+    disableHotLoopOSRAtInstruction(this_instr);
     return 0;
   }
 
@@ -3820,12 +3831,14 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   if (loop_counts.call_ops >= 6) {
     jitCtx()->cacheHotLoopSkipDecision(code, bc_offset, "high_call_wrapper");
     jitCtx()->recordHotLoopSkipOnce(code, bc_offset, "high_call_wrapper");
+    disableHotLoopOSRAtInstruction(this_instr);
     return 0;
   }
   if (loop_counts.attr_ops >= 4 &&
       loop_counts.attr_ops >= loop_counts.call_ops + 2) {
     jitCtx()->cacheHotLoopSkipDecision(code, bc_offset, "attr_heavy_loop");
     jitCtx()->recordHotLoopSkipOnce(code, bc_offset, "attr_heavy_loop");
+    disableHotLoopOSRAtInstruction(this_instr);
     return 0;
   }
 
