@@ -3850,15 +3850,23 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   if (compiled_func == nullptr) {
     return 0;
   }
+  auto maybe_finalize_for_future_calls = [&]() {
+    if (compile_state.needs_finalize) {
+      jitCtx()->finalizeFunc(func, *compiled_func);
+      compile_state.needs_finalize = false;
+    }
+  };
 
   const OSREntryMetadata* entry =
       compiled_func->runtime()->lookupOSREntry(bc_offset);
   if (entry == nullptr || entry->test_entry_address == 0) {
+    maybe_finalize_for_future_calls();
     return 0;
   }
 
   auto args = buildPhase1OSRArgs(frame, *entry);
   if (!args.has_value()) {
+    maybe_finalize_for_future_calls();
     return 0;
   }
 

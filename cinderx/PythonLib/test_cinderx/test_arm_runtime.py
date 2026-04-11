@@ -566,6 +566,70 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(int(lines[-1]), 1, proc.stdout)
 
+    def test_phase1_hot_loop_compile_without_osr_entry_still_finalizes(self) -> None:
+        code = textwrap.dedent(
+            """
+            import json
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def hot(n: int) -> int:
+                x = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
+                s = 0
+                while n > 0:
+                    a, b, c, d, e, f, g, h, i, j = x
+                    s += a + j
+                    n -= 1
+                return s
+
+            jit.get_and_clear_runtime_stats()
+            result = hot(5000)
+            stats = jit.get_and_clear_runtime_stats()
+            osr_entries = [
+                entry for entry in stats.get("osr", [])
+                if entry["normal"]["func_qualname"] == "hot"
+            ]
+
+            print(
+                json.dumps(
+                    {
+                        "result": result,
+                        "osr_count": sum(entry["int"]["count"] for entry in osr_entries),
+                        "compiled": jit.is_jit_compiled(hot),
+                        "compiled_size": jit.get_compiled_size(hot),
+                    }
+                )
+            )
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/phase1_no_osr_entry_finalize.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertEqual(payload["result"], 45000, proc.stdout)
+            self.assertEqual(payload["osr_count"], 0, proc.stdout)
+            self.assertTrue(payload["compiled"], proc.stdout)
+            self.assertGreater(payload["compiled_size"], 0, proc.stdout)
+
     def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
         code = textwrap.dedent(
             """
