@@ -209,6 +209,32 @@ HotLoopOpcodeCounts analyzeHotLoopOpcodeCounts(
   return counts;
 }
 
+int countCallOpcodesOutsideHotLoop(
+    BorrowedRef<PyCodeObject> code,
+    _Py_CODEUNIT* loop_start,
+    _Py_CODEUNIT* this_instr) {
+#if PY_VERSION_HEX >= 0x030D0000
+  auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
+#else
+  auto* bytecode = _PyCode_CODE(code);
+#endif
+
+  int start_idx = static_cast<int>(loop_start - bytecode);
+  int end_idx = static_cast<int>(this_instr - bytecode);
+  int limit = countIndices(code);
+  int count = 0;
+  for (int idx = 0; idx < limit;) {
+    if (idx < start_idx || idx >= end_idx) {
+      int opcode = unspecialize(uninstrument(code, idx));
+      if (isCallOpcode(opcode)) {
+        count++;
+      }
+    }
+    idx += inlineCacheSize(code, idx) + 1;
+  }
+  return count;
+}
+
 struct Phase1OSRArgs {
   std::vector<Ref<>> owned;
   std::vector<PyObject*> raw;
@@ -1789,8 +1815,11 @@ PyObject* force_compile(PyObject* /* self */, PyObject* arg) {
   if (func == nullptr) {
     return nullptr;
   }
-  if (!isJitUsable() || isJitCompiled(func)) {
+  if (!isJitUsable()) {
     Py_RETURN_FALSE;
+  }
+  if (isJitCompiled(func)) {
+    Py_RETURN_TRUE;
   }
 
   if (Ci_InitFrameEvalFunc() < 0) {
@@ -3850,24 +3879,33 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   if (compiled_func == nullptr) {
     return 0;
   }
-  auto maybe_finalize_for_future_calls = [&]() {
-    if (compile_state.needs_finalize) {
-      jitCtx()->finalizeFunc(func, *compiled_func);
-      compile_state.needs_finalize = false;
+  int call_ops_outside_loop =
+      countCallOpcodesOutsideHotLoop(code, loop_start, this_instr);
+  auto defer_finalize_for_future_calls = [&](const char* reason) {
+    if (!compile_state.needs_finalize) {
+      return 0;
     }
+    if (call_ops_outside_loop != 0) {
+      return 0;
+    }
+    (void)reason;
+    if (auto* mod_state = cinderx::getModuleState()) {
+      mod_state->registered_compilation_units.emplace(func.getObj());
+    }
+    *finalize_func_out = func.get();
+    compile_state.needs_finalize = false;
+    return 2;
   };
 
   const OSREntryMetadata* entry =
       compiled_func->runtime()->lookupOSREntry(bc_offset);
   if (entry == nullptr || entry->test_entry_address == 0) {
-    maybe_finalize_for_future_calls();
-    return 0;
+    return defer_finalize_for_future_calls("missing_osr_entry");
   }
 
   auto args = buildPhase1OSRArgs(frame, *entry);
   if (!args.has_value()) {
-    maybe_finalize_for_future_calls();
-    return 0;
+    return defer_finalize_for_future_calls("phase1_args_unavailable");
   }
 
   auto osr_entry = reinterpret_cast<vectorcallfunc>(entry->test_entry_address);

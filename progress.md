@@ -198,6 +198,40 @@
 ### Performance / behavior summary
 - Raytrace direct benchmark:
   - previous median: `0.5452457539504394s`
+ 
+## Session: 2026-04-11 (Remote Space Cleanup)
+
+### Phase 1: Inventory
+- **Status:** in_progress
+- **Started:** 2026-04-11
+- Actions taken:
+  - Read current `task_plan.md`, `progress.md`, and `findings.md` for context
+  - Ran `planning-with-files` session catchup (no stored Codex session state)
+- Files created/modified:
+  - task_plan.md (added remote cleanup plan)
+  - progress.md (this entry)
+
+### Phase 2-4: Cleanup + Verify
+- **Status:** complete
+- Actions taken:
+  - Measured ARM disk usage (`df -h`) and `/root/work` sizes
+  - Removed stale `/root/work` issue/benchmark workdirs
+  - Re-checked `df -h` to confirm reclaimed space
+- Result:
+  - `/dev/vda2` moved from 100% full to 73% used (`21G` available)
+
+## Session: 2026-04-11 (Local Python Env for CinderX)
+
+### Phase 1: Requirements + platform decision
+- **Status:** in_progress
+- **Started:** 2026-04-11
+- Actions taken:
+  - Read `README.md` and `pyproject.toml` for platform/version requirements
+  - Checked `wsl -l -v` to see if WSL distributions are installed
+  - Updated task plan for local environment setup
+- Files created/modified:
+  - task_plan.md (added local environment plan)
+  - progress.md (this entry)
   - current median: `0.5367581009631976s`
   - previous total deopts: `257510`
   - current total deopts: `19285`
@@ -212,3 +246,17 @@
 - Tried disabling `LOAD_ATTR_INSTANCE_VALUE` for non-leaf `self` receivers.
 - That removed the last deopt bucket but regressed raytrace to about `1.92s`, so it was not kept.
 
+## 2026-04-12
+
+- Reproduced a clean regression in the unified ARM helper path after
+  `91006d4c`, then bisected it against `4dac6841`.
+- Narrowed the regression to no-OSR finalize behavior plus `force_compile()`
+  semantics for already-compiled functions.
+- Implemented:
+  - safe-point finalize path in the interpreter/OSR handshake
+  - call-outside-loop gate for no-OSR finalize
+  - idempotent `force_compile()`
+  - updated smoke/test expectations for already-compiled hot-loop functions
+- Verified through the unified remote helper path with `SKIP_PYPERF=1`:
+  - `Ran 93 tests in 119.196s`
+  - `OK`

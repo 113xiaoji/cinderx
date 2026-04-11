@@ -201,6 +201,34 @@
 - Updated conclusion:
   - no stable median regression remains in the currently measured broad set
 
+## 2026-04-12 stabilization follow-up
+
+- Clean helper verification exposed a real regression after `91006d4c` that had
+  been masked by earlier stale-helper / noisy-runner paths.
+- Clean split:
+  - `4dac6841`: `Ran 92 tests ... OK`
+  - current after `91006d4c`: multiple ARM runtime failures plus helper smoke
+    breakage
+- Root cause evolved in three steps:
+  1. immediate finalize inside `_PyJIT_TryHotLoopOSR()` was too aggressive
+  2. even deferred finalize needed a shape gate for functions with calls
+     outside the active loop
+  3. `force_compile()` returning `False` for already-hot-loop-compiled
+     functions broke remaining force-compile regression guards
+- Final behavior now in the worktree:
+  - safe-point finalize path via `osr_entered == 2`
+  - no-OSR finalize only when there are no call opcodes outside the active hot
+    loop
+  - `force_compile()` is idempotent and returns success when a function is
+    already compiled
+  - helper smoke and `test_jit_force_compile_smoke` accept already-compiled
+    functions and still verify compiled execution
+- Final clean ARM verification through the unified helper path:
+  - `Ran 93 tests in 119.196s`
+  - `OK`
+  - `jit-effective-ok compiled_size 984 interp_calls 10`
+  - helper exits cleanly at `SKIP_PYPERF=1 set; done after smoke.`
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

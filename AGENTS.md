@@ -52,6 +52,17 @@
     - `scimark_lu`
   - rerunning the broader direct matrix after that fix now shows no stable
     median regression in the currently measured broad set
+  - 2026-04-12 follow-up:
+    - clean helper verification initially exposed a real regression introduced
+      after `91006d4c`
+    - final current worktree now re-stabilizes the clean helper path:
+      - `Ran 93 tests in 119.196s`
+      - `OK`
+      - `jit-effective-ok compiled_size 984 interp_calls 10`
+    - key runtime adjustments:
+      - defer no-OSR finalize to interpreter safe point
+      - only no-OSR finalize loop-dominant shapes (no calls outside loop)
+      - make `force_compile()` idempotent for already-compiled functions
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

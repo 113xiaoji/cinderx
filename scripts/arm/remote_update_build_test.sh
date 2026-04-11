@@ -216,7 +216,8 @@ for _ in range(10):
 after = jit.count_interpreted_calls(f)
 assert after > before, (before, after)
 
-assert jit.force_compile(f), "force_compile failed"
+if not jit.is_jit_compiled(f):
+    assert jit.force_compile(f), "force_compile failed"
 assert jit.is_jit_compiled(f), "expected f() to be JIT compiled"
 code_size = jit.get_compiled_size(f)
 assert code_size > 0, code_size

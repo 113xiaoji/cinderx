@@ -60,9 +60,11 @@ class ArmRuntimeTests(unittest.TestCase):
         after = cinderx.jit.count_interpreted_calls(f)
         self.assertGreater(after, before)
 
-        # Force compilation and verify that subsequent calls don't bump the
-        # interpreted call counter (i.e., compiled code is actually executing).
-        self.assertTrue(cinderx.jit.force_compile(f))
+        # Hot-loop compilation may already have finalized `f` by the time we
+        # reach the explicit force-compile call. In either case, compiled code
+        # must be available and used for the steady-state checks below.
+        if not cinderx.jit.is_jit_compiled(f):
+            self.assertTrue(cinderx.jit.force_compile(f))
         self.assertTrue(cinderx.jit.is_jit_compiled(f))
         self.assertGreater(cinderx.jit.get_compiled_size(f), 0)
 

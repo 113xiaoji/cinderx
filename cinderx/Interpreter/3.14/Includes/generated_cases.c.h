@@ -9367,7 +9367,12 @@
                 if (osr_entered < 0) {
                     JUMP_TO_LABEL(error);
                 }
-                if (osr_entered > 0) {
+                if (osr_entered == 2) {
+                    if (osr_finalize_func != NULL) {
+                        _PyJIT_FinalizeHotLoopCompile(osr_finalize_func);
+                    }
+                }
+                if (osr_entered == 1) {
                     for (int _i = 0; _i < _PyFrame_GetCode(frame)->co_nlocalsplus; _i++) {
                         if (!PyStackRef_IsNull(frame->localsplus[_i])) {
                             PyStackRef_CLOSE(frame->localsplus[_i]);

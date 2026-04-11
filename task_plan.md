@@ -195,8 +195,41 @@ Closeout complete: revalidated on ARM staging and ready for review.
   - `GuardType = 1`
   - `PrimitiveUnbox = 1`
   - `DoubleAbs = 1`
-  - `PrimitiveBox = 1`
-  - `VectorCall = 0`
+- `PrimitiveBox = 1`
+- `VectorCall = 0`
+
+## Task Plan: Remote Space Cleanup (>=20 GB)
+
+### Goal
+Free at least 20 GB on the ARM remote host while preserving active workdirs and
+current sprint artifacts.
+
+### Current Phase
+Phase 4 (verify): complete
+
+### Phases
+- Phase 1: Inventory (completed)
+  - Check `df -h` on the ARM host
+  - Enumerate largest directories under `/root/work`, `/root/.cache`,
+    `/root/venv*`, `/tmp`, and `/var/cache`
+- Phase 2: Candidate cleanup list (completed)
+  - Identify old workdirs in `/root/work` and stale incoming bundles
+  - Identify large build artifacts or venvs no longer referenced by current
+    sprint work
+- Phase 3: Execute cleanup (completed)
+  - Remove or archive candidates until >=20 GB is reclaimed
+- Phase 4: Verify and document (completed)
+  - Re-run `df -h` and note reclaimed space
+  - Record cleanup actions and remaining large directories in `findings.md`
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+|-------|---------|------------|
+| PowerShell expanded remote `du/stat` subshells, causing local `du/stat` lookup errors | 1 | Built remote command string in a variable and passed as a single SSH argument |
+| `ssh` connection reset when probing `/root/.cache` size | 1 | Retried the probe; command succeeded on second attempt |
+| `awk` sum failed due to PowerShell `$1` interpolation/escaping | 1 | Parsed `du` output locally in PowerShell and computed totals there |
+| Large `rm -rf` command ended with `Connection closed` | 1 | Retried deletion in smaller batches (3-5 paths per SSH command) |
+| `df -h` retry needed after `kex_exchange_identification` error | 1 | Re-ran `df -h` successfully |
 
 ### Status
 - Current local code for issue33 is ready for review/commit.
@@ -263,4 +296,40 @@ Closeout complete: revalidated on ARM staging and ready for review.
     - a fallback generic call path if builtin identity does not hold
   - current HIR counts therefore mix executed fast-path ops with dormant fallback-path ops
   - more importantly, the `CALL 0` that creates the genexpr object and the following `FOR_ITER` live in different bytecode blocks, so the old `set(genexpr)` same-block rewrite structure does not apply
-  - current local worktree has been restored to stable `HEAD`; no unverified nqueens optimization code is kept
+- current local worktree has been restored to stable `HEAD`; no unverified nqueens optimization code is kept
+
+## Task Plan: Local Python Environment for CinderX (Windows host)
+
+### Goal
+Set up a local environment that can build and run CinderX. Because Windows is
+unsupported, the plan targets WSL2 (Linux x86_64) with Python 3.14.3+ and a
+supported compiler toolchain.
+
+### Current Phase
+Phase 1 (requirements + platform decision): in_progress
+
+### Phases
+- Phase 1: Requirements + platform decision
+  - Confirm WSL2 Ubuntu install path (Windows native is unsupported)
+  - Confirm required Python and compiler versions
+- Phase 2: Install Linux tooling
+  - Install Python 3.14.3+ inside WSL2
+  - Install GCC 13+ or Clang 18+, CMake, and build essentials
+- Phase 3: Build/install CinderX from repo
+  - `pip install -e .` (or `pip install .`) within the repo
+  - Capture build logs and resolve any missing deps
+- Phase 4: Verify
+  - `python -c "import cinderx, cinderx.jit; cinderx.jit.auto()"` inside WSL2
+  - Record `python --version` and compiler version used
+## 2026-04-12 follow-up
+
+- Status:
+  - reproduced and fixed the clean ARM regression introduced after the
+    no-OSR-finalize coverage change
+- Verified outcomes:
+  - clean helper path is green again with `SKIP_PYPERF=1`
+  - previously failing targeted ARM runtime regressions are green again
+- Remaining follow-up:
+  - rerun representative benchmark subsets on the latest stabilized worktree to
+    confirm the broad positive direct-compare story still holds after the
+    stabilization changes

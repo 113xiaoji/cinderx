@@ -118,6 +118,53 @@ entrypoint:
     - remote `/opt/python-3.14` already has:
       - `build`
       - `wheel`
+
+### 2026-04-11 Remote space cleanup (ARM host 124.70.162.35)
+
+- Pre-cleanup `df -h`:
+  - `/dev/vda2` `78G` total, `77G` used, `0` available (100% full)
+- Largest consumers:
+  - `/root/work`: `37G`
+  - `/root/.cache`: `874M`
+  - `/var/lib/docker`: `901M`
+- Cleanup executed (all under `/root/work`, mostly Mar 18–24 workdirs):
+  - Issue-specific workdirs removed:
+    - `cinderx-deepcopy-issue47-base`, `cinderx-deepcopy-issue47`
+    - `cinderx-tomli-issue48`, `cinderx-tomli-issue48-main`,
+      `cinderx-tomli-issue48-iso`
+    - `issue49-bench-cur`, `bm-nqueens-issue51`, `cinderx-raytrace-issue52`
+    - `issue58-jit-list`
+    - `issue60-go-method-values-base`, `issue60-go-method-values`
+    - `cinderx-issue62-base`, `cinderx-issue62-base2`,
+      `cinderx-issue62-deepcopy-id-inline`, `cinderx-issue62-base-rerun`
+    - `cinderx-issue63`, `cinderx-issue63-git`, `issue63-stage`
+    - `cinderx-issue64-base`, `cinderx-issue64-unpickle-stop`
+    - `issue61-build`, `issue61-src`
+  - Benchmark/baseline workdirs removed:
+    - `cinderx-dt-current`, `cinderx-dt-current-final`,
+      `cinderx-dt-current-final2`, `cinderx-dt-oss-quick`,
+      `cinderx-dt-focus`, `cinderx-dt-builtin-ci`
+    - `cinderx-deltablue-current`, `cinderx-deltablue-latest`
+    - `cinderx-regression-fix`, `cinderx-callmethod-inline`,
+      `cinderx-callmethod-inline-tests`
+    - `cinderx-latest-buildability`, `cinderx-main-pyperf-base`
+    - `cinderx-perf-base`
+- Preserved:
+  - `cinderx-main`, `arm-sync`, `incoming`, and April 2026 go-baseline workdirs
+- Post-cleanup `df -h`:
+  - `/dev/vda2` `78G` total, `55G` used, `21G` available (73% used)
+  - Reclaimed ~=21 GB (meets >=20 GB target)
+
+### 2026-04-11 Local CinderX requirements (from README/pyproject)
+
+- Platform:
+  - Linux x86_64 required; Windows is not supported
+  - macOS builds but most features are disabled at runtime
+- Python:
+  - Requires Python `3.14.3+` per README
+  - `pyproject.toml` allows `>=3.14.0, <3.16`
+- Toolchain:
+  - GCC 13+ or Clang 18+ required
       - `setuptools 82.0.0`
   - verification:
     - current branch restore on ARM succeeded with:
@@ -4928,3 +4975,45 @@ Conclusion:
     - final trust for this regression round comes from:
       - the clean `scratch/lib...` direct probes
       - the clean `scratch/lib...` benchmark reproduction
+
+## 2026-04-12 hot-loop finalize follow-up
+
+- Clean current deploy using the fixed helper path reproduced a real regression
+  after `91006d4c`:
+  - `4dac6841` with the same helper path was green:
+    - `Ran 92 tests ... OK`
+  - current head initially failed multiple ARM runtime tests and helper smoke
+- Root-cause narrowing:
+  - the regression was introduced by `jit: finalize hot-loop compile without osr entry`
+  - the problem was not the benchmark logic itself, but what happened after a
+    hot-loop compile succeeded without a usable OSR entry
+- Important evidence:
+  - simple smoke function `f()` became JIT-compiled before explicit
+    `force_compile()`, so `force_compile()` returning `False` was no longer a
+    reliable indicator of failure
+  - several failing child-process tests completed their internal work but then
+    crashed on process exit
+  - `force_uncompile()` before exit avoided the crash in a temp-file child
+    reproducer
+- Implemented behavior changes:
+  - no-OSR finalize is now deferred to the interpreter safe point via a new
+    `_PyJIT_TryHotLoopOSR()` return mode handled in
+    `generated_cases.c.h`
+  - no-OSR finalize is now gated so we do not eagerly finalize functions that
+    still have call opcodes outside the active hot loop
+  - `force_compile()` is now idempotent:
+    - returns `True` when the function is already JIT compiled
+  - smoke/test logic was updated to tolerate functions that become compiled
+    during the interpreted warmup phase
+- Clean ARM verification after the fixes:
+  - unified remote helper path:
+    - `Ran 93 tests in 119.196s`
+    - `OK`
+    - `jit-effective-ok compiled_size 984 interp_calls 10`
+    - `SKIP_PYPERF=1 set; done after smoke.`
+  - targeted previously failing cases all passed under the stabilized runner:
+    - `test_jit_force_compile_smoke`
+    - `test_phase1_hot_loop_compile_without_osr_entry_still_finalizes`
+    - `test_unpack_sequence_shared_tuple_and_list_avoid_repeated_deopts`
+    - `test_module_attr_vectorcall_survives_zeroed_return_register`
+    - `test_polymorphic_loop_local_method_load_avoids_method_with_values_deopts`
