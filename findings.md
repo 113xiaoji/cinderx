@@ -4477,3 +4477,69 @@ Conclusion:
   - interpretation:
     - on the clean full-source path, the earlier `import cinderx` segfault did **not** reproduce because the build never reached install/import
     - this points to a different higher-priority blocker on the clean path: the fully synced source currently fails to compile on ARM in `pyjit.cpp`
+
+- clean disposable-clone retest after `6dcf20da fix: resolve pyjit tier helper namespace lookup`:
+  - local setup:
+    - created a fresh disposable clone from `codex/baseline-tier-fastmode-mvp` including `6dcf20da3f5e947f7b3d2ced7adaf5c515790713`
+    - applied the same temporary helper-only change in the disposable clone:
+      - `"$PY" -m build --wheel`
+      - -> `"$PY" -m build --wheel -n`
+    - committed that helper tweak locally in the disposable clone so `scripts/sync_upstream.ps1` could run
+  - standard helper rerun from the disposable clone:
+    - env:
+      - `ARM_RUNTIME_SKIP_TESTS=test_`
+      - `EXTRA_TEST_CMD=python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+      - `SKIP_DEFAULT_PYPERF_GATES=1`
+  - result on the clean full-source path:
+    - the helper successfully archived and rsynced the full source tree into `/root/work/cinderx-main`
+    - the no-isolation ARM build completed past the earlier `pyjit.cpp` compile blocker
+    - the helper then failed later inside `/root/venv-cinderx314` before wheel reinstall completed
+  - helper failure evidence:
+    - `/root/work/incoming/remote_update_build_test.sh: line 91: 135001 Segmentation fault (core dumped) PYTHONJIT=0 python -m pip install -q -U pip`
+  - fresh-tree import check after the successful build:
+    - command:
+      - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u - <<'PY'`
+      - `print('before-import')`
+      - `import cinderx`
+      - `print('after-import', cinderx.__file__)`
+      - `PY`
+    - result:
+      - `before-import`
+      - import failed with a missing symbol, not a segfault
+    - key output:
+      - `ImportError: /root/work/cinderx-main/scratch/lib.linux-aarch64-cpython-314/_cinderx.so: undefined symbol: _ZN3jit12compile_funcE11BorrowedRefI16PyFunctionObjectENS_11CompileTierE`
+      - demangled:
+        - `jit::compile_func(BorrowedRef<PyFunctionObject>, jit::CompileTier)`
+  - focused tier test after the clean build:
+    - command shape used for direct verification:
+      - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -u -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_jit_tiering.py -v`
+    - result:
+      - `FAILED (errors=4)`
+    - root cause:
+      - `test_jit_tiering` could not import `cinderx.jit` because `_cinderx.so` had the same undefined symbol above
+  - direct remote tier probe after the clean build:
+    - command:
+      - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u - <<'PY'`
+      - `import cinderx.jit as jit`
+      - `jit.enable()`
+      - `jit.baseline_compile_after_n_calls(1)`
+      - `jit.compile_after_n_calls(1000000)`
+      - `def hot(n):`
+      - `    s = 0`
+      - `    for i in range(n):`
+      - `        s += i`
+      - `    return s`
+      - `print(jit.get_function_tier(hot))`
+      - `hot(10)`
+      - `print(jit.get_function_tier(hot))`
+      - `jit.force_compile(hot)`
+      - `print(jit.get_function_tier(hot))`
+      - `print(hot(10))`
+      - `PY`
+    - result:
+      - failed immediately during `import cinderx.jit`
+      - same undefined-symbol `ImportError`
+  - interpretation:
+    - the clean helper path now clearly gets past `pyjit.cpp` compilation
+    - the earlier post-install `import cinderx` segfault did not reproduce on this path
+    - the new clean-path blocker is a missing exported symbol in the freshly built `_cinderx.so`, plus the helper’s existing driver-venv `pip` step still crashes before reinstall completes
