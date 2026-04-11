@@ -4350,3 +4350,46 @@ Conclusion:
     - final trust for this regression round comes from:
       - the clean `scratch/lib...` direct probes
       - the clean `scratch/lib...` benchmark reproduction
+
+## 2026-04-12 baseline tier fast-mode MVP validation
+
+- status:
+  - `BLOCKED`
+- scope:
+  - validate the baseline-tier fast-mode MVP locally
+  - validate it through the standard ARM helper path with only `test_jit_tiering.py`
+  - run the direct remote tier probe only after a fresh helper build succeeds
+- local focused tier test:
+  - command:
+    - `& 'C:\work\code\deer-flow\backend\.venv\Scripts\python.exe' -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+  - result:
+    - `FAILED (errors=1)`
+  - evidence:
+    - `ModuleNotFoundError: No module named 'cinderx.jit'`
+    - this interpreter was able to import the test file itself but did not have a usable local `cinderx` runtime/module setup for the branch under test
+- standard remote helper:
+  - first attempt from the task worktree with the requested shape:
+    - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\work\code\cinderx5\.worktrees\baseline-tier-fastmode-mvp -UpstreamRemote codex-local -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/baseline-tier-fastmode-mvp -ArmHost 124.70.162.35 -Benchmark richards`
+  - blocker on first attempt:
+    - `fatal: 'bench-cur-7c361dce' is already used by worktree at 'C:/work/code/cinderx5'`
+  - second attempt:
+    - reran the same standard helper flow from a disposable local clone so the upstream branch could be checked out without the worktree conflict
+    - env:
+      - `ARM_RUNTIME_SKIP_TESTS=test_`
+      - `EXTRA_TEST_CMD=python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+      - `SKIP_DEFAULT_PYPERF_GATES=1`
+  - result on ARM:
+    - the helper synced sources into `/root/work/cinderx-main`
+    - the helper reached `>> build wheel (CMAKE_BUILD_PARALLEL_LEVEL=1)`
+    - the build then failed before the extra tier test command ran
+  - evidence:
+    - `WARNING: Retrying ... HTTPSConnectionPool(host='pypi.org', port=443): Read timed out.`
+    - `ERROR: Could not find a version that satisfies the requirement setuptools>=77.0.3 (from versions: none)`
+    - `ERROR: No matching distribution found for setuptools>=77.0.3`
+- direct remote tier probe:
+  - not run
+  - reason:
+    - the standard helper did not complete a fresh build/install for the current source, so there was no trustworthy same-helper runtime to probe
+- conclusion:
+  - no `OK` validation evidence was produced for this MVP in this run
+  - current blocker is the remote build-isolation dependency install on the ARM host, not a tier-test assertion failure
