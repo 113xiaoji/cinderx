@@ -154,16 +154,22 @@ void Compiler::runPasses(
 
 std::optional<CompiledFunctionData> Compiler::Compile(
     BorrowedRef<PyFunctionObject> func) {
+  return Compile(func, CompileTier::kOptimized);
+}
+
+std::optional<CompiledFunctionData> Compiler::Compile(
+    BorrowedRef<PyFunctionObject> func,
+    CompileTier tier) {
   JIT_CHECK(PyFunction_Check(func), "Expected PyFunctionObject");
   JIT_CHECK(
       !getThreadedCompileContext().compileRunning(),
       "multi-thread compile must preload first");
   std::unique_ptr<hir::Preloader> preloader =
       hir::Preloader::makePreloader(func, makeFrameReifier(func->func_code));
-  return preloader ? Compile(*preloader) : std::nullopt;
+  return preloader ? Compile(*preloader, tier) : std::nullopt;
 }
 
-PassConfig createConfig() {
+PassConfig createOptimizedConfig() {
   auto result = static_cast<uint64_t>(PassConfig::kMinimal);
 
   auto set = [&](bool global, PassConfig pass) {
@@ -189,8 +195,26 @@ PassConfig createConfig() {
   return static_cast<PassConfig>(result);
 }
 
+PassConfig createConfig(CompileTier tier) {
+  switch (tier) {
+    case CompileTier::kBaseline:
+      return static_cast<PassConfig>(
+          PassConfig::kCleanCFG | PassConfig::kDeadCodeElim |
+          PassConfig::kInsertUpdatePrevInstr);
+    case CompileTier::kOptimized:
+      return createOptimizedConfig();
+  }
+  JIT_ABORT("Unknown compile tier {}", tierName(tier));
+}
+
 std::optional<CompiledFunctionData> Compiler::Compile(
     const jit::hir::Preloader& preloader) {
+  return Compile(preloader, CompileTier::kOptimized);
+}
+
+std::optional<CompiledFunctionData> Compiler::Compile(
+    const jit::hir::Preloader& preloader,
+    CompileTier tier) {
   const std::string& fullname = preloader.fullname();
   if (!PyDict_CheckExact(preloader.globals())) {
     JIT_DLOG(
@@ -233,7 +257,7 @@ std::optional<CompiledFunctionData> Compiler::Compile(
     irfunc->setCompilationPhaseTimer(std::move(compilation_phase_timer));
   }
 
-  PassConfig config = createConfig();
+  PassConfig config = createConfig(tier);
   COMPILE_TIMER(
       irfunc->compilation_phase_timer,
       "HIR transformations",
@@ -281,6 +305,7 @@ std::optional<CompiledFunctionData> Compiler::Compile(
   CompiledFunctionData compiled_data;
   compiled_data.code = code;
   compiled_data.vectorcall_entry = entry;
+  compiled_data.tier = tier;
   compiled_data.stack_size = stack_size;
   compiled_data.spill_stack_size = spill_stack_size;
   compiled_data.inline_function_stats = std::move(inline_stats);

@@ -72,6 +72,7 @@ bool isJitCompiled(const PyFunctionObject* func);
 #include "cinderx/Jit/code_runtime.h"
 #include "cinderx/Jit/hir/function.h"
 #include "cinderx/Jit/hir/hir.h"
+#include "cinderx/Jit/tier.h"
 
 #include <chrono>
 #include <cstddef>
@@ -84,6 +85,7 @@ namespace jit {
 struct CompiledFunctionData {
   std::span<const std::byte> code;
   vectorcallfunc vectorcall_entry{nullptr};
+  CompileTier tier{CompileTier::kOptimized};
   int stack_size{0};
   int spill_stack_size{0};
   std::chrono::nanoseconds compile_time{};
@@ -132,6 +134,10 @@ class CompiledFunction {
 
   vectorcallfunc vectorcallEntry() const {
     return data_.vectorcall_entry;
+  }
+
+  CompileTier tier() const {
+    return data_.tier;
   }
 
   void* staticEntry() const;
