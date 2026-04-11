@@ -101,6 +101,8 @@ using HotLoopSkipReasonStats = jit::UnorderedMap<const char*, HotLoopSkipStat>;
 using HotLoopSkipStats =
     jit::UnorderedMap<const PyCodeObject*, HotLoopSkipReasonStats>;
 using HotLoopSkipQualnames = jit::UnorderedMap<const PyCodeObject*, std::string>;
+using HotLoopSkipDecisions =
+    jit::UnorderedMap<const PyCodeObject*, jit::UnorderedMap<BCOffset, const char*>>;
 
 using InlineCacheStats = std::vector<CacheStats>;
 
@@ -347,6 +349,17 @@ class Context : public IJitContext {
   void recordOSR(CodeRuntime* code_runtime, BCOffset bc_offset);
 
   void recordHotLoopSkip(BorrowedRef<PyCodeObject> code, const char* reason);
+  void recordHotLoopSkipOnce(
+      BorrowedRef<PyCodeObject> code,
+      BCOffset bc_offset,
+      const char* reason);
+  const char* lookupHotLoopSkipDecision(
+      const PyCodeObject* code,
+      BCOffset bc_offset) const;
+  void cacheHotLoopSkipDecision(
+      BorrowedRef<PyCodeObject> code,
+      BCOffset bc_offset,
+      const char* reason);
 
   template <typename F>
   bool ifOSRStat(
@@ -527,6 +540,8 @@ class Context : public IJitContext {
 #endif
   HotLoopSkipStats hot_loop_skip_stats_;
   HotLoopSkipQualnames hot_loop_skip_qualnames_;
+  HotLoopSkipDecisions hot_loop_skip_decisions_;
+  HotLoopSkipDecisions hot_loop_skip_reported_;
 #ifdef Py_GIL_DISABLED
   mutable std::mutex hot_loop_skip_stats_mutex_;
 #endif

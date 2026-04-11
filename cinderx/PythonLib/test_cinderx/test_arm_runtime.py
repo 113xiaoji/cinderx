@@ -335,8 +335,8 @@ class ArmRuntimeTests(unittest.TestCase):
 
             lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
             self.assertGreaterEqual(len(lines), 2, proc.stdout)
-            self.assertGreater(int(lines[-2]), 0, proc.stdout)
-            self.assertGreater(int(lines[-1]), 0, proc.stdout)
+            self.assertEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 1, proc.stdout)
 
     def test_phase1_loop_osr_skips_moderate_call_wrapper_shape(self) -> None:
         code = textwrap.dedent(
@@ -563,8 +563,8 @@ class ArmRuntimeTests(unittest.TestCase):
 
             lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
             self.assertGreaterEqual(len(lines), 2, proc.stdout)
-            self.assertGreater(int(lines[-2]), 0, proc.stdout)
-            self.assertGreater(int(lines[-1]), 0, proc.stdout)
+            self.assertEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 1, proc.stdout)
 
     def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
         code = textwrap.dedent(

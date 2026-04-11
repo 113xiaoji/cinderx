@@ -3807,16 +3807,25 @@ extern "C" int _PyJIT_TryHotLoopOSR(
       PyBytes_GET_SIZE(code->co_exceptiontable) != 0) {
     return 0;
   }
+  BCOffset bc_offset = hotLoopBCOffset(frame, loop_start);
+
+  if (const char* cached_reason =
+          jitCtx()->lookupHotLoopSkipDecision(code.get(), bc_offset)) {
+    jitCtx()->recordHotLoopSkipOnce(code, bc_offset, cached_reason);
+    return 0;
+  }
 
   HotLoopOpcodeCounts loop_counts =
       analyzeHotLoopOpcodeCounts(code, loop_start, this_instr);
   if (loop_counts.call_ops >= 6) {
-    jitCtx()->recordHotLoopSkip(code, "high_call_wrapper");
+    jitCtx()->cacheHotLoopSkipDecision(code, bc_offset, "high_call_wrapper");
+    jitCtx()->recordHotLoopSkipOnce(code, bc_offset, "high_call_wrapper");
     return 0;
   }
   if (loop_counts.attr_ops >= 4 &&
       loop_counts.attr_ops >= loop_counts.call_ops + 2) {
-    jitCtx()->recordHotLoopSkip(code, "attr_heavy_loop");
+    jitCtx()->cacheHotLoopSkipDecision(code, bc_offset, "attr_heavy_loop");
+    jitCtx()->recordHotLoopSkipOnce(code, bc_offset, "attr_heavy_loop");
     return 0;
   }
 
@@ -3829,7 +3838,6 @@ extern "C" int _PyJIT_TryHotLoopOSR(
     return 0;
   }
 
-  BCOffset bc_offset = hotLoopBCOffset(frame, loop_start);
   const OSREntryMetadata* entry =
       compiled_func->runtime()->lookupOSREntry(bc_offset);
   if (entry == nullptr || entry->test_entry_address == 0) {

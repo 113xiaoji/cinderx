@@ -288,12 +288,62 @@ void Context::recordHotLoopSkip(
   stat.count++;
 }
 
+void Context::recordHotLoopSkipOnce(
+    BorrowedRef<PyCodeObject> code,
+    BCOffset bc_offset,
+    const char* reason) {
+#ifdef Py_GIL_DISABLED
+  std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
+#endif
+  const PyCodeObject* code_obj = code.get();
+  auto& reported = hot_loop_skip_reported_[code_obj];
+  auto [reported_it, inserted] = reported.emplace(bc_offset, reason);
+  if (!inserted) {
+    return;
+  }
+  auto [qualname_it, qualname_inserted] =
+      hot_loop_skip_qualnames_.emplace(code_obj, std::string{});
+  if (qualname_inserted) {
+    qualname_it->second = codeQualname(code);
+  }
+  HotLoopSkipStat& stat = hot_loop_skip_stats_[code_obj][reason];
+  stat.count++;
+}
+
+const char* Context::lookupHotLoopSkipDecision(
+    const PyCodeObject* code,
+    BCOffset bc_offset) const {
+#ifdef Py_GIL_DISABLED
+  std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
+#endif
+  auto code_it = hot_loop_skip_decisions_.find(code);
+  if (code_it == hot_loop_skip_decisions_.end()) {
+    return nullptr;
+  }
+  auto reason_it = code_it->second.find(bc_offset);
+  if (reason_it == code_it->second.end()) {
+    return nullptr;
+  }
+  return reason_it->second;
+}
+
+void Context::cacheHotLoopSkipDecision(
+    BorrowedRef<PyCodeObject> code,
+    BCOffset bc_offset,
+    const char* reason) {
+#ifdef Py_GIL_DISABLED
+  std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
+#endif
+  hot_loop_skip_decisions_[code.get()].emplace(bc_offset, reason);
+}
+
 void Context::clearHotLoopSkipStats() {
 #ifdef Py_GIL_DISABLED
   std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
 #endif
   hot_loop_skip_stats_.clear();
   hot_loop_skip_qualnames_.clear();
+  hot_loop_skip_reported_.clear();
 }
 
 InlineCacheStats Context::getAndClearLoadMethodCacheStats() {
