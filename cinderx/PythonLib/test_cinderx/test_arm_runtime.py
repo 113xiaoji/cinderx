@@ -486,6 +486,86 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(lines[-2], "False", proc.stdout)
             self.assertEqual(lines[-1], "False", proc.stdout)
 
+    def test_phase1_loop_osr_reports_skip_reason_for_object_stateful_shape(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Cell:
+                def __init__(self, value: int) -> None:
+                    self.value = value
+                    self.flag = value & 1
+                    self.other = None
+
+                def step(self) -> int:
+                    base = self.value
+                    if self.flag:
+                        base += self.other.value
+                    else:
+                        base -= self.other.value
+                    self.value = base
+                    self.flag = base & 1
+                    return base
+
+            cells = [Cell(i) for i in range(32)]
+            for i, cell in enumerate(cells):
+                cell.other = cells[(i + 1) % len(cells)]
+
+            def hot(n: int) -> int:
+                total = 0
+                idx = 0
+                while n > 0:
+                    cell = cells[idx]
+                    total += cell.value
+                    total += cell.step()
+                    total += cell.other.value
+                    idx += 1
+                    if idx == len(cells):
+                        idx = 0
+                    n -= 1
+                return total
+
+            jit.get_and_clear_runtime_stats()
+            hot(20000)
+            stats = jit.get_and_clear_runtime_stats()
+            skip_entries = [
+                entry for entry in stats.get("hot_loop_skip", [])
+                if entry["normal"]["func_qualname"] == "hot"
+                and entry["normal"]["reason"] == "attr_heavy_loop"
+            ]
+
+            print(len(skip_entries))
+            print(sum(entry["int"]["count"] for entry in skip_entries))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/phase1_object_stateful_skip_reason.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 2, proc.stdout)
+            self.assertGreater(int(lines[-2]), 0, proc.stdout)
+            self.assertGreater(int(lines[-1]), 0, proc.stdout)
+
     def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
         code = textwrap.dedent(
             """

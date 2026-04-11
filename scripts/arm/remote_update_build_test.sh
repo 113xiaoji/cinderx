@@ -86,11 +86,9 @@ if [[ ! -d "$DRIVER_VENV" ]]; then
   "$PY" -m venv "$DRIVER_VENV"
 fi
 
-echo ">> install wheel + pyperformance into driver venv"
+echo ">> install wheel into driver venv"
 . "$DRIVER_VENV/bin/activate"
-PYTHONJIT=0 python -m pip install -q -U pip
 PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
-PYTHONJIT=0 python -m pip install -q -U pyperformance
 
 echo ">> unittest: ARM runtime checks"
 if [[ -z "$ARM_RUNTIME_SKIP_TESTS" ]]; then
@@ -207,8 +205,15 @@ deactivate
 
 run_extra_cmd "extra verification command" "$EXTRA_VERIFY_CMD"
 
+if [[ "$SKIP_PYPERF" == "1" ]]; then
+  echo "SKIP_PYPERF=1 set; done after smoke."
+  exit 0
+fi
+
 echo ">> ensure pyperformance venv exists"
-. "$DRIVER_VENV/bin/activate"
+echo ">> install/refresh pyperformance tooling in driver venv"
+PYTHONJIT=0 python -m pip install -q -U pip
+PYTHONJIT=0 python -m pip install -q -U pyperformance
 ensure_pyperf_venv() {
   local action="$1"
   local cmd=()

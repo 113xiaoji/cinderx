@@ -153,12 +153,28 @@ bool isCallOpcode(int opcode) {
   }
 }
 
-bool shouldSkipHotLoopOSRForHighCallWrapper(
+bool isAttrOpcode(int opcode) {
+  switch (opcode) {
+    case LOAD_ATTR:
+    case STORE_ATTR:
+    case DELETE_ATTR:
+    case LOAD_METHOD:
+    case LOAD_SUPER_ATTR:
+      return true;
+    default:
+      return false;
+  }
+}
+
+struct HotLoopOpcodeCounts {
+  int call_ops{0};
+  int attr_ops{0};
+};
+
+HotLoopOpcodeCounts analyzeHotLoopOpcodeCounts(
     BorrowedRef<PyCodeObject> code,
     _Py_CODEUNIT* loop_start,
     _Py_CODEUNIT* this_instr) {
-  constexpr int kMinLoopCalls = 6;
-
 #if PY_VERSION_HEX >= 0x030D0000
   auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
 #else
@@ -167,20 +183,20 @@ bool shouldSkipHotLoopOSRForHighCallWrapper(
 
   int idx = static_cast<int>(loop_start - bytecode);
   int end_idx = static_cast<int>(this_instr - bytecode);
-  int loop_calls = 0;
+  HotLoopOpcodeCounts counts;
 
   while (idx < end_idx) {
     int opcode = unspecialize(uninstrument(code, idx));
     if (isCallOpcode(opcode)) {
-      loop_calls++;
-      if (loop_calls >= kMinLoopCalls) {
-        return true;
-      }
+      counts.call_ops++;
+    }
+    if (isAttrOpcode(opcode)) {
+      counts.attr_ops++;
     }
     idx += inlineCacheSize(code, idx) + 1;
   }
 
-  return false;
+  return counts;
 }
 
 struct Phase1OSRArgs {
@@ -3793,8 +3809,15 @@ extern "C" int _PyJIT_TryHotLoopOSR(
     return 0;
   }
 
-  if (shouldSkipHotLoopOSRForHighCallWrapper(code, loop_start, this_instr)) {
+  HotLoopOpcodeCounts loop_counts =
+      analyzeHotLoopOpcodeCounts(code, loop_start, this_instr);
+  if (loop_counts.call_ops >= 6) {
     jitCtx()->recordHotLoopSkip(code, "high_call_wrapper");
+    return 0;
+  }
+  if (loop_counts.attr_ops >= 4 &&
+      loop_counts.attr_ops >= loop_counts.call_ops + 2) {
+    jitCtx()->recordHotLoopSkip(code, "attr_heavy_loop");
     return 0;
   }
 
