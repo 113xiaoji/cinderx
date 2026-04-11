@@ -48,6 +48,19 @@
     - remote full ARM runtime suite:
       - `Ran 92 tests in 62.480s`
       - `OK`
+- Additional Day 2 follow-up:
+  - helper build path now defaults to `BUILD_NO_ISOLATION=1`
+  - verified current restore on ARM succeeds with:
+    - `BUILD_NO_ISOLATION=1`
+    - `SKIP_PYPERF=1`
+- Current direct benchmark observations:
+  - `fannkuch` still OSRs in benchmark code
+  - `go` / `chaos` / `raytrace` now show benchmark-code skip reasons instead of
+    only imported helper noise
+- Invalid data point:
+  - one attempted `fb105b6b` direct comparison is discarded because the remote
+    source file still contained `attr_heavy_loop`, so the install state was not
+    a clean baseline
 
 ## Initial prioritization
 

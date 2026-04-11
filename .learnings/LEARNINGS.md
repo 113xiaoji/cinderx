@@ -21,6 +21,12 @@
   profitability gate using bytecode counts from the loop body itself:
   `attr_ops` and `call_ops` gave a fast way to separate object/stateful loops
   from the current hot-loop winners.
+- On the ARM host used here, `python -m build --no-isolation` is the more
+  reliable default for rapid iteration because the outer interpreter already has
+  compatible `build`, `wheel`, and `setuptools`.
+- The current direct benchmark path is useful for seeing whether benchmark code
+  itself is being skipped or OSR'd, even when pyperformance venv creation is
+  unstable.
 
 ## 2026-04-07 issue85 kickoff
 

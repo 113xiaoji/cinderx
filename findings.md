@@ -109,6 +109,61 @@ entrypoint:
       - `test_phase1_loop_osr_reports_skip_reason_for_object_stateful_shape`
     - existing guardrails remained green in the same full suite
 
+- Follow-up helper stability improvement:
+  - `scripts/arm/remote_update_build_test.sh` now defaults to:
+    - `BUILD_NO_ISOLATION=1`
+  - rationale:
+    - repeated ARM deploys were intermittently failing when `python -m build`
+      tried to create an isolated build env and re-download `setuptools`
+    - remote `/opt/python-3.14` already has:
+      - `build`
+      - `wheel`
+      - `setuptools 82.0.0`
+  - verification:
+    - current branch restore on ARM succeeded with:
+      - `BUILD_NO_ISOLATION=1`
+      - `SKIP_PYPERF=1`
+      - runtime suite still `OK`
+
+- Follow-up observability overhead reduction:
+  - `hot_loop_skip` stats storage no longer keys directly by qualname strings on
+    every skip
+  - internal stats now cache qualnames per `PyCodeObject*` and use literal
+    reason keys
+  - external Python-facing `hot_loop_skip` schema is unchanged
+
+- Current direct benchmark signal on ARM (current branch only, trustworthy):
+  - `fannkuch`
+    - median wall: about `0.5429 s`
+    - still gets same-activation OSR in `fannkuch`
+  - `go`
+    - median wall: about `0.5011 s`
+    - no final OSR entries
+    - skip reasons observed in benchmark code:
+      - `Board.useful` / `Square.move` / `Square.remove` / `EmptySet.random_choice`
+      - `UCTNode.play` as `high_call_wrapper`
+  - `chaos`
+    - median wall: about `0.1149 s`
+    - no final OSR entries
+    - skip reason observed:
+      - `Chaosgame.get_random_trafo` as `attr_heavy_loop`
+  - `raytrace`
+    - median wall: about `0.6823 s`
+    - no final OSR entries
+    - skip reasons observed:
+      - `bench_raytrace`
+      - `Scene.render`
+      - both as `high_call_wrapper`
+
+- Discarded comparison:
+  - one attempted `baseline fb105b6b` direct benchmark comparison is not
+    trustworthy
+  - reason:
+    - after the supposed baseline deploy, remote
+      `/root/work/cinderx-main/cinderx/Jit/pyjit.cpp` still contained
+      `attr_heavy_loop`
+    - so that run cannot be treated as a clean baseline result
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

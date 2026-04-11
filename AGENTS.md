@@ -19,6 +19,7 @@
 - Remote helper:
   - `SKIP_PYPERF=1` now exits after runtime smoke instead of entering
     pyperformance setup.
+  - `BUILD_NO_ISOLATION=1` is now the preferred ARM helper mode on this host.
 - Runtime direction in progress:
   - attr-heavy loop profitability gate in `cinderx/Jit/pyjit.cpp`
   - skip reason: `attr_heavy_loop`
@@ -26,6 +27,11 @@
   - full remote helper path in skip mode:
     - `Ran 92 tests ... OK`
     - helper terminates at `SKIP_PYPERF=1 set; done after smoke.`
+  - current direct benchmark runs now show skip reasons inside benchmark code
+    for:
+    - `go`
+    - `chaos`
+    - `raytrace`
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

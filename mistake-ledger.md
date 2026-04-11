@@ -13,6 +13,8 @@
   build step (`PIP_NO_INDEX=1`), which obscured the actual target behavior.
 - Set the first attr-heavy threshold from intuition instead of measured loop
   body counts, then had to tighten it after a clean red failure.
+- Trusted a “baseline” direct benchmark result too early before checking the
+  remote source file actually matched the intended baseline revision.
 
 ## 2026-04-07
 

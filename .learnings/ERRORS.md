@@ -16,6 +16,9 @@
   `deactivate: command not found`.
 - The first attr-heavy gate threshold was set too high (`attr_ops >= 5`) and
   missed the object-stateful synthetic shape, which only had `attr_count = 4`.
+- One attempted baseline direct comparison was invalidated because the remote
+  worktree still contained current attr-gate code after a supposed baseline
+  deploy. Remote source state must be verified before trusting a baseline run.
 
 ## 2026-04-07
 
