@@ -285,6 +285,92 @@ entrypoint:
   - `chaos`: modest positive
   - `raytrace`: slight positive on median, but still with warmup variance
 
+### 2026-04-11 Day 2 sprint: broader direct coverage
+
+- Method:
+  - direct benchmark-module entry calls on clean baseline/current install states
+  - 3 repeats each
+  - this pass is meant for breadth, not for final sign-off on small deltas
+
+- Broader coverage results (baseline -> current):
+  - `unpack_sequence`
+    - `0.03415 s -> 0.03864 s`
+    - about `+13.15%`
+    - note:
+      - both sides have a very large first-run outlier, so this needs a thicker
+        confirmation pass before treating as a stable regression
+  - `scimark_monte_carlo`
+    - `0.16822 s -> 0.16822 s`
+    - effectively flat
+  - `scimark_sor`
+    - `0.32682 s -> 0.32644 s`
+    - about `-0.12%`
+  - `scimark_lu`
+    - `0.31878 s -> 0.32735 s`
+    - about `+2.69%`
+  - `nbody`
+    - `0.59266 s -> 0.63085 s`
+    - about `+6.44%`
+  - `spectral_norm`
+    - `0.34193 s -> 0.37234 s`
+    - about `+8.89%`
+  - `meteor_contest`
+    - `0.35535 s -> 0.15222 s`
+    - about `-57.16%`
+  - `hexiom`
+    - `0.02771 s -> 0.02752 s`
+    - about `-0.72%`
+    - note:
+      - first-run outlier is large on both sides
+  - `pyflate`
+    - `1.37054 s -> 0.95485 s`
+    - about `-30.33%`
+  - `decimal_pi`
+    - `0.40100 s -> 0.39402 s`
+    - about `-1.74%`
+  - `telco`
+    - `0.01418 s -> 0.01368 s`
+    - about `-3.54%`
+  - `float`
+    - `0.16843 s -> 0.16155 s`
+    - about `-4.09%`
+  - `deltablue`
+    - `0.01212 s -> 0.01122 s`
+    - about `-7.41%`
+    - note:
+      - first-run outlier is large on both sides
+  - `mdp`
+    - `2.98716 s -> 2.65888 s`
+    - about `-10.99%`
+  - `barnes_hut`
+    - `1.26839 s -> 1.28039 s`
+    - about `+0.95%`
+  - `bpe_tokeniser`
+    - `7.41798 s -> 7.38742 s`
+    - about `-0.41%`
+
+- Broad-pass interpretation:
+  - clear positives:
+    - `go`
+    - `meteor_contest`
+    - `pyflate`
+    - `mdp`
+    - `float`
+    - `deltablue`
+    - `telco`
+  - clear flats:
+    - `scimark_monte_carlo`
+    - `scimark_sor`
+    - `bpe_tokeniser`
+    - `barnes_hut`
+  - likely but not yet sign-off quality regressions:
+    - `nbody`
+    - `spectral_norm`
+    - `scimark_lu`
+    - `unpack_sequence`
+  - metrics with obvious warmup skew should be thick-sampled before any
+    follow-up runtime work
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

@@ -108,6 +108,46 @@
   - the remaining issue in `raytrace` is warmup variance, not a stable median
     regression
 
+## 2026-04-11 Day 2 broader coverage pass
+
+- Ran a broader direct benchmark matrix on clean baseline/current install states
+  with 3 repeats for:
+  - `unpack_sequence`
+  - `scimark_monte_carlo`
+  - `scimark_sor`
+  - `scimark_lu`
+  - `nbody`
+  - `spectral_norm`
+  - `meteor_contest`
+  - `hexiom`
+  - `pyflate`
+  - `decimal_pi`
+  - `telco`
+  - `float`
+  - `deltablue`
+  - `mdp`
+  - `barnes_hut`
+  - `bpe_tokeniser`
+- Broad signal summary:
+  - strongest positives:
+    - `meteor_contest`
+    - `pyflate`
+    - `mdp`
+    - `go`
+  - mostly flat:
+    - `scimark_monte_carlo`
+    - `scimark_sor`
+    - `bpe_tokeniser`
+    - `barnes_hut`
+  - likely regressions needing thicker confirmation:
+    - `nbody`
+    - `spectral_norm`
+    - `scimark_lu`
+    - `unpack_sequence`
+- Important caution:
+  - `unpack_sequence`, `hexiom`, and `deltablue` all showed very large first-run
+    outliers, so their 3-repeat medians are not good final evidence
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

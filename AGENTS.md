@@ -43,8 +43,11 @@
     - `fannkuch` is effectively flat/slightly positive
     - `chaos` is modestly positive
     - `raytrace` median is slightly positive but still has warmup variance
-  - next likely focus is reducing warmup variance rather than chasing a clear
-    steady-state regression
+  - broader direct coverage now exists for another 16 benchmarks
+  - next likely focus is:
+    - thick-sample confirmation for `nbody`, `spectral_norm`,
+      `scimark_lu`, and `unpack_sequence`
+    - warmup variance reduction for `raytrace`
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
