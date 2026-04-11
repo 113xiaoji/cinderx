@@ -28,6 +28,9 @@
 - The initial broad-pass assumption that all remaining negatives might just be
   warmup noise was too optimistic; a 15-repeat pass showed several real median
   regressions remain.
+- A failed remote helper retry can look like a broken test even when the first
+  helper invocation already completed the deploy; always inspect the marker/log
+  before assuming the latest deploy did not land.
 
 ## 2026-04-07
 

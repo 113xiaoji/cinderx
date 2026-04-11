@@ -44,8 +44,8 @@
     - `chaos` is modestly positive
     - `raytrace` median is slightly positive but still has warmup variance
   - broader direct coverage now exists for another 16 benchmarks
-  - thick-sample confirmation has now promoted these as real remaining
-    regressions:
+  - follow-up coverage fix for “compiled but no OSR entry” has now turned the
+    previously confirmed regressions positive:
     - `unpack_sequence`
     - `spectral_norm`
     - `nbody`

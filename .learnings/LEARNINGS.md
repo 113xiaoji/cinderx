@@ -39,6 +39,9 @@
 - The same thicker-sample process also identified which broad-pass regressions
   are real enough to pursue: `unpack_sequence`, `spectral_norm`, `nbody`, and
   `scimark_lu` stayed negative on 15-repeat medians.
+- Some hot loops do compile successfully under the hot-loop trigger but have no
+  usable OSR entry for the current activation. Finalizing those compiled
+  functions for future calls is a high-leverage coverage fix.
 - For loops that should never OSR, caching the decision is not enough if the
   interpreter still re-enters `_PyJIT_TryHotLoopOSR()` on every backward jump.
   Rewriting the backedge to `JUMP_BACKWARD_NO_JIT` removes that residual tax.

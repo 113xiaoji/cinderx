@@ -408,6 +408,73 @@ entrypoint:
     - `nbody`
     - `scimark_lu`
 
+### 2026-04-11 Day 2 sprint: finalize-without-OSR-entry fix
+
+- New targeted fix:
+  - when hot-loop compilation succeeds but there is no usable OSR entry for the
+    current activation, finalize the compiled function immediately so future
+    calls can enter compiled code from the normal function entry
+
+- Synthetic proof:
+  - a tuple-unpack hot loop can compile successfully, have non-zero compiled
+    size, but still remain `jit.is_jit_compiled(func) == False` after the first
+    run if it lacks a usable OSR entry
+  - after the fix, the same shape finalizes and becomes directly callable as
+    compiled code on subsequent invocations
+
+- Targeted ARM test:
+  - `test_phase1_hot_loop_compile_without_osr_entry_still_finalizes`
+  - status: `OK`
+
+- Direct `unpack_sequence` proof on current install:
+  - before fix:
+    - steady-state `bench_all(400)` around `0.0385 s`
+    - `do_unpacking` not compiled after normal run
+  - after fix:
+    - first call still pays a compile/setup cost
+    - subsequent calls:
+      - around `0.00088 s`
+    - `do_unpacking` becomes compiled with non-zero compiled size
+
+- Direct `spectral_norm` proof on current install:
+  - after fix:
+    - `part_A_times_u` and `part_At_times_u` become compiled
+    - repeated `bench_spectral_norm(1)` settles near `0.179 s`
+
+- Direct `nbody` proof on current install:
+  - after fix:
+    - `advance` and `bench_nbody` both become compiled
+    - repeated `bench_nbody(1, DEFAULT_REFERENCE, DEFAULT_ITERATIONS)` settles
+      near `0.161 s`
+
+- Direct `scimark_lu` proof on current install:
+  - after fix:
+    - `bench_LU` and `LU_factor` both become compiled
+    - repeated `bench_LU(1, 100)` settles near `0.146 s`
+
+- Thick-sample compare after fix (baseline -> current, 15 repeats):
+  - `unpack_sequence`
+    - baseline: `0.03421148300549248`
+    - current: `0.0008822240051813424`
+    - delta: about `-97.42%`
+  - `scimark_lu`
+    - baseline: `0.3094897190021584`
+    - current: `0.14589117399737006`
+    - delta: about `-52.86%`
+  - `nbody`
+    - baseline: `0.5852013469993835`
+    - current: `0.1609766430046875`
+    - delta: about `-72.49%`
+  - `spectral_norm`
+    - baseline: `0.31535848299972713`
+    - current: `0.17904492800153093`
+    - delta: about `-43.22%`
+
+- Updated interpretation:
+  - the previously confirmed four regressions were all caused by a common
+    coverage gap, not by four separate profitability mistakes
+  - with this fix, the broad remaining regression list is materially reduced
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

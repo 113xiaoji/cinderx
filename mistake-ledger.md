@@ -23,6 +23,9 @@
   before doing a thicker 15-repeat confirmation pass.
 - The inverse mistake is also real: a broad-pass negative should not be
   dismissed as noise until it has had at least one thicker confirmation pass.
+- Once the broad regressions were confirmed, the right next move was to search
+  for a common mechanism instead of treating each benchmark as an independent
+  optimization problem.
 
 ## 2026-04-07
 

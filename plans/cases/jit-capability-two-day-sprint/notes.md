@@ -166,6 +166,23 @@
   3. `nbody`
   4. `scimark_lu`
 
+## 2026-04-11 Day 2 finalize-without-OSR-entry
+
+- Root cause:
+  - a function could be compiled by the hot-loop path yet remain unusable for
+    future calls if the current activation had no usable OSR entry
+- Fix:
+  - finalize the compiled function immediately for future calls when:
+    - compilation succeeded
+    - current activation cannot OSR into it
+- Results:
+  - `unpack_sequence`: about `-97.4%`
+  - `nbody`: about `-72.5%`
+  - `scimark_lu`: about `-52.9%`
+  - `spectral_norm`: about `-43.2%`
+- Current conclusion:
+  - this is a broad coverage improvement, not a benchmark-specific tweak
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：
