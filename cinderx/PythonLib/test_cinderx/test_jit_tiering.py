@@ -40,4 +40,6 @@ class TieringApiTests(unittest.TestCase):
         jit.compile_after_n_calls(1000000)
         self.assertEqual(jit.get_function_tier(helper), "interp")
         helper(7)
+        self.assertEqual(jit.get_function_tier(helper), "interp")
+        helper(7)
         self.assertEqual(jit.get_function_tier(helper), "baseline")
