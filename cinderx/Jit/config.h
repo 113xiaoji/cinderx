@@ -195,6 +195,7 @@ struct Config {
   // Size (in number of entries) of the LoadAttrCached and StoreAttrCached
   // inline caches used by the JIT.
   uint32_t attr_cache_size{4};
+  std::optional<uint32_t> baseline_compile_after_n_calls;
   std::optional<uint32_t> compile_after_n_calls;
   GdbOptions gdb;
   JitListOptions jit_list;

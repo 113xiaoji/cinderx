@@ -12,7 +12,7 @@ class TieringApiTests(unittest.TestCase):
         self._baseline_compile_after_n_calls = get_baseline() if get_baseline else 0
 
     def tearDown(self) -> None:
-        jit.baseline_compile_after_n_calls(self._baseline_compile_after_n_calls)
+        jit.baseline_compile_after_n_calls(self._baseline_compile_after_n_calls or 0)
         jit.compile_after_n_calls(self._compile_after_n_calls or 0)
 
     def test_force_compile_baseline_exposes_baseline_tier(self) -> None:

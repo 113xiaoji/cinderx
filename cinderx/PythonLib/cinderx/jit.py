@@ -19,6 +19,7 @@ try:
         _deopt_gen,
         append_jit_list,
         auto,
+        baseline_compile_after_n_calls,
         clear_runtime_stats,
         compile_after_n_calls,
         count_interpreted_calls,
@@ -31,15 +32,18 @@ try:
         enable_hir_inliner,
         enable_specialized_opcodes,
         force_compile,
+        force_compile_baseline,
         force_uncompile,
         get_allocator_stats,
         get_and_clear_inline_cache_stats,
         get_and_clear_runtime_stats,
+        get_baseline_compile_after_n_calls,
         get_compilation_time,
         get_compile_after_n_calls,
         get_compiled_functions,
         get_compiled_size,
         get_deopt_entries,
+        get_function_tier,
         get_osr_entries,
         get_compiled_spill_stack_size,
         get_compiled_stack_size,
@@ -82,6 +86,9 @@ except ImportError:
     def auto() -> None:
         return None
 
+    def baseline_compile_after_n_calls(calls: int) -> None:
+        return None
+
     def clear_runtime_stats() -> None:
         return None
 
@@ -122,6 +129,9 @@ except ImportError:
     def force_compile(func: FuncAny) -> bool:
         return False
 
+    def force_compile_baseline(func: FuncAny) -> bool:
+        return False
+
     def force_uncompile(func: FuncAny) -> bool:
         return False
 
@@ -136,6 +146,9 @@ except ImportError:
 
     def get_compilation_time() -> int:
         return 0
+
+    def get_baseline_compile_after_n_calls() -> int | None:
+        return None
 
     def get_compile_after_n_calls() -> int | None:
         return None
@@ -160,6 +173,9 @@ except ImportError:
 
     def get_function_compilation_time(func: FuncAny) -> int:
         return 0
+
+    def get_function_tier(func: FuncAny) -> str:
+        return "interp"
 
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:
         return {}

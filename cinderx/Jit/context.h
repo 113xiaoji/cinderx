@@ -95,6 +95,72 @@ using OSRStats =
 
 using InlineCacheStats = std::vector<CacheStats>;
 
+enum class FunctionTierState {
+  kInterp,
+  kBaseline,
+  kOptimized,
+};
+
+struct CompiledFunctionVersions {
+  std::unique_ptr<CompiledFunction> baseline;
+  std::unique_ptr<CompiledFunction> optimized;
+
+  CompiledFunction* active() const {
+    if (optimized != nullptr) {
+      return optimized.get();
+    }
+    return baseline.get();
+  }
+
+  FunctionTierState activeTier() const {
+    if (optimized != nullptr) {
+      return FunctionTierState::kOptimized;
+    }
+    if (baseline != nullptr) {
+      return FunctionTierState::kBaseline;
+    }
+    return FunctionTierState::kInterp;
+  }
+
+  CompiledFunction* lookup(CompileTier tier) const {
+    switch (tier) {
+      case CompileTier::kBaseline:
+        return baseline.get();
+      case CompileTier::kOptimized:
+        return optimized.get();
+    }
+    JIT_ABORT("Unknown compile tier {}", tierName(tier));
+  }
+
+  bool hasOptimizedTier() const {
+    return optimized != nullptr;
+  }
+
+  CompiledFunction* set(std::unique_ptr<CompiledFunction> compiled) {
+    switch (compiled->tier()) {
+      case CompileTier::kBaseline:
+        JIT_CHECK(baseline == nullptr, "Baseline tier already present");
+        baseline = std::move(compiled);
+        return baseline.get();
+      case CompileTier::kOptimized:
+        JIT_CHECK(optimized == nullptr, "Optimized tier already present");
+        optimized = std::move(compiled);
+        return optimized.get();
+    }
+    JIT_ABORT("Unknown compile tier {}", tierName(compiled->tier()));
+  }
+
+  template <typename Func>
+  void visit(Func&& visitor) const {
+    if (baseline != nullptr) {
+      visitor(*baseline);
+    }
+    if (optimized != nullptr) {
+      visitor(*optimized);
+    }
+  }
+};
+
 class Builtins {
  public:
   void init();
@@ -222,6 +288,9 @@ class Context : public IJitContext {
    * Look up the compiled function object for a given Python function object.
    */
   CompiledFunction* lookupFunc(BorrowedRef<PyFunctionObject> func);
+  CompiledFunction* lookupFunc(
+      BorrowedRef<PyFunctionObject> func,
+      CompileTier tier);
 
   /*
    * Gets the CompiledFunction for a given code/builtins/globals triplet.
@@ -230,17 +299,25 @@ class Context : public IJitContext {
       BorrowedRef<PyCodeObject> code,
       BorrowedRef<PyDictObject> builtins,
       BorrowedRef<PyDictObject> globals);
+  CompiledFunction* lookupCode(
+      BorrowedRef<PyCodeObject> code,
+      BorrowedRef<PyDictObject> builtins,
+      BorrowedRef<PyDictObject> globals,
+      CompileTier tier);
 
   /*
    * Looks up the CodeRuntime for a given function.
    */
   CodeRuntime* lookupCodeRuntime(BorrowedRef<PyFunctionObject> func) override;
 
+  FunctionTierState lookupFuncTier(BorrowedRef<PyFunctionObject> func);
+  bool hasOptimizedTier(BorrowedRef<PyFunctionObject> func);
+
   /*
    * Get the map of all compiled code objects, keyed by their address and also
    * their builtins and globals objects.
    */
-  const UnorderedMap<CompilationKey, std::unique_ptr<CompiledFunction>>&
+  const UnorderedMap<CompilationKey, CompiledFunctionVersions>&
   compiledCodes() const;
 
   /*
@@ -526,12 +603,15 @@ class Context : public IJitContext {
   /* Deopts a function but doesn't touch deopted_funcs_. */
   bool deoptFuncImpl(BorrowedRef<PyFunctionObject> func);
 
+  CompiledFunctionVersions* lookupCompiledVersions(const CompilationKey& key);
+  const CompiledFunctionVersions* lookupCompiledVersions(
+      const CompilationKey& key) const;
+
   /*
    * Map of all compiled code objects, keyed by their address and also their
    * builtins and globals objects.
    */
-  UnorderedMap<CompilationKey, std::unique_ptr<CompiledFunction>>
-      compiled_codes_;
+  UnorderedMap<CompilationKey, CompiledFunctionVersions> compiled_codes_;
 
   /* Set of which functions have JIT-compiled entrypoints. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> compiled_funcs_;
@@ -560,7 +640,7 @@ class Context : public IJitContext {
    * clearCache was called. Only intended to be used during
    * multithreaded_compile_test.
    */
-  std::vector<std::unique_ptr<CompiledFunction>> orphaned_compiled_codes_;
+  std::vector<CompiledFunctionVersions> orphaned_compiled_codes_;
 
   Ref<> cinderjit_module_;
 

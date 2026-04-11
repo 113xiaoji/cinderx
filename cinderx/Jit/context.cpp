@@ -5,6 +5,7 @@
 #include "internal/pycore_interp.h"
 #include "internal/pycore_pystate.h"
 
+#include "cinderx/Common/code.h"
 #include "cinderx/Common/log.h"
 #include "cinderx/Common/py-portability.h"
 #include "cinderx/Jit/elf/reader.h"
@@ -444,21 +445,22 @@ void Context::finalizeMultiThreadedCompile() {
 
 void Context::finalizeFunc(
     BorrowedRef<PyFunctionObject> func,
-    const CompiledFunction& compiled) {
+    const CompiledFunction& /* compiled */) {
   ThreadedCompileSerialize guard;
-  if (!addCompiledFunc(func)) {
-    // Someone else compiled the function between when our caller checked and
-    // called us.
-    return;
-  }
+  addCompiledFunc(func);
 
   // In case the function had previously been deopted.
   removeDeoptedFunc(func);
 
-  setVectorcall(func, compiled.vectorcallEntry());
+  auto* versions = lookupCompiledVersions(CompilationKey{func});
+  JIT_CHECK(versions != nullptr, "Expected compiled tiers for {}", funcFullname(func));
+  CompiledFunction* active = versions->active();
+  JIT_CHECK(active != nullptr, "Expected active compiled tier for {}", funcFullname(func));
+
+  setVectorcall(func, active->vectorcallEntry());
   if (hasFunctionEntryCache(func)) {
     void** indirect = findFunctionEntryCache(func);
-    *indirect = compiled.staticEntry();
+    *indirect = active->staticEntry();
   }
 }
 
@@ -549,6 +551,13 @@ CompiledFunction* Context::lookupFunc(BorrowedRef<PyFunctionObject> func) {
   return lookupCode(func->func_code, func->func_builtins, func->func_globals);
 }
 
+CompiledFunction* Context::lookupFunc(
+    BorrowedRef<PyFunctionObject> func,
+    CompileTier tier) {
+  return lookupCode(
+      func->func_code, func->func_builtins, func->func_globals, tier);
+}
+
 CodeRuntime* Context::lookupCodeRuntime(BorrowedRef<PyFunctionObject> func) {
   CompiledFunction* compiled = lookupFunc(func);
   if (compiled == nullptr) {
@@ -557,7 +566,23 @@ CodeRuntime* Context::lookupCodeRuntime(BorrowedRef<PyFunctionObject> func) {
   return compiled->runtime();
 }
 
-const UnorderedMap<CompilationKey, std::unique_ptr<CompiledFunction>>&
+FunctionTierState Context::lookupFuncTier(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  if (!compiled_funcs_.contains(func)) {
+    return FunctionTierState::kInterp;
+  }
+  auto* versions = lookupCompiledVersions(CompilationKey{func});
+  return versions == nullptr ? FunctionTierState::kInterp
+                             : versions->activeTier();
+}
+
+bool Context::hasOptimizedTier(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  auto* versions = lookupCompiledVersions(CompilationKey{func});
+  return versions != nullptr && versions->hasOptimizedTier();
+}
+
+const UnorderedMap<CompilationKey, CompiledFunctionVersions>&
 Context::compiledCodes() const {
   return compiled_codes_;
 }
@@ -604,8 +629,18 @@ CompiledFunction* Context::lookupCode(
     BorrowedRef<PyDictObject> builtins,
     BorrowedRef<PyDictObject> globals) {
   ThreadedCompileSerialize guard;
-  auto it = compiled_codes_.find(CompilationKey{code, builtins, globals});
-  return it == compiled_codes_.end() ? nullptr : it->second.get();
+  auto* versions = lookupCompiledVersions(CompilationKey{code, builtins, globals});
+  return versions == nullptr ? nullptr : versions->active();
+}
+
+CompiledFunction* Context::lookupCode(
+    BorrowedRef<PyCodeObject> code,
+    BorrowedRef<PyDictObject> builtins,
+    BorrowedRef<PyDictObject> globals,
+    CompileTier tier) {
+  ThreadedCompileSerialize guard;
+  auto* versions = lookupCompiledVersions(CompilationKey{code, builtins, globals});
+  return versions == nullptr ? nullptr : versions->lookup(tier);
 }
 
 void Context::addDeoptedFunc(BorrowedRef<PyFunctionObject> func) {
@@ -637,14 +672,26 @@ CompiledFunction* Context::makeCompiledFunction(
     const CompilationKey& key,
     CompiledFunctionData&& compiled_func) {
   auto compiled = std::make_unique<CompiledFunction>(std::move(compiled_func));
-
-  auto pair = compiled_codes_.emplace(key, std::move(compiled));
-  JIT_CHECK(pair.second, "CompilationKey already present");
+  auto [it, inserted] = compiled_codes_.try_emplace(key);
+  static_cast<void>(inserted);
+  CompiledFunction* result = it->second.set(std::move(compiled));
   // If we have a function go ahead and initialize it
   if (func != nullptr) {
-    finalizeFunc(func, *pair.first->second.get());
+    finalizeFunc(func, *result);
   }
-  return pair.first->second.get();
+  return result;
+}
+
+CompiledFunctionVersions* Context::lookupCompiledVersions(
+    const CompilationKey& key) {
+  auto it = compiled_codes_.find(key);
+  return it == compiled_codes_.end() ? nullptr : &it->second;
+}
+
+const CompiledFunctionVersions* Context::lookupCompiledVersions(
+    const CompilationKey& key) const {
+  auto it = compiled_codes_.find(key);
+  return it == compiled_codes_.end() ? nullptr : &it->second;
 }
 
 #ifndef WIN32
