@@ -1,5 +1,16 @@
 # LEARNINGS
 
+## 2026-04-11 Day 1 sprint
+
+- In pyperformance `--debug-single-value` output, benchmark entries may contain
+  only `runs[].values[]` and omit `metadata.name`. Summary tooling must infer
+  names from the requested benchmark filter or explicit row names.
+- The remote ARM workdir populated by `remote_update_build_test.sh` is not a
+  git checkout. Any summary artifact that needs a commit id must accept an
+  explicit commit string instead of relying on `git rev-parse`.
+- `bench_pyperf_direct.py` is a good low-noise place to validate new runtime
+  stats schema before trusting full pyperformance summaries.
+
 ## 2026-04-07 issue85 kickoff
 
 - `#76` 的 Phase 1 主线已经不再是主要问题，新的重点是 profitability，而不是 correctness。

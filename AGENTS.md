@@ -1,5 +1,19 @@
 # AGENTS.md
 
+## 2026-04-11 Day 1 sprint status
+
+- Active case:
+  - `plans/cases/jit-capability-two-day-sprint/`
+- Current Day 1 focus:
+  - Track A: stable remote A/B harness and summary artifacts
+  - Track B: profitability / skip-reason observability
+- Verified on ARM today:
+  - full `test_arm_runtime.py` via remote helper: `Ran 91 tests ... OK`
+  - `scripts/arm/test_pyperf_subset_tools.py`: `OK`
+  - `bench_pyperf_direct.py` now reports `top_hot_loop_skips`
+  - `run_pyperf_subset.sh` summary now retains benchmark rows even when raw
+    pyperformance JSON omits benchmark names in `--debug-single-value` mode
+
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
 工作约定：

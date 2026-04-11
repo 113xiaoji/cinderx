@@ -6,6 +6,65 @@ entrypoint:
 
 `scripts/push_to_arm.ps1` -> `scripts/arm/remote_update_build_test.sh`
 
+### 2026-04-11 Day 1 sprint: Track A / Track B
+
+- Branch/worktree:
+  - `codex/issue76-hot-loop-osr-finalize`
+  - `C:/work/code/cinderx1/cinderx`
+- Fixed baseline for current sprint:
+  - `fb105b6b`
+
+- Track B verification:
+  - Current worktree was deployed to ARM through the remote helper.
+  - Full ARM runtime suite passed:
+    - `Ran 91 tests in 64.475s`
+    - `OK`
+  - New runtime stats surface:
+    - `hot_loop_skip`
+  - New focused ARM regression:
+    - `test_phase1_loop_osr_reports_skip_reason_for_high_call_wrapper`
+
+- Track B direct proof:
+  - `scripts/arm/bench_pyperf_direct.py` on a synthetic high-call wrapper now
+    reports:
+    - `total_hot_loop_skip_count = 5000`
+    - top skip reason:
+      - `qualname = hot`
+      - `reason = high_call_wrapper`
+
+- Track A bug found:
+  - `run_pyperf_subset.sh` was producing empty `benchmarks` summaries even
+    though pyperformance itself completed successfully.
+  - Root cause:
+    - in `--debug-single-value` mode, raw pyperformance JSON may omit
+      `metadata.name` for each benchmark row
+    - the previous summary code silently skipped such rows
+
+- Track A fix:
+  - extracted summary logic into `scripts/arm/summarize_pyperf_subset.py`
+  - added unit tests in `scripts/arm/test_pyperf_subset_tools.py`
+  - summary now:
+    - infers benchmark names from the requested benchmark filter when needed
+    - accepts an explicit `git_commit` for remote non-git workdirs
+  - compare now rejects apples-to-oranges inputs when these fields differ:
+    - `benchmark_filter`
+    - `samples`
+    - `autojit`
+
+- Track A verification:
+  - local:
+    - `python -m unittest discover -s scripts/arm -p test_pyperf_subset_tools.py`
+      -> `Ran 3 tests ... OK`
+    - `python -m py_compile` on updated scripts -> `OK`
+    - `bash -n scripts/arm/run_pyperf_subset.sh` -> `OK`
+  - remote:
+    - `scripts/arm/test_pyperf_subset_tools.py` -> `Ran 3 tests ... OK`
+    - direct `run_pyperf_subset.sh` on `fannkuch` now emits a non-empty summary
+    - summary metadata includes:
+      - `run_label = day1-current`
+      - `baseline_ref = fb105b6b`
+      - `git_commit = 734ca08a+worktree`
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

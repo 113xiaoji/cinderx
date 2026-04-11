@@ -1,5 +1,12 @@
 # Mistake Ledger
 
+## 2026-04-11
+
+- Mistook an empty summary for a pyperformance execution failure instead of a
+  parser/schema mismatch.
+- Forgot that remote helper workdirs are archive-backed, not git-backed, so any
+  artifact field like `git_commit` needs explicit injection.
+
 ## 2026-04-07
 
 - 在 ARM 上做 `HEAD^ -> HEAD` A/B 时，没有先确保远端工作树和本地分支完全一致。
