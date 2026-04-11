@@ -371,6 +371,43 @@ entrypoint:
   - metrics with obvious warmup skew should be thick-sampled before any
     follow-up runtime work
 
+### 2026-04-11 Day 2 sprint: thick-sample confirmation for broad-pass regressions
+
+- Focused 15-repeat confirms were run on these four broad-pass candidates:
+  - `unpack_sequence`
+  - `scimark_lu`
+  - `nbody`
+  - `spectral_norm`
+
+- Clean 15-repeat compare (baseline -> current):
+  - `unpack_sequence`
+    - baseline: `0.03421148300549248`
+    - current: `0.03862768900580704`
+    - delta: about `+12.91%`
+    - note:
+      - both sides still have one very large first-run outlier, but medians
+        remain clearly separated even after 15 repeats
+  - `scimark_lu`
+    - baseline: `0.3094897190021584`
+    - current: `0.3187424080024357`
+    - delta: about `+2.99%`
+  - `nbody`
+    - baseline: `0.5852013469993835`
+    - current: `0.6255009710002923`
+    - delta: about `+6.89%`
+  - `spectral_norm`
+    - baseline: `0.31535848299972713`
+    - current: `0.35548062999441754`
+    - delta: about `+12.72%`
+
+- Updated interpretation:
+  - these four are now real enough to investigate further
+  - highest-severity remaining regressions by median delta are:
+    - `unpack_sequence`
+    - `spectral_norm`
+    - `nbody`
+    - `scimark_lu`
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

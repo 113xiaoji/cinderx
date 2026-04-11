@@ -21,6 +21,8 @@
   decision was cached, which left a large residual tax on `raytrace`.
 - Treated small 5-repeat benchmark deltas as actionable regressions too early,
   before doing a thicker 15-repeat confirmation pass.
+- The inverse mistake is also real: a broad-pass negative should not be
+  dismissed as noise until it has had at least one thicker confirmation pass.
 
 ## 2026-04-07
 

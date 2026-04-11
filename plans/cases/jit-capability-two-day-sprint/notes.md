@@ -148,6 +148,24 @@
   - `unpack_sequence`, `hexiom`, and `deltablue` all showed very large first-run
     outliers, so their 3-repeat medians are not good final evidence
 
+## 2026-04-11 Day 2 thick-sample broad-regression pass
+
+- Ran 15-repeat direct confirms for:
+  - `unpack_sequence`
+  - `scimark_lu`
+  - `nbody`
+  - `spectral_norm`
+- Result:
+  - `unpack_sequence`: about `+12.9%`
+  - `spectral_norm`: about `+12.7%`
+  - `nbody`: about `+6.9%`
+  - `scimark_lu`: about `+3.0%`
+- Updated priority among remaining regressions:
+  1. `unpack_sequence`
+  2. `spectral_norm`
+  3. `nbody`
+  4. `scimark_lu`
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

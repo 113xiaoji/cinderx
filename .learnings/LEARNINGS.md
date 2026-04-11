@@ -36,6 +36,9 @@
 - Small direct-benchmark regressions can flip sign under thicker samples. The
   15-repeat recheck turned `fannkuch`, `chaos`, and `raytrace` from apparent
   regressions into flat-to-positive results.
+- The same thicker-sample process also identified which broad-pass regressions
+  are real enough to pursue: `unpack_sequence`, `spectral_norm`, `nbody`, and
+  `scimark_lu` stayed negative on 15-repeat medians.
 - For loops that should never OSR, caching the decision is not enough if the
   interpreter still re-enters `_PyJIT_TryHotLoopOSR()` on every backward jump.
   Rewriting the backedge to `JUMP_BACKWARD_NO_JIT` removes that residual tax.

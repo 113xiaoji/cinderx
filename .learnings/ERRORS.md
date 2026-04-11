@@ -25,6 +25,9 @@
   placeholder, which produced a fake file-not-found debugging branch.
 - The first 5-repeat direct compare was over-interpreted before a thicker
   sample was run on the residual regressions.
+- The initial broad-pass assumption that all remaining negatives might just be
+  warmup noise was too optimistic; a 15-repeat pass showed several real median
+  regressions remain.
 
 ## 2026-04-07
 
