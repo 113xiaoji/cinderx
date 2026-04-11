@@ -5017,3 +5017,87 @@ Conclusion:
     - `test_unpack_sequence_shared_tuple_and_list_avoid_repeated_deopts`
     - `test_module_attr_vectorcall_survives_zeroed_return_register`
     - `test_polymorphic_loop_local_method_load_avoids_method_with_values_deopts`
+
+## 2026-04-12 compare harness notes
+
+- Cross-revision direct compare on the ARM host needs isolated work directories
+  and isolated driver venvs per revision.
+  - Reusing one `WORKDIR` while preserving `scratch/` across revision swaps
+    produced fake build failures and mixed-object contamination.
+  - Reusing one driver venv across revision swaps produced `pip --force-reinstall`
+    segfaults.
+- Clean deployment is now reproducible with:
+  - separate `WORKDIR`
+  - separate `DRIVER_VENV`
+  - `BUILD_NO_ISOLATION=1`
+  - `SKIP_PYPERF=1`
+- Important limitation discovered while re-running representative direct cases:
+  - `scripts/arm/bench_pyperf_direct.py` sets
+    `jit.compile_after_n_calls(1000000)` and with
+    `--compile-strategy none` the fresh compare venvs did **not** JIT-compile
+    benchmark kernels such as:
+    - `fannkuch`
+    - `bench_all`
+    - `bench_nbody`
+    - `advance`
+    - `bench_spectral_norm`
+    - `part_A_times_u`
+    - `part_At_times_u`
+  - Therefore the first clean representative numbers gathered in that mode are
+    not trustworthy as hot-loop JIT performance conclusions.
+- Follow-up required:
+  - build a compare harness that explicitly forces or jitlists the intended
+    benchmark kernels before timing, instead of relying on `compile_strategy none`
+    in a fresh compare venv.
+
+## 2026-04-12 explicit-kernel compare follow-up
+
+- `scripts/arm/bench_pyperf_direct.py` now has a new compare path via:
+  - `--compile-strategy exprs`
+  - `--compile-exprs-json`
+- This allows the direct harness to compile benchmark kernels that are imported
+  into a wrapper module, such as:
+  - `_fannkuch.fannkuch`
+  - `_unpack.do_unpacking`
+  - `_scimark.MonteCarlo`
+  - `_go.Board.useful`
+  - `_go.UCTNode.play`
+  - `_go.UCTNode.random_playout`
+- Local unit coverage:
+  - `python -m unittest scripts.arm.test_bench_pyperf_direct`
+  - result: `Ran 2 tests ... OK`
+- Clean cross-revision compare now requires both:
+  - isolated `WORKDIR`
+  - isolated `DRIVER_VENV`
+  - explicit compile expressions for the benchmark kernels being measured
+- First trustworthy explicit-kernel compare results on isolated baseline/current
+  envs (5-sample medians):
+  - `fannkuch`
+    - baseline: `0.7910059110000134`
+    - current: `0.7391623689999847`
+    - delta: about `-6.55%`
+  - `unpack_sequence`
+    - baseline: `0.0026043309999863595`
+    - current: `0.0027246399999967252`
+    - delta: about `+4.62%`
+  - `scimark_monte_carlo`
+    - baseline: `0.26910205200005066`
+    - current: `0.24322328800002424`
+    - delta: about `-9.62%`
+  - `go`
+    - baseline: `0.5210239990000218`
+    - current: `0.5734823480000273`
+    - delta: about `+10.07%`
+- Interpretation:
+  - the explicit-kernel harness is now giving real JIT-on-kernel numbers
+  - that story is not identical to the earlier `compile_strategy none` broad
+    results
+  - current next step is to extend this explicit-kernel compare to:
+    - `scimark_sor`
+    - `scimark_lu`
+    - `nbody`
+    - `spectral_norm`
+    - `chaos`
+    - `raytrace`
+  - `chaos`/`raytrace` wrapper completion was interrupted by SSH resets, not by
+    a new code regression

@@ -260,3 +260,16 @@
 - Verified through the unified remote helper path with `SKIP_PYPERF=1`:
   - `Ran 93 tests in 119.196s`
   - `OK`
+- Follow-up compare work found two harness constraints:
+  - baseline/current benchmark compare needs isolated `WORKDIR` and isolated
+    `DRIVER_VENV` per revision
+  - `bench_pyperf_direct.py --compile-strategy none` is not sufficient for
+    fresh compare venvs because the benchmark kernels stay uncompiled
+- Added a new direct harness mode for explicit kernel compilation:
+  - `--compile-strategy exprs`
+  - `--compile-exprs-json`
+- First isolated explicit-kernel compares:
+  - `fannkuch`: about `-6.55%`
+  - `unpack_sequence`: about `+4.62%`
+  - `scimark_monte_carlo`: about `-9.62%`
+  - `go`: about `+10.07%`

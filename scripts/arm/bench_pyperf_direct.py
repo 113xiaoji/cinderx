@@ -5,6 +5,7 @@ import argparse
 import dis
 import importlib.util
 import inspect
+import itertools
 import json
 import statistics
 import time
@@ -37,6 +38,34 @@ def collect_functions(module):
             for member in value.__dict__.values():
                 if inspect.isfunction(member) and getattr(member, "__module__", None) == module.__name__:
                     add(member)
+    return funcs
+
+
+def _flatten_compile_values(value):
+    if inspect.isfunction(value):
+        yield value
+        return
+    if inspect.ismethod(value):
+        yield value.__func__
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _flatten_compile_values(item)
+        return
+    raise TypeError(f"compile expression resolved to unsupported value: {value!r}")
+
+
+def resolve_compile_exprs(module, expressions):
+    funcs = []
+    seen = set()
+    globals_dict = module.__dict__
+    for expr in expressions:
+        value = eval(expr, globals_dict, globals_dict)
+        for fn in _flatten_compile_values(value):
+            ident = id(fn)
+            if ident not in seen:
+                seen.add(ident)
+                funcs.append(fn)
     return funcs
 
 
@@ -92,7 +121,13 @@ def aggregate_hot_loop_skips(events):
     return rows
 
 
-def choose_candidates(functions, strategy: str, explicit_names: set[str]):
+def choose_candidates(
+    module,
+    functions,
+    strategy: str,
+    explicit_names: set[str],
+    compile_exprs,
+):
     if strategy == "none":
         return []
     if strategy == "all":
@@ -101,6 +136,8 @@ def choose_candidates(functions, strategy: str, explicit_names: set[str]):
         return [fn for fn in functions if has_backedge(fn)]
     if strategy == "names":
         return [fn for fn in functions if fn.__qualname__ in explicit_names]
+    if strategy == "exprs":
+        return resolve_compile_exprs(module, compile_exprs)
     raise ValueError(f"unsupported strategy: {strategy}")
 
 
@@ -114,13 +151,18 @@ def main() -> int:
     parser.add_argument("--prewarm-runs", type=int, default=0)
     parser.add_argument(
         "--compile-strategy",
-        choices=["none", "all", "backedge", "names"],
+        choices=["none", "all", "backedge", "names", "exprs"],
         default="none",
     )
     parser.add_argument(
         "--compile-names",
         default="",
         help="Comma-separated qualnames when --compile-strategy=names",
+    )
+    parser.add_argument(
+        "--compile-exprs-json",
+        default="[]",
+        help="JSON list of Python expressions resolving to functions when --compile-strategy=exprs",
     )
     parser.add_argument("--specialized-opcodes", action="store_true")
     parser.add_argument("--output", default="")
@@ -144,7 +186,14 @@ def main() -> int:
     explicit_names = {
         name.strip() for name in args.compile_names.split(",") if name.strip()
     }
-    candidates = choose_candidates(functions, args.compile_strategy, explicit_names)
+    compile_exprs = json.loads(args.compile_exprs_json)
+    candidates = choose_candidates(
+        module,
+        functions,
+        args.compile_strategy,
+        explicit_names,
+        compile_exprs,
+    )
 
     for _ in range(args.prewarm_runs):
         bench(*bench_args)
@@ -176,6 +225,7 @@ def main() -> int:
         "bench_func": args.bench_func,
         "bench_args": bench_args,
         "compile_strategy": args.compile_strategy,
+        "compile_exprs": compile_exprs,
         "specialized_opcodes": args.specialized_opcodes,
         "prewarm_runs": args.prewarm_runs,
         "candidate_count": len(functions),

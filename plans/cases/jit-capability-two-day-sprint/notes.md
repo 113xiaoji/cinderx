@@ -229,6 +229,54 @@
   - `jit-effective-ok compiled_size 984 interp_calls 10`
   - helper exits cleanly at `SKIP_PYPERF=1 set; done after smoke.`
 
+## 2026-04-12 compare harness follow-up
+
+- Representative benchmark compare was resumed after the stability fix.
+- New engineering fact:
+  - cross-revision compare must use separate `WORKDIR` and separate
+    `DRIVER_VENV`
+  - keeping `scratch/` across revision swaps produces fake build breakage
+  - reusing one driver venv produces reinstall crashes
+- Clean helper deploys are reproducible again when both are isolated per
+  revision.
+- New measurement caveat:
+  - in fresh compare venvs, `bench_pyperf_direct.py --compile-strategy none`
+    does not JIT-compile the benchmark kernels we care about
+  - verified false for:
+    - `fannkuch`
+    - `bench_all`
+    - `bench_nbody`
+    - `advance`
+    - `bench_spectral_norm`
+    - `part_A_times_u`
+    - `part_At_times_u`
+- Conclusion:
+  - the first clean representative direct numbers gathered in that mode cannot
+    be used as hot-loop JIT performance evidence
+  - next compare step should explicitly force-compile or jitlist the intended
+    kernels before timing
+
+## 2026-04-12 explicit compile-expression compare
+
+- Added a new harness mode in `scripts/arm/bench_pyperf_direct.py`:
+  - `--compile-strategy exprs`
+  - `--compile-exprs-json`
+- This mode is specifically for wrapper modules that import benchmark kernels
+  from pyperformance benchmark files.
+- Local test coverage added:
+  - `scripts/arm/test_bench_pyperf_direct.py`
+  - `Ran 2 tests ... OK`
+- First isolated baseline/current compare with explicit kernel compilation:
+  - `fannkuch` with `_fannkuch.fannkuch`: about `-6.55%`
+  - `unpack_sequence` with `_unpack.do_unpacking`: about `+4.62%`
+  - `scimark_monte_carlo` with `_scimark.MonteCarlo`: about `-9.62%`
+  - `go` with `Board.useful + UCTNode.play + UCTNode.random_playout`: about `+10.07%`
+- Immediate conclusion:
+  - the explicit-kernel compare path is the first trustworthy fresh compare
+    mode after the harness cleanup
+  - it also shows that some earlier “all-green” conclusions from the
+    `compile_strategy none` path were overstated
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：
