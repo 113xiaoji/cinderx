@@ -17,6 +17,8 @@
   remote source file actually matched the intended baseline revision.
 - Used a failing `unittest discover` invocation as if it were a runtime
   regression, when the failure was only in the test harness command.
+- Kept the interpreter on the `JUMP_BACKWARD_JIT` path after a known skip
+  decision was cached, which left a large residual tax on `raytrace`.
 
 ## 2026-04-07
 

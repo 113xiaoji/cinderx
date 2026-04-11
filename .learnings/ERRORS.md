@@ -21,6 +21,8 @@
   deploy. Remote source state must be verified before trusting a baseline run.
 - One helper-side test attempt used `unittest discover` with a non-importable
   start directory, which obscured that the runtime itself was already fine.
+- A compile probe helper initially forgot to substitute the benchmark name
+  placeholder, which produced a fake file-not-found debugging branch.
 
 ## 2026-04-07
 

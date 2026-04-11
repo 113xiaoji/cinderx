@@ -33,6 +33,9 @@
 - Caching skip decisions by `(code, bc_offset)` plus once-per-window reporting
   can have a first-order performance effect on object-heavy workloads; `go`
   improved dramatically once repeated skip accounting was removed.
+- For loops that should never OSR, caching the decision is not enough if the
+  interpreter still re-enters `_PyJIT_TryHotLoopOSR()` on every backward jump.
+  Rewriting the backedge to `JUMP_BACKWARD_NO_JIT` removes that residual tax.
 
 ## 2026-04-07 issue85 kickoff
 

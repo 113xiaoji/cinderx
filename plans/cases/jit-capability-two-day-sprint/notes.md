@@ -79,6 +79,20 @@
   - skip caching is a real win for `go`
   - `raytrace` remains the biggest unresolved regression
 
+## 2026-04-11 Day 2 skip-nojit refinement
+
+- Root-cause refinement:
+  - caching/reporting skip reasons was not enough for `raytrace`
+  - loops that keep executing `JUMP_BACKWARD_JIT` still re-enter
+    `_PyJIT_TryHotLoopOSR()` on every backedge
+- Change:
+  - after caching a skip decision, rewrite the backedge to `JUMP_BACKWARD_NO_JIT`
+- Results:
+  - `go`: improved further to about `-41.5%`
+  - `raytrace`: improved from about `+29.7%` down to about `+1.5%`
+  - `chaos`: now about `+3.8%`
+  - `fannkuch`: now about `+6.5%`
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

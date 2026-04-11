@@ -209,6 +209,48 @@ entrypoint:
   - `raytrace` has a large remaining regression and is the highest-value
     unresolved performance outlier
 
+### 2026-04-11 Day 2 sprint: skip-to-NO_JIT refinement
+
+- Change:
+  - when a hot-loop skip decision is cached for a backedge, subsequent passes
+    now rewrite that backedge from `JUMP_BACKWARD_JIT` to
+    `JUMP_BACKWARD_NO_JIT`
+  - this removes repeated `_PyJIT_TryHotLoopOSR()` entry for loops we already
+    know should not OSR
+
+- Targeted ARM verification:
+  - high-call wrapper skip-reason probe:
+    - `len = 1`
+    - `count = 1`
+  - object-stateful attr-heavy skip-reason probe:
+    - `len = 1`
+    - `count = 1`
+
+- Updated direct benchmark compare on ARM (`median_wall_sec`, 5 repeats):
+  - `fannkuch`
+    - baseline: `0.5354691409993393`
+    - current-skip-nojit: `0.5702820449951105`
+    - delta: about `+6.50%`
+  - `go`
+    - baseline: `0.42662018299961346`
+    - current-skip-nojit: `0.2496316190008656`
+    - delta: about `-41.48%`
+  - `chaos`
+    - baseline: `0.11255058700044174`
+    - current-skip-nojit: `0.11680502800300019`
+    - delta: about `+3.78%`
+  - `raytrace`
+    - baseline: `0.6561158749973401`
+    - current-skip-nojit: `0.6656419479986653`
+    - delta: about `+1.45%`
+
+- Interpretation update:
+  - this refinement materially removed the large `raytrace` regression
+  - `go` improved further
+  - remaining unresolved regressions are now much smaller and concentrated in:
+    - `fannkuch`
+    - `chaos`
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`
