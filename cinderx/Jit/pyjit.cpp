@@ -68,6 +68,7 @@
 using namespace jit;
 
 namespace jit {
+Result compile_func(BorrowedRef<PyFunctionObject> func);
 Result compile_func(BorrowedRef<PyFunctionObject> func, CompileTier tier);
 Result compilePreloaderImplForTier(
     jit::CompilerContext<Compiler>* jit_ctx,
@@ -3603,11 +3604,13 @@ void trackEligibleCodeObjects(
 // Preload a function and its dependencies, then compile them all.
 //
 // Failing to compile a dependent function is a soft failure, and is ignored.
-Result compile_func(BorrowedRef<PyFunctionObject> func) {
+Result jit::compile_func(BorrowedRef<PyFunctionObject> func) {
   return compile_func(func, CompileTier::kOptimized);
 }
 
-Result compile_func(BorrowedRef<PyFunctionObject> func, CompileTier tier) {
+Result jit::compile_func(
+    BorrowedRef<PyFunctionObject> func,
+    CompileTier tier) {
   // isolate preloaders state since batch preloading might trigger a call to a
   // jitable function, resulting in a single-function compile
   hir::IsolatedPreloaders ip;
