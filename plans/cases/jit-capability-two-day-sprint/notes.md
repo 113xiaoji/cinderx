@@ -21,6 +21,34 @@
     Day 2 should decide whether to keep that shape, sample it, or move to a
     lower-overhead keyed representation
 
+## 2026-04-11 Day 2 progress
+
+- Remote helper fast-path:
+  - moved `pip -U pip` and `pyperformance` installation behind the pyperf path
+  - `SKIP_PYPERF=1` now exits after runtime smoke
+  - remote helper verification succeeded and printed:
+    - `SKIP_PYPERF=1 set; done after smoke.`
+- Runtime direction chosen:
+  - attr/stateful density gate in `_PyJIT_TryHotLoopOSR()`
+- Measured loop-body shapes:
+  - object-stateful synthetic:
+    - `attr_count = 4`
+    - `call_count = 2`
+  - search/state-transition synthetic:
+    - `attr_count = 7`
+    - `call_count = 0`
+- Current gate shape:
+  - skip with reason `attr_heavy_loop` when:
+    - `attr_ops >= 4`
+    - and `attr_ops >= call_ops + 2`
+- Verification:
+  - red before change:
+    - `attr_heavy_loop` skip count for object-stateful synthetic = `0`
+  - green after change:
+    - remote full ARM runtime suite:
+      - `Ran 92 tests in 62.480s`
+      - `OK`
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

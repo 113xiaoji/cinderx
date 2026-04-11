@@ -9,6 +9,14 @@
   `/root/work/cinderx-main`, but that workdir is rsynced from a tarball and has
   no `.git` directory.
 
+## 2026-04-11 Day 2 sprint
+
+- The first `SKIP_PYPERF=1` fast-path patch incorrectly called `deactivate`
+  after the helper had already left the driver venv, causing
+  `deactivate: command not found`.
+- The first attr-heavy gate threshold was set too high (`attr_ops >= 5`) and
+  missed the object-stateful synthetic shape, which only had `attr_count = 4`.
+
 ## 2026-04-07
 
 - 错把 `HEAD^` 整包当成可直接在当前远端工作树增量构建的对照，导致和远端 stale headers / build cache 混出无意义的编译错误。

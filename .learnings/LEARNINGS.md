@@ -11,6 +11,17 @@
 - `bench_pyperf_direct.py` is a good low-noise place to validate new runtime
   stats schema before trusting full pyperformance summaries.
 
+## 2026-04-11 Day 2 sprint
+
+- For `remote_update_build_test.sh`, `PIP_NO_INDEX=1` is too blunt as a helper
+  verification trick because it also breaks the isolated `python -m build`
+  step. Verify skip-fast paths by watching the helper exit point, not by
+  globally disabling package resolution.
+- Object-heavy hot loops can be characterized well enough for a first
+  profitability gate using bytecode counts from the loop body itself:
+  `attr_ops` and `call_ops` gave a fast way to separate object/stateful loops
+  from the current hot-loop winners.
+
 ## 2026-04-07 issue85 kickoff
 
 - `#76` 的 Phase 1 主线已经不再是主要问题，新的重点是 profitability，而不是 correctness。

@@ -14,6 +14,19 @@
   - `run_pyperf_subset.sh` summary now retains benchmark rows even when raw
     pyperformance JSON omits benchmark names in `--debug-single-value` mode
 
+## 2026-04-11 Day 2 sprint status
+
+- Remote helper:
+  - `SKIP_PYPERF=1` now exits after runtime smoke instead of entering
+    pyperformance setup.
+- Runtime direction in progress:
+  - attr-heavy loop profitability gate in `cinderx/Jit/pyjit.cpp`
+  - skip reason: `attr_heavy_loop`
+- Latest ARM verification:
+  - full remote helper path in skip mode:
+    - `Ran 92 tests ... OK`
+    - helper terminates at `SKIP_PYPERF=1 set; done after smoke.`
+
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
 工作约定：

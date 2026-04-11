@@ -65,6 +65,50 @@ entrypoint:
       - `baseline_ref = fb105b6b`
       - `git_commit = 734ca08a+worktree`
 
+### 2026-04-11 Day 2 sprint: helper fast-path + attr-heavy gate
+
+- Remote helper fast-path:
+  - `scripts/arm/remote_update_build_test.sh`
+  - change:
+    - when `SKIP_PYPERF=1`, the helper now exits immediately after runtime
+      smoke/verification and no longer enters pyperformance venv setup/install
+  - remote verification:
+    - build/install/runtime helper path still passed
+    - output now ends with:
+      - `SKIP_PYPERF=1 set; done after smoke.`
+    - helper no longer proceeds into:
+      - `ensure pyperformance venv exists`
+      - worker startup probe
+      - pyperformance gates
+
+- Attr-heavy profitability gate:
+  - file:
+    - `cinderx/Jit/pyjit.cpp`
+  - policy:
+    - skip same-activation hot-loop OSR when:
+      - `attr_ops >= 4`
+      - and `attr_ops >= call_ops + 2`
+    - record skip reason:
+      - `attr_heavy_loop`
+  - synthetic shape measurements that drove the threshold:
+    - object-stateful loop:
+      - `attr_count = 4`
+      - `call_count = 2`
+    - search/state-transition loop:
+      - `attr_count = 7`
+      - `call_count = 0`
+  - red evidence before change:
+    - remote installed runtime reported:
+      - `attr_heavy_loop` skip entries for `object_stateful hot` = `0`
+      - total count = `0`
+  - green verification after change:
+    - remote helper with full ARM runtime suite:
+      - `Ran 92 tests in 62.480s`
+      - `OK`
+    - new regression:
+      - `test_phase1_loop_osr_reports_skip_reason_for_object_stateful_shape`
+    - existing guardrails remained green in the same full suite
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

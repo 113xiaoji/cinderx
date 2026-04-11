@@ -7,6 +7,13 @@
 - Forgot that remote helper workdirs are archive-backed, not git-backed, so any
   artifact field like `git_commit` needs explicit injection.
 
+## 2026-04-11 Day 2
+
+- Verified a helper fast-path with an environment override that also broke the
+  build step (`PIP_NO_INDEX=1`), which obscured the actual target behavior.
+- Set the first attr-heavy threshold from intuition instead of measured loop
+  body counts, then had to tighten it after a clean red failure.
+
 ## 2026-04-07
 
 - 在 ARM 上做 `HEAD^ -> HEAD` A/B 时，没有先确保远端工作树和本地分支完全一致。
