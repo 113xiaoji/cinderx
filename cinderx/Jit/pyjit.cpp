@@ -4098,8 +4098,6 @@ PyFrameObject* _PyJIT_GetFrame(PyThreadState* tstate) {
 
 #endif
 
-} // namespace
-
 namespace jit {
 
 int initialize() {
