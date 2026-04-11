@@ -4636,3 +4636,74 @@ Conclusion:
     - interpretation:
       - `force_compile()` promotion still works on the fresh synced tree
       - the automatic baseline threshold path still fails to flip the function into `baseline`
+
+- final validation rerun on the latest branch state after the follow-up fixes plus `73379c56 test: align baseline threshold expectations`:
+  - local setup:
+    - created a fresh disposable clone from `codex/baseline-tier-fastmode-mvp`
+    - applied the requested helper-only disposable tweak:
+      - `scripts/arm/remote_update_build_test.sh`
+      - changed:
+        - `"$PY" -m build --wheel`
+      - to:
+        - `"$PY" -m build --wheel -n`
+    - committed that helper-only tweak locally in the disposable clone so `scripts/push_to_arm.ps1` would accept a clean tree
+  - standard helper rerun from the disposable clone:
+    - env:
+      - `ARM_RUNTIME_SKIP_TESTS=test_`
+      - `EXTRA_TEST_CMD=python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+      - `SKIP_DEFAULT_PYPERF_GATES=1`
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath <disposable-clone> -UpstreamRemote origin -UpstreamBranch codex/baseline-tier-fastmode-mvp -WorkBranch codex/baseline-tier-fastmode-mvp -ArmHost 124.70.162.35 -Benchmark richards`
+  - helper result on the fresh synced ARM tree:
+    - the helper successfully archived and rsynced the clean source tree into `/root/work/cinderx-main`
+    - the no-isolation build completed on the fresh synced tree
+    - the helper still died before `>> extra test command`
+  - exact helper blocker:
+    - `/root/work/incoming/remote_update_build_test.sh: line 91: 11813 Segmentation fault (core dumped) PYTHONJIT=0 python -m pip install -q -U pip`
+    - interpretation:
+      - the remaining helper failure is still in the driver-venv `pip` update path, not in the source sync/build step
+  - fresh-tree scratch validation after that helper abort:
+    - import smoke:
+      - command:
+        - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u - <<'PY'`
+        - `print('before-import')`
+        - `import cinderx`
+        - `print('after-import', cinderx.__file__)`
+        - `PY`
+      - result:
+        - `before-import`
+        - `after-import /root/work/cinderx-main/scratch/lib.linux-aarch64-cpython-314/cinderx/__init__.py`
+    - exact unittest load for `test_jit_tiering`:
+      - command:
+        - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u -m unittest test_cinderx.test_jit_tiering -v`
+      - result:
+        - `Ran 0 tests in 0.000s`
+        - `NO TESTS RAN`
+      - root cause:
+        - `test_cinderx.test_jit_tiering.TieringApiTests` is currently a function, not a `unittest.TestCase` subclass, because the file uses `@cinder_support.skip_unless_jit` without calling the decorator factory
+        - probe evidence:
+          - `TieringApiTests_obj <function passUnless.<locals>.<lambda> ...>`
+    - direct recreation of the three intended tier assertions from `test_jit_tiering.py` on the fresh synced scratch tree:
+      - `PASS force_compile_baseline_exposes_baseline_tier`
+      - `PASS force_compile_promotes_baseline_function_to_optimized`
+      - `PASS low_threshold_autocompiles_baseline_before_optimized`
+      - interpretation:
+        - after `73379c56`, the intended threshold semantics now hold on the fresh synced tree when recreated directly
+    - labeled direct tier probe using the same minimal helper shape as the updated test:
+      - output:
+        - `tier_before interp`
+        - `tier_after_call_1 interp`
+        - `tier_after_call_2 baseline`
+        - `tier_after_force_compile optimized`
+        - `value 45`
+      - interpretation:
+        - on the fresh synced tree, `import cinderx` succeeds and the latest baseline threshold semantics are:
+          - first call stays interpreted
+          - second call reaches `baseline`
+          - explicit `force_compile()` promotes to `optimized`
+  - final status for this rerun:
+    - code/runtime status:
+      - fresh synced scratch build is healthy enough to import `cinderx`
+      - the intended focused tier behavior now passes on the fresh synced tree
+    - remaining blocker classification:
+      - the standard helper path is still blocked by an environment/helper failure in `/root/venv-cinderx314` (`python -m pip install -q -U pip` segfault), not by the tiering implementation itself
