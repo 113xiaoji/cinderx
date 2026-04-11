@@ -67,6 +67,15 @@
 
 using namespace jit;
 
+namespace jit {
+Result compile_func(BorrowedRef<PyFunctionObject> func, CompileTier tier);
+Result compilePreloaderImplForTier(
+    jit::CompilerContext<Compiler>* jit_ctx,
+    const hir::Preloader& preloader,
+    BorrowedRef<PyFunctionObject> func,
+    CompileTier tier);
+} // namespace jit
+
 namespace {
 
 hir::Preloader* preload(BorrowedRef<> unit);
@@ -194,15 +203,6 @@ void incrementShadowcodeCall([[maybe_unused]] BorrowedRef<PyCodeObject> code) {
   }
 #endif
 }
-
-namespace jit {
-Result compile_func(BorrowedRef<PyFunctionObject> func, CompileTier tier);
-Result compilePreloaderImplForTier(
-    jit::CompilerContext<Compiler>* jit_ctx,
-    const hir::Preloader& preloader,
-    BorrowedRef<PyFunctionObject> func,
-    CompileTier tier);
-} // namespace jit
 
 std::string_view functionTierStateName(FunctionTierState tier) {
   switch (tier) {
