@@ -19,6 +19,8 @@
   regression, when the failure was only in the test harness command.
 - Kept the interpreter on the `JUMP_BACKWARD_JIT` path after a known skip
   decision was cached, which left a large residual tax on `raytrace`.
+- Treated small 5-repeat benchmark deltas as actionable regressions too early,
+  before doing a thicker 15-repeat confirmation pass.
 
 ## 2026-04-07
 

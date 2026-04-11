@@ -93,6 +93,21 @@
   - `chaos`: now about `+3.8%`
   - `fannkuch`: now about `+6.5%`
 
+## 2026-04-11 Day 2 thick-sample confirmation
+
+- Focused 15-repeat compares were run for the residual signals:
+  - `fannkuch`
+  - `chaos`
+  - `raytrace`
+- Updated result:
+  - `fannkuch`: about `-0.19%`
+  - `chaos`: about `-3.29%`
+  - `raytrace`: about `-1.60%`
+- Current conclusion:
+  - the representative direct benchmark set is now net positive or neutral
+  - the remaining issue in `raytrace` is warmup variance, not a stable median
+    regression
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

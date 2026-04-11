@@ -23,6 +23,8 @@
   start directory, which obscured that the runtime itself was already fine.
 - A compile probe helper initially forgot to substitute the benchmark name
   placeholder, which produced a fake file-not-found debugging branch.
+- The first 5-repeat direct compare was over-interpreted before a thicker
+  sample was run on the residual regressions.
 
 ## 2026-04-07
 

@@ -251,6 +251,40 @@ entrypoint:
     - `fannkuch`
     - `chaos`
 
+### 2026-04-11 Day 2 sprint: thick-sample recheck
+
+- To separate signal from noise, focused 15-repeat direct compares were rerun on
+  clean baseline/current install states.
+
+- `fannkuch` focused compare:
+  - baseline median: `0.5733916690005572`
+  - current median: `0.5722829529986484`
+  - delta: about `-0.19%`
+  - interpretation:
+    - the earlier small regression signal does not hold up under thicker
+      sampling
+
+- `chaos` focused compare:
+  - baseline median: `0.1172349429980386`
+  - current median: `0.11337521899986314`
+  - delta: about `-3.29%`
+  - interpretation:
+    - current is modestly faster under a thicker sample
+
+- `raytrace` focused compare:
+  - baseline median: `0.6333127369944123`
+  - current median: `0.6231939260032959`
+  - delta: about `-1.60%`
+  - note:
+    - current still shows a noisy slower prefix in the first several runs, but
+      the median is now slightly better than baseline
+
+- Updated summary for the representative direct benchmark set:
+  - `go`: strong positive (`-41%` range)
+  - `fannkuch`: effectively flat to slightly positive
+  - `chaos`: modest positive
+  - `raytrace`: slight positive on median, but still with warmup variance
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

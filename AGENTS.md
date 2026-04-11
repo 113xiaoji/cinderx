@@ -39,10 +39,12 @@
     - `raytrace`
 - Current performance priority:
   - `go` improved strongly after skip caching and NO_JIT backedge rewriting
-  - `raytrace` large regression has been reduced to a small residual regression
-  - next likely focus is the remaining small regressions:
-    - `fannkuch`
-    - `chaos`
+  - thicker samples now show:
+    - `fannkuch` is effectively flat/slightly positive
+    - `chaos` is modestly positive
+    - `raytrace` median is slightly positive but still has warmup variance
+  - next likely focus is reducing warmup variance rather than chasing a clear
+    steady-state regression
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
