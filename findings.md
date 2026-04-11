@@ -4705,5 +4705,35 @@ Conclusion:
     - code/runtime status:
       - fresh synced scratch build is healthy enough to import `cinderx`
       - the intended focused tier behavior now passes on the fresh synced tree
-    - remaining blocker classification:
+  - remaining blocker classification:
       - the standard helper path is still blocked by an environment/helper failure in `/root/venv-cinderx314` (`python -m pip install -q -U pip` segfault), not by the tiering implementation itself
+
+### Validation rerun: decorator-fix snapshot (`0755ef2c`)
+
+- Date: `2026-04-12`
+- Source snapshot:
+  - `0755ef2cf1578898c646fae98a1b28c430ad640b`
+  - synced into `/root/work/cinderx-main` on the ARM host
+- Focused unittest run:
+  - command:
+    - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u -m unittest test_cinderx.test_jit_tiering -v`
+  - result:
+    - real tests now execute
+    - first isolated case errored in `tearDown()`:
+      - `TypeError: 'NoneType' object cannot be interpreted as an integer`
+    - observed case output:
+      - `test_force_compile_baseline_exposes_baseline_tier ... ERROR`
+      - `test_force_compile_promotes_baseline_function_to_optimized ... ERROR`
+      - `test_low_threshold_autocompiles_baseline_before_optimized ...`
+- Direct tier probe on the same synced tree:
+  - command:
+    - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u - <<'PY'`
+  - output:
+    - `tier_before interp`
+    - `tier_after_call_1 interp`
+    - `tier_after_call_2 optimized`
+    - `tier_after_force_compile optimized`
+    - `value 45`
+  - interpretation:
+    - the decorator fix unblocked unittest discovery, but the baseline threshold still does not flip the function into `baseline` on the second call
+    - `force_compile()` still promotes to `optimized`
