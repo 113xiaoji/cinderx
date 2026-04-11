@@ -5,6 +5,7 @@
 #include "internal/pycore_interp.h"
 #include "internal/pycore_pystate.h"
 
+#include "cinderx/Common/code.h"
 #include "cinderx/Common/log.h"
 #include "cinderx/Common/py-portability.h"
 #include "cinderx/Jit/elf/reader.h"
@@ -269,6 +270,23 @@ void Context::clearOSRStats() {
   std::lock_guard<std::mutex> lock(osr_stats_mutex_);
 #endif
   osr_stats_.clear();
+}
+
+void Context::recordHotLoopSkip(
+    BorrowedRef<PyCodeObject> code,
+    const char* reason) {
+#ifdef Py_GIL_DISABLED
+  std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
+#endif
+  HotLoopSkipStat& stat = hot_loop_skip_stats_[codeQualname(code)][reason];
+  stat.count++;
+}
+
+void Context::clearHotLoopSkipStats() {
+#ifdef Py_GIL_DISABLED
+  std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
+#endif
+  hot_loop_skip_stats_.clear();
 }
 
 InlineCacheStats Context::getAndClearLoadMethodCacheStats() {

@@ -70,6 +70,28 @@ def aggregate_deopts(events):
     return rows
 
 
+def aggregate_hot_loop_skips(events):
+    grouped = {}
+    for event in events:
+        key = (
+            event["normal"].get("func_qualname"),
+            event["normal"].get("reason"),
+        )
+        grouped[key] = grouped.get(key, 0) + int(event["int"].get("count", 0))
+
+    rows = []
+    for (qualname, reason), count in grouped.items():
+        rows.append(
+            {
+                "qualname": qualname,
+                "reason": reason,
+                "count": count,
+            }
+        )
+    rows.sort(key=lambda row: row["count"], reverse=True)
+    return rows
+
+
 def choose_candidates(functions, strategy: str, explicit_names: set[str]):
     if strategy == "none":
         return []
@@ -138,6 +160,7 @@ def main() -> int:
 
     samples = []
     all_deopts = []
+    all_hot_loop_skips = []
     for _ in range(args.samples):
         jit.get_and_clear_runtime_stats()
         t0 = time.perf_counter()
@@ -146,6 +169,7 @@ def main() -> int:
         stats = jit.get_and_clear_runtime_stats()
         samples.append({"bench_return_sec": bench_return, "wall_sec": wall})
         all_deopts.extend(stats.get("deopt", []))
+        all_hot_loop_skips.extend(stats.get("hot_loop_skip", []))
 
     payload = {
         "module_path": str(module_path),
@@ -163,6 +187,10 @@ def main() -> int:
         "min_wall_sec": min(sample["wall_sec"] for sample in samples),
         "total_deopt_count": sum(int(event["int"].get("count", 0)) for event in all_deopts),
         "top_deopts": aggregate_deopts(all_deopts)[:12],
+        "total_hot_loop_skip_count": sum(
+            int(event["int"].get("count", 0)) for event in all_hot_loop_skips
+        ),
+        "top_hot_loop_skips": aggregate_hot_loop_skips(all_hot_loop_skips)[:12],
     }
 
     text = json.dumps(payload, indent=2, ensure_ascii=False)

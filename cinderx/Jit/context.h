@@ -83,6 +83,10 @@ struct OSRStat {
   std::size_t count;
 };
 
+struct HotLoopSkipStat {
+  std::size_t count;
+};
+
 // Map from CodeRuntime to stats about each deopt point.
 //
 // Uses an unordered map to store the deopt stats for each code object as it's
@@ -92,6 +96,9 @@ using DeoptStats = jit::
 
 using OSRStats =
     jit::UnorderedMap<const CodeRuntime*, jit::UnorderedMap<BCOffset, OSRStat>>;
+
+using HotLoopSkipStats =
+    jit::UnorderedMap<std::string, jit::UnorderedMap<std::string, HotLoopSkipStat>>;
 
 using InlineCacheStats = std::vector<CacheStats>;
 
@@ -337,6 +344,8 @@ class Context : public IJitContext {
   // Record that an OSR entry at the given bytecode offset was used.
   void recordOSR(CodeRuntime* code_runtime, BCOffset bc_offset);
 
+  void recordHotLoopSkip(BorrowedRef<PyCodeObject> code, const char* reason);
+
   template <typename F>
   bool ifOSRStat(
       const CodeRuntime* code_runtime,
@@ -354,6 +363,20 @@ class Context : public IJitContext {
   }
 
   void clearOSRStats();
+
+  template <typename F>
+  void forEachHotLoopSkipStat(F&& f) const {
+#ifdef Py_GIL_DISABLED
+    std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
+#endif
+    for (const auto& [qualname, reasons] : hot_loop_skip_stats_) {
+      for (const auto& [reason, stat] : reasons) {
+        f(qualname, reason, stat);
+      }
+    }
+  }
+
+  void clearHotLoopSkipStats();
 
   // Get and clear inline cache stats.
   InlineCacheStats getAndClearLoadMethodCacheStats();
@@ -495,6 +518,10 @@ class Context : public IJitContext {
   OSRStats osr_stats_;
 #ifdef Py_GIL_DISABLED
   mutable std::mutex osr_stats_mutex_;
+#endif
+  HotLoopSkipStats hot_loop_skip_stats_;
+#ifdef Py_GIL_DISABLED
+  mutable std::mutex hot_loop_skip_stats_mutex_;
 #endif
 
   // Get the stat object for a given deopt.  It will not exist if the deopt has

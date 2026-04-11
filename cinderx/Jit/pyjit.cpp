@@ -2480,6 +2480,35 @@ Ref<> make_osr_stats() {
   return stats;
 }
 
+Ref<> make_hot_loop_skip_stats() {
+  CompilerContext<Compiler>* ctx = jitCtx();
+  auto stats = Ref<>::steal(check(PyList_New(0)));
+  if (ctx == nullptr) {
+    return stats;
+  }
+
+  ctx->forEachHotLoopSkipStat(
+      [&](const std::string& qualname, const std::string& reason, const auto& stat) {
+        auto item = Ref<>::steal(check(PyDict_New()));
+        auto normal = Ref<>::steal(check(PyDict_New()));
+        auto int_dict = Ref<>::steal(check(PyDict_New()));
+        auto qualname_obj =
+            Ref<>::steal(check(PyUnicode_FromString(qualname.c_str())));
+        auto reason_obj =
+            Ref<>::steal(check(PyUnicode_FromString(reason.c_str())));
+        auto count = Ref<>::steal(PyLong_FromUnsignedLongLong(stat.count));
+        check(PyDict_SetItemString(normal, "func_qualname", qualname_obj));
+        check(PyDict_SetItemString(normal, "reason", reason_obj));
+        check(PyDict_SetItemString(item, "normal", normal));
+        check(PyDict_SetItemString(int_dict, "count", count));
+        check(PyDict_SetItemString(item, "int", int_dict));
+        check(PyList_Append(stats, item));
+      });
+
+  ctx->clearHotLoopSkipStats();
+  return stats;
+}
+
 PyObject* get_and_clear_runtime_stats(PyObject* /* self */, PyObject*) {
   auto stats = Ref<>::steal(PyDict_New());
   if (stats == nullptr) {
@@ -2491,6 +2520,8 @@ PyObject* get_and_clear_runtime_stats(PyObject* /* self */, PyObject*) {
     check(PyDict_SetItemString(stats, "deopt", deopt_stats));
     Ref<> osr_stats = make_osr_stats();
     check(PyDict_SetItemString(stats, "osr", osr_stats));
+    Ref<> hot_loop_skip_stats = make_hot_loop_skip_stats();
+    check(PyDict_SetItemString(stats, "hot_loop_skip", hot_loop_skip_stats));
   } catch (const CAPIError&) {
     return nullptr;
   }
@@ -2501,6 +2532,7 @@ PyObject* get_and_clear_runtime_stats(PyObject* /* self */, PyObject*) {
 PyObject* clear_runtime_stats(PyObject* /* self */, PyObject*) {
   jitCtx()->clearDeoptStats();
   jitCtx()->clearOSRStats();
+  jitCtx()->clearHotLoopSkipStats();
   Py_RETURN_NONE;
 }
 
@@ -3762,6 +3794,7 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   }
 
   if (shouldSkipHotLoopOSRForHighCallWrapper(code, loop_start, this_instr)) {
+    jitCtx()->recordHotLoopSkip(code, "high_call_wrapper");
     return 0;
   }
 
