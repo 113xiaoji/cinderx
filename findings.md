@@ -4390,6 +4390,60 @@ Conclusion:
   - not run
   - reason:
     - the standard helper did not complete a fresh build/install for the current source, so there was no trustworthy same-helper runtime to probe
+- workaround retry with no-isolation remote build/install:
+  - remote source refresh:
+    - the first helper-based ARM tree was stale and did not contain `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+    - a manual source refresh was required before retrying the no-isolation path
+    - after the refresh, the ARM tree still missed the `de7064b9` tiering files under `cinderx/Jit/`, so the 10 files touched by the three task commits were copied directly into `/root/work/cinderx-main`
+  - manual no-isolation build:
+    - command:
+      - `cd /root/work/cinderx-main && /opt/python-3.14/bin/python3.14 -m build --wheel -n`
+    - result:
+      - `Successfully built cinderx-2026.4.11.0-cp314-cp314-linux_aarch64.whl`
+    - artifact:
+      - `/root/work/cinderx-main/dist/cinderx-2026.4.11.0-cp314-cp314-linux_aarch64.whl`
+  - manual wheel install:
+    - command:
+      - `source /root/venv-cinderx314/bin/activate && python -m pip install --force-reinstall /root/work/cinderx-main/dist/cinderx-2026.4.11.0-cp314-cp314-linux_aarch64.whl`
+    - result:
+      - `Successfully installed cinderx-2026.4.11.0`
+  - focused remote tier test after workaround:
+    - intended command:
+      - `cd /root/work/cinderx-main && PYTHONPATH=cinderx/PythonLib /root/venv-cinderx314/bin/python -u -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_jit_tiering.py -v`
+    - result:
+      - no test output was produced
+      - the runtime crashed before the test suite could report cases
+    - minimal repro proving the blocker is post-install runtime startup/import, not build isolation:
+      - command:
+        - `/root/venv-cinderx314/bin/python -u - <<'PY'`
+        - `print('before-import')`
+        - `import cinderx`
+        - `print('after-import', cinderx.__file__)`
+        - `PY`
+      - output:
+        - `Segmentation fault (core dumped)`
+  - direct remote tier probe after workaround:
+    - command:
+      - `cd /root/work/cinderx-main && PYTHONPATH=cinderx/PythonLib /root/venv-cinderx314/bin/python -u - <<'PY'`
+      - `import cinderx.jit as jit`
+      - `jit.enable()`
+      - `jit.baseline_compile_after_n_calls(1)`
+      - `jit.compile_after_n_calls(1000000)`
+      - `def hot(n):`
+      - `    s = 0`
+      - `    for i in range(n):`
+      - `        s += i`
+      - `    return s`
+      - `print(jit.get_function_tier(hot))`
+      - `hot(10)`
+      - `print(jit.get_function_tier(hot))`
+      - `jit.force_compile(hot)`
+      - `print(jit.get_function_tier(hot))`
+      - `print(hot(10))`
+      - `PY`
+    - output:
+      - `Segmentation fault (core dumped)`
 - conclusion:
-  - no `OK` validation evidence was produced for this MVP in this run
-  - current blocker is the remote build-isolation dependency install on the ARM host, not a tier-test assertion failure
+  - the standard helper remains blocked by build isolation on the ARM host
+  - the workaround path proved that a manual no-isolation wheel build and reinstall can complete successfully
+  - validation still did not reach an `OK` tier-test or tier-probe result because the freshly installed runtime segfaults on `import cinderx`
