@@ -278,7 +278,13 @@ void Context::recordHotLoopSkip(
 #ifdef Py_GIL_DISABLED
   std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
 #endif
-  HotLoopSkipStat& stat = hot_loop_skip_stats_[codeQualname(code)][reason];
+  const PyCodeObject* code_obj = code.get();
+  auto [qualname_it, inserted] =
+      hot_loop_skip_qualnames_.emplace(code_obj, std::string{});
+  if (inserted) {
+    qualname_it->second = codeQualname(code);
+  }
+  HotLoopSkipStat& stat = hot_loop_skip_stats_[code_obj][reason];
   stat.count++;
 }
 
@@ -287,6 +293,7 @@ void Context::clearHotLoopSkipStats() {
   std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
 #endif
   hot_loop_skip_stats_.clear();
+  hot_loop_skip_qualnames_.clear();
 }
 
 InlineCacheStats Context::getAndClearLoadMethodCacheStats() {

@@ -28,6 +28,7 @@ POST_PYPERF_CMD="${POST_PYPERF_CMD:-}"
 PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES="${PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES:-1}"
 CINDERX_ENABLE_SPECIALIZED_OPCODES="${CINDERX_ENABLE_SPECIALIZED_OPCODES:-0}"
 CINDERX_JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-}"
+BUILD_NO_ISOLATION="${BUILD_NO_ISOLATION:-1}"
 
 if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AUTOJIT_GATE must be a non-negative integer, got '$AUTOJIT_GATE'"
@@ -47,6 +48,10 @@ if [[ "$CINDERX_ENABLE_SPECIALIZED_OPCODES" != "0" && "$CINDERX_ENABLE_SPECIALIZ
 fi
 if [[ "$SKIP_DEFAULT_PYPERF_GATES" != "0" && "$SKIP_DEFAULT_PYPERF_GATES" != "1" ]]; then
   echo "ERROR: SKIP_DEFAULT_PYPERF_GATES must be 0 or 1, got '$SKIP_DEFAULT_PYPERF_GATES'"
+  exit 1
+fi
+if [[ "$BUILD_NO_ISOLATION" != "0" && "$BUILD_NO_ISOLATION" != "1" ]]; then
+  echo "ERROR: BUILD_NO_ISOLATION must be 0 or 1, got '$BUILD_NO_ISOLATION'"
   exit 1
 fi
 
@@ -77,7 +82,11 @@ cd "$WORKDIR"
 export CMAKE_BUILD_PARALLEL_LEVEL="$PARALLEL"
 
 echo ">> build wheel (CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL)"
-"$PY" -m build --wheel
+BUILD_ARGS=(--wheel)
+if [[ "$BUILD_NO_ISOLATION" == "1" ]]; then
+  BUILD_ARGS+=(--no-isolation)
+fi
+"$PY" -m build "${BUILD_ARGS[@]}"
 WHEEL="$(ls -1t dist/cinderx-*.whl | head -n 1)"
 echo "wheel=$WHEEL"
 

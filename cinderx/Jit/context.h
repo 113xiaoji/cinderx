@@ -97,8 +97,10 @@ using DeoptStats = jit::
 using OSRStats =
     jit::UnorderedMap<const CodeRuntime*, jit::UnorderedMap<BCOffset, OSRStat>>;
 
+using HotLoopSkipReasonStats = jit::UnorderedMap<const char*, HotLoopSkipStat>;
 using HotLoopSkipStats =
-    jit::UnorderedMap<std::string, jit::UnorderedMap<std::string, HotLoopSkipStat>>;
+    jit::UnorderedMap<const PyCodeObject*, HotLoopSkipReasonStats>;
+using HotLoopSkipQualnames = jit::UnorderedMap<const PyCodeObject*, std::string>;
 
 using InlineCacheStats = std::vector<CacheStats>;
 
@@ -369,9 +371,13 @@ class Context : public IJitContext {
 #ifdef Py_GIL_DISABLED
     std::lock_guard<std::mutex> lock(hot_loop_skip_stats_mutex_);
 #endif
-    for (const auto& [qualname, reasons] : hot_loop_skip_stats_) {
+    for (const auto& [code, reasons] : hot_loop_skip_stats_) {
+      auto qualname_it = hot_loop_skip_qualnames_.find(code);
+      if (qualname_it == hot_loop_skip_qualnames_.end()) {
+        continue;
+      }
       for (const auto& [reason, stat] : reasons) {
-        f(qualname, reason, stat);
+        f(qualname_it->second, reason, stat);
       }
     }
   }
@@ -520,6 +526,7 @@ class Context : public IJitContext {
   mutable std::mutex osr_stats_mutex_;
 #endif
   HotLoopSkipStats hot_loop_skip_stats_;
+  HotLoopSkipQualnames hot_loop_skip_qualnames_;
 #ifdef Py_GIL_DISABLED
   mutable std::mutex hot_loop_skip_stats_mutex_;
 #endif

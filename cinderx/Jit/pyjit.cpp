@@ -2504,7 +2504,7 @@ Ref<> make_hot_loop_skip_stats() {
   }
 
   ctx->forEachHotLoopSkipStat(
-      [&](const std::string& qualname, const std::string& reason, const auto& stat) {
+      [&](const std::string& qualname, const char* reason, const auto& stat) {
         auto item = Ref<>::steal(check(PyDict_New()));
         auto normal = Ref<>::steal(check(PyDict_New()));
         auto int_dict = Ref<>::steal(check(PyDict_New()));
