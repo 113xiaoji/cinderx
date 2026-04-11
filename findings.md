@@ -4543,3 +4543,27 @@ Conclusion:
     - the clean helper path now clearly gets past `pyjit.cpp` compilation
     - the earlier post-install `import cinderx` segfault did not reproduce on this path
     - the new clean-path blocker is a missing exported symbol in the freshly built `_cinderx.so`, plus the helper’s existing driver-venv `pip` step still crashes before reinstall completes
+
+- clean disposable-clone retest after `0eee633b fix: export tiered compile helpers in global jit namespace`:
+  - local setup:
+    - created a fresh disposable clone from `codex/baseline-tier-fastmode-mvp` including `0eee633bf4609d9da4dfe7502b95850684d8de88`
+    - applied the same temporary helper-only change in the disposable clone:
+      - `"$PY" -m build --wheel`
+      - -> `"$PY" -m build --wheel -n`
+    - committed that helper tweak locally in the disposable clone so `scripts/sync_upstream.ps1` could run
+  - standard helper rerun from the disposable clone:
+    - env:
+      - `ARM_RUNTIME_SKIP_TESTS=test_`
+      - `EXTRA_TEST_CMD=python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+      - `SKIP_DEFAULT_PYPERF_GATES=1`
+  - result on the clean full-source path:
+    - the helper successfully archived and rsynced the full source tree into `/root/work/cinderx-main`
+    - the no-isolation ARM build started normally
+    - the build failed during `pyjit.cpp` compilation before wheel install, import, focused tier test, or direct probe
+  - key compile evidence:
+    - `/root/work/cinderx-main/cinderx/Jit/pyjit.cpp:4101:1: error: extraneous closing brace ('}')`
+    - `gmake[2]: *** [CMakeFiles/jit.dir/build.make:1546: CMakeFiles/jit.dir/cinderx/Jit/pyjit.cpp.o] Error 1`
+    - `error: command '/usr/bin/cmake' failed with exit code 2`
+  - interpretation:
+    - this run does **not** get far enough to retry `import cinderx`
+    - the latest clean full-source blocker is now a compile-time syntax error in `pyjit.cpp`, which preempts the previous undefined-symbol import failure on this path
