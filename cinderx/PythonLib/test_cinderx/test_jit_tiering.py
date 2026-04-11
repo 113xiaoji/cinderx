@@ -4,7 +4,7 @@ import cinderx.jit as jit
 import cinderx.test_support as cinder_support
 
 
-@cinder_support.skip_unless_jit
+@cinder_support.skip_unless_jit("requires JIT")
 class TieringApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self._compile_after_n_calls = jit.get_compile_after_n_calls()
