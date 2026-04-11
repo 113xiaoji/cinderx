@@ -3604,11 +3604,15 @@ void trackEligibleCodeObjects(
 // Preload a function and its dependencies, then compile them all.
 //
 // Failing to compile a dependent function is a soft failure, and is ignored.
-Result jit::compile_func(BorrowedRef<PyFunctionObject> func) {
+} // namespace
+
+namespace jit {
+
+Result compile_func(BorrowedRef<PyFunctionObject> func) {
   return compile_func(func, CompileTier::kOptimized);
 }
 
-Result jit::compile_func(
+Result compile_func(
     BorrowedRef<PyFunctionObject> func,
     CompileTier tier) {
   // isolate preloaders state since batch preloading might trigger a call to a
@@ -3687,6 +3691,10 @@ Result jit::compile_func(
   // for them in the first place.
   return Result::OK;
 }
+
+} // namespace jit
+
+namespace {
 
 // Call posix.register_at_fork(None, None, cinderjit.after_fork_child), if it
 // exists. Returns 0 on success or if the module/function doesn't exist, and -1
