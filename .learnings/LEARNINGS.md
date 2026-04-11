@@ -27,6 +27,12 @@
 - The current direct benchmark path is useful for seeing whether benchmark code
   itself is being skipped or OSR'd, even when pyperformance venv creation is
   unstable.
+- Deploy markers are worth the extra plumbing. They turned an ambiguous
+  baseline/current story into a verifiable one and exposed exactly when a
+  “baseline” run was not actually on the intended source revision.
+- Caching skip decisions by `(code, bc_offset)` plus once-per-window reporting
+  can have a first-order performance effect on object-heavy workloads; `go`
+  improved dramatically once repeated skip accounting was removed.
 
 ## 2026-04-07 issue85 kickoff
 

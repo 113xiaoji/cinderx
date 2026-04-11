@@ -62,6 +62,23 @@
     source file still contained `attr_heavy_loop`, so the install state was not
     a clean baseline
 
+## 2026-04-11 Day 2 compare update
+
+- Deploy marker plumbing is now in place and verified:
+  - baseline marker: `source_commit = fb105b6b`
+  - current marker: `source_commit = 06a262ff`
+- Skip-cache effect:
+  - high-call and object-stateful skip-reason probes now both report `1/1`
+    instead of `5000/20000`
+- Clean direct compare results:
+  - `fannkuch`: about `+3.9%`
+  - `go`: about `-34.4%`
+  - `chaos`: about `+0.6%`
+  - `raytrace`: about `+29.7%`
+- Immediate conclusion:
+  - skip caching is a real win for `go`
+  - `raytrace` remains the biggest unresolved regression
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

@@ -15,6 +15,8 @@
   body counts, then had to tighten it after a clean red failure.
 - Trusted a “baseline” direct benchmark result too early before checking the
   remote source file actually matched the intended baseline revision.
+- Used a failing `unittest discover` invocation as if it were a runtime
+  regression, when the failure was only in the test harness command.
 
 ## 2026-04-07
 

@@ -32,6 +32,14 @@
     - `go`
     - `chaos`
     - `raytrace`
+  - clean direct baseline/current compare is now available for:
+    - `fannkuch`
+    - `go`
+    - `chaos`
+    - `raytrace`
+- Current performance priority:
+  - `go` improved strongly after skip caching
+  - `raytrace` is now the highest-value unresolved regression
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

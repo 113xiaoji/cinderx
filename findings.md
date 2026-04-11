@@ -164,6 +164,51 @@ entrypoint:
       `attr_heavy_loop`
     - so that run cannot be treated as a clean baseline result
 
+### 2026-04-11 Day 2 sprint: clean direct baseline/current comparison
+
+- Clean source-state verification now uses deploy markers written by
+  `scripts/arm/write_deploy_marker.py`.
+- Verified markers:
+  - baseline:
+    - `source_commit = fb105b6b`
+  - current:
+    - `source_commit = 06a262ff`
+
+- Skip cache change:
+  - same code/loop/reason now records `hot_loop_skip` only once per stats window
+  - targeted ARM probes now report:
+    - high-call wrapper synthetic:
+      - `len = 1`
+      - `count = 1`
+    - object-stateful synthetic:
+      - `len = 1`
+      - `count = 1`
+
+- Direct benchmark compare on ARM (`median_wall_sec`, 5 repeats):
+  - `fannkuch`
+    - baseline: `0.5354691409993393`
+    - current: `0.5561854089974076`
+    - delta: about `+3.87%`
+  - `go`
+    - baseline: `0.42662018299961346`
+    - current: `0.2799688699960825`
+    - delta: about `-34.38%`
+  - `chaos`
+    - baseline: `0.11255058700044174`
+    - current: `0.11324946099921362`
+    - delta: about `+0.62%`
+  - `raytrace`
+    - baseline: `0.6561158749973401`
+    - current: `0.8509326150015113`
+    - delta: about `+29.69%`
+
+- Interpretation:
+  - the skip cache materially helped `go`
+  - `chaos` is effectively flat
+  - `fannkuch` has a small regression
+  - `raytrace` has a large remaining regression and is the highest-value
+    unresolved performance outlier
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`
