@@ -475,6 +475,66 @@ entrypoint:
     coverage gap, not by four separate profitability mistakes
   - with this fix, the broad remaining regression list is materially reduced
 
+### 2026-04-11 Day 2 sprint: broader matrix after finalize fix
+
+- The broader 16-benchmark direct matrix was rerun after the
+  finalize-without-OSR-entry fix on a clean current install state.
+
+- Updated broad compare (baseline -> current):
+  - `unpack_sequence`
+    - `0.03415092800423736 -> 0.0008290200057672337`
+    - about `-97.57%`
+  - `scimark_monte_carlo`
+    - `0.16822200099704787 -> 0.1313941269982024`
+    - about `-21.89%`
+  - `scimark_sor`
+    - `0.32682079700316535 -> 0.26793340899894247`
+    - about `-18.02%`
+  - `scimark_lu`
+    - `0.31877710599655984 -> 0.15441868500056444`
+    - about `-51.56%`
+  - `nbody`
+    - `0.5926613449992146 -> 0.16393382500245934`
+    - about `-72.34%`
+  - `spectral_norm`
+    - `0.34192532500310335 -> 0.2133726160027436`
+    - about `-37.60%`
+  - `meteor_contest`
+    - `0.35534591099713 -> 0.10765380800148705`
+    - about `-69.71%`
+  - `hexiom`
+    - `0.027714926000044215 -> 0.013427982994471677`
+    - about `-51.55%`
+  - `pyflate`
+    - `1.370537355003762 -> 0.7733694710041163`
+    - about `-43.57%`
+  - `decimal_pi`
+    - `0.40100145299948053 -> 0.385733621995314`
+    - about `-3.81%`
+  - `telco`
+    - `0.014184592000674456 -> 0.013974702000268735`
+    - about `-1.48%`
+  - `float`
+    - `0.1684347330010496 -> 0.1226978480044636`
+    - about `-27.15%`
+  - `deltablue`
+    - `0.012116681005863938 -> 0.009123030999035109`
+    - about `-24.71%`
+  - `mdp`
+    - `2.987155603004794 -> 2.545616027993674`
+    - about `-14.78%`
+  - `barnes_hut`
+    - `1.2683874590002233 -> 1.2277620079985354`
+    - about `-3.20%`
+  - `bpe_tokeniser`
+    - `7.417983821003872 -> 7.399414453997451`
+    - about `-0.25%`
+
+- Updated interpretation:
+  - after the finalize-without-OSR-entry fix, the broader direct matrix is
+    overwhelmingly positive
+  - no stable median regression remains in the currently measured broad set
+
 ### Open case: issue85 object-heavy / search-heavy hot-loop OSR profitability
 
 - Date: `2026-04-07`

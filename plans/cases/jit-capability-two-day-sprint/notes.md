@@ -183,6 +183,24 @@
 - Current conclusion:
   - this is a broad coverage improvement, not a benchmark-specific tweak
 
+## 2026-04-11 Day 2 broad matrix refresh after finalize fix
+
+- Reran the 16-benchmark broad direct matrix on a clean current install state
+  after the finalize-without-OSR-entry fix.
+- Result:
+  - the broad matrix is now overwhelmingly positive
+  - strongest wins include:
+    - `unpack_sequence`
+    - `nbody`
+    - `meteor_contest`
+    - `scimark_lu`
+    - `hexiom`
+    - `pyflate`
+    - `spectral_norm`
+  - remaining entries are modestly positive or effectively flat
+- Updated conclusion:
+  - no stable median regression remains in the currently measured broad set
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

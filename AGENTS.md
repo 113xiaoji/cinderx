@@ -50,6 +50,8 @@
     - `spectral_norm`
     - `nbody`
     - `scimark_lu`
+  - rerunning the broader direct matrix after that fix now shows no stable
+    median regression in the currently measured broad set
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
