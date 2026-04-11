@@ -9,6 +9,8 @@ AUTOJIT="${AUTOJIT:-50}"
 OUTPUT="${OUTPUT:-/root/work/arm-sync/pyperf_subset.json}"
 CINDERX_ENABLE_SPECIALIZED_OPCODES="${CINDERX_ENABLE_SPECIALIZED_OPCODES:-1}"
 CINDERX_JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-}"
+RUN_LABEL="${RUN_LABEL:-}"
+BASELINE_REF="${BASELINE_REF:-}"
 
 if [[ -z "$BENCHMARKS" ]]; then
   echo "ERROR: BENCHMARKS must be set"
@@ -57,52 +59,15 @@ for ((i = 1; i <= SAMPLES; i++)); do
       -o "$out"
 done
 
-"$DRIVER_PY" - <<'PY' "$TMPDIR" "$OUTPUT" "$BENCHMARKS" "$SAMPLES" "$AUTOJIT"
-import json
-import statistics
-import sys
-from pathlib import Path
-
-tmpdir = Path(sys.argv[1])
-output = Path(sys.argv[2])
-benchmarks = sys.argv[3].split(",")
-samples = int(sys.argv[4])
-autojit = int(sys.argv[5])
-
-rows = {}
-for path in sorted(tmpdir.glob("run_*.json")):
-    with path.open("r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    for bench in data.get("benchmarks", []):
-        name = bench.get("metadata", {}).get("name")
-        if name is None:
-            continue
-        value = bench["runs"][0]["values"][0]
-        rows.setdefault(name, []).append(float(value))
-
-summary = {
-    "benchmarks": [],
-    "benchmark_filter": benchmarks,
-    "samples": samples,
-    "autojit": autojit,
-}
-
-for name in sorted(rows):
-    vals = rows[name]
-    summary["benchmarks"].append(
-        {
-            "name": name,
-            "samples": vals,
-            "median": statistics.median(vals),
-            "min": min(vals),
-            "max": max(vals),
-        }
-    )
-
-output.parent.mkdir(parents=True, exist_ok=True)
-with output.open("w", encoding="utf-8") as fh:
-    json.dump(summary, fh, ensure_ascii=False, indent=2)
-    fh.write("\n")
-
-print(output)
-PY
+"$DRIVER_PY" scripts/arm/summarize_pyperf_subset.py \
+  --tmpdir "$TMPDIR" \
+  --output "$OUTPUT" \
+  --benchmarks "$BENCHMARKS" \
+  --samples "$SAMPLES" \
+  --autojit "$AUTOJIT" \
+  --run-label "$RUN_LABEL" \
+  --baseline-ref "$BASELINE_REF" \
+  --workdir "$WORKDIR" \
+  --specialized-opcodes "$CINDERX_ENABLE_SPECIALIZED_OPCODES" \
+  --jitlist-entries "$CINDERX_JITLIST_ENTRIES" \
+  --git-commit "${GIT_COMMIT:-}"

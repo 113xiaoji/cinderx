@@ -9,10 +9,20 @@ from pathlib import Path
 def load_summary(path: Path) -> dict[str, float]:
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
-    return {
-        row["name"]: float(row["median"])
-        for row in data.get("benchmarks", [])
-    }
+    return data
+
+
+def ensure_matching_shape(
+    base_data: dict[str, object],
+    current_data: dict[str, object],
+) -> None:
+    for key in ("benchmark_filter", "samples", "autojit"):
+        base_val = base_data.get(key)
+        current_val = current_data.get(key)
+        if base_val != current_val:
+            raise SystemExit(
+                f"mismatched {key}: base={base_val!r} current={current_val!r}"
+            )
 
 
 def main() -> int:
@@ -23,8 +33,17 @@ def main() -> int:
     parser.add_argument("--warn-threshold-pct", type=float, default=5.0)
     args = parser.parse_args()
 
-    base = load_summary(Path(args.base))
-    current = load_summary(Path(args.current))
+    base_data = load_summary(Path(args.base))
+    current_data = load_summary(Path(args.current))
+    ensure_matching_shape(base_data, current_data)
+    base = {
+        row["name"]: float(row["median"])
+        for row in base_data.get("benchmarks", [])
+    }
+    current = {
+        row["name"]: float(row["median"])
+        for row in current_data.get("benchmarks", [])
+    }
     names = sorted(set(base) | set(current))
 
     rows = []
@@ -57,6 +76,16 @@ def main() -> int:
         "rows": rows,
         "warn_threshold_pct": args.warn_threshold_pct,
         "regressions": regressions,
+        "base_metadata": {
+            "run_label": base_data.get("run_label", ""),
+            "baseline_ref": base_data.get("baseline_ref", ""),
+            "git_commit": base_data.get("git_commit", ""),
+        },
+        "current_metadata": {
+            "run_label": current_data.get("run_label", ""),
+            "baseline_ref": current_data.get("baseline_ref", ""),
+            "git_commit": current_data.get("git_commit", ""),
+        },
     }
 
     output = Path(args.output)
