@@ -29,6 +29,7 @@ PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES="${PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES:-1}"
 CINDERX_ENABLE_SPECIALIZED_OPCODES="${CINDERX_ENABLE_SPECIALIZED_OPCODES:-0}"
 CINDERX_JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-}"
 BUILD_NO_ISOLATION="${BUILD_NO_ISOLATION:-1}"
+SOURCE_COMMIT="${SOURCE_COMMIT:-}"
 
 if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AUTOJIT_GATE must be a non-negative integer, got '$AUTOJIT_GATE'"
@@ -89,6 +90,24 @@ fi
 "$PY" -m build "${BUILD_ARGS[@]}"
 WHEEL="$(ls -1t dist/cinderx-*.whl | head -n 1)"
 echo "wheel=$WHEEL"
+
+DEPLOY_MARKER="/root/work/arm-sync/deploy_marker_${RUN_ID}.json"
+MARKER_SCRIPT="$WORKDIR/scripts/arm/write_deploy_marker.py"
+if [[ ! -f "$MARKER_SCRIPT" ]]; then
+  MARKER_SCRIPT="$INCOMING_DIR/write_deploy_marker.py"
+fi
+"$PY" "$MARKER_SCRIPT" \
+  --output "$DEPLOY_MARKER" \
+  --source-commit "$SOURCE_COMMIT" \
+  --workdir "$WORKDIR" \
+  --wheel "$WHEEL" \
+  --build-no-isolation "$BUILD_NO_ISOLATION" \
+  --skip-pyperf "$SKIP_PYPERF" \
+  --path cinderx/Jit/pyjit.cpp \
+  --path cinderx/PythonLib/test_cinderx/test_arm_runtime.py \
+  --path scripts/arm/remote_update_build_test.sh
+cp "$DEPLOY_MARKER" /root/work/arm-sync/deploy_marker_latest.json
+echo "deploy_marker=$DEPLOY_MARKER"
 
 if [[ ! -d "$DRIVER_VENV" ]]; then
   echo ">> create driver venv $DRIVER_VENV"

@@ -2510,8 +2510,7 @@ Ref<> make_hot_loop_skip_stats() {
         auto int_dict = Ref<>::steal(check(PyDict_New()));
         auto qualname_obj =
             Ref<>::steal(check(PyUnicode_FromString(qualname.c_str())));
-        auto reason_obj =
-            Ref<>::steal(check(PyUnicode_FromString(reason.c_str())));
+        auto reason_obj = Ref<>::steal(check(PyUnicode_FromString(reason)));
         auto count = Ref<>::steal(PyLong_FromUnsignedLongLong(stat.count));
         check(PyDict_SetItemString(normal, "func_qualname", qualname_obj));
         check(PyDict_SetItemString(normal, "reason", reason_obj));
