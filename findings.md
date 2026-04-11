@@ -4567,3 +4567,72 @@ Conclusion:
   - interpretation:
     - this run does **not** get far enough to retry `import cinderx`
     - the latest clean full-source blocker is now a compile-time syntax error in `pyjit.cpp`, which preempts the previous undefined-symbol import failure on this path
+
+- clean disposable-clone retest after the later namespace fixes through `d3d38817 fix: move tiered compile_func definitions into jit namespace`:
+  - local setup:
+    - created a fresh disposable clone from `codex/baseline-tier-fastmode-mvp` at `d3d388176808a639ffd2194b79f7ff28a8588f29`
+    - applied the same temporary helper-only change in the disposable clone:
+      - `"$PY" -m build --wheel`
+      - -> `"$PY" -m build --wheel -n`
+    - committed that helper tweak locally in the disposable clone before running the standard helper flow
+  - standard helper rerun from the disposable clone:
+    - env:
+      - `ARM_RUNTIME_SKIP_TESTS=test_`
+      - `EXTRA_TEST_CMD=python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+      - `SKIP_DEFAULT_PYPERF_GATES=1`
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath <disposable-clone> -UpstreamRemote origin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/baseline-tier-fastmode-mvp -ArmHost 124.70.162.35 -Benchmark richards`
+  - result on the clean full-source path:
+    - the helper successfully archived and rsynced the full source tree into `/root/work/cinderx-main`
+    - the no-isolation ARM build completed on the fresh synced tree
+    - the helper still failed before wheel reinstall completed because the driver venv hit the same `pip` crash
+    - the helper therefore never reached `>> extra test command`
+  - helper failure evidence:
+    - `/root/work/incoming/remote_update_build_test.sh: line 91: 9232 Segmentation fault (core dumped) PYTHONJIT=0 python -m pip install -q -U pip`
+  - fresh-tree import check after the successful build:
+    - command:
+      - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u - <<'PY'`
+      - `print('before-import')`
+      - `import cinderx`
+      - `print('after-import', cinderx.__file__)`
+      - `PY`
+    - result:
+      - `before-import`
+      - `after-import /root/work/cinderx-main/scratch/lib.linux-aarch64-cpython-314/cinderx/__init__.py`
+  - focused tier behavior on the fresh tree:
+    - the exact helper extra-test command still did not run because the helper aborted earlier at the driver-venv `pip` step
+    - a direct fresh-tree recreation of the three assertions in `test_jit_tiering.py` produced:
+      - `PASS force_compile_baseline_exposes_baseline_tier`
+      - `PASS force_compile_promotes_baseline_function_to_optimized`
+      - `FAIL low_threshold_autocompiles_baseline_before_optimized: AssertionError('interp')`
+    - interpretation:
+      - explicit baseline compile works
+      - explicit promotion to optimized works
+      - automatic baseline promotion after one call still does not happen on the fresh tree
+  - direct remote tier probe after the clean build:
+    - command:
+      - `cd /root/work/cinderx-main && PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -S -u - <<'PY'`
+      - `import cinderx.jit as jit`
+      - `jit.enable()`
+      - `jit.baseline_compile_after_n_calls(1)`
+      - `jit.compile_after_n_calls(1000000)`
+      - `def hot(n):`
+      - `    s = 0`
+      - `    for i in range(n):`
+      - `        s += i`
+      - `    return s`
+      - `print(jit.get_function_tier(hot))`
+      - `hot(10)`
+      - `print(jit.get_function_tier(hot))`
+      - `jit.force_compile(hot)`
+      - `print(jit.get_function_tier(hot))`
+      - `print(hot(10))`
+      - `PY`
+    - output:
+      - `interp`
+      - `interp`
+      - `optimized`
+      - `45`
+    - interpretation:
+      - `force_compile()` promotion still works on the fresh synced tree
+      - the automatic baseline threshold path still fails to flip the function into `baseline`
