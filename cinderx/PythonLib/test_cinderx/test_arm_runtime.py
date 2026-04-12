@@ -2567,7 +2567,9 @@ class ArmRuntimeTests(unittest.TestCase):
             compiled_size = int(size_match.group(1))
 
             self.assertLessEqual(bb_count, 72, dump)
-            self.assertLessEqual(compiled_size, 3000, proc.stdout)
+            # Phase0 OSR entry export adds a small fixed stub on 3.14+; keep the
+            # generator lowering compact while allowing that overhead.
+            self.assertLessEqual(compiled_size, 3040, proc.stdout)
 
     def test_int_binary_identity_simplify_reduces_compiled_size(self) -> None:
         # Regression guard for IntBinaryOp identity simplification in HIR.
