@@ -85,6 +85,27 @@ entrypoint:
         - `scp: Connection closed`
       - assessment:
         - remote infrastructure fluctuation, not a pilot-script code blocker
+  - attempt 5: unified entrypoint end-to-end success
+    - worktree / branch:
+      - `codex/phase1-pilot-e2e`
+      - commit: `5481801a34a87004edb5fde6a0fddbfac83e3d87`
+    - complete command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\Users\zhouyongzhe\.config\superpowers\worktrees\cinderx4\codex\phase1-pilot-e2e -UpstreamRemote localorigin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/phase1-pilot-e2e -ArmHost 124.70.162.35 -RemoteDriverVenv /root/venv-cinderx314-pilot -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd "OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh && find /root/work/arm-sync/interp_superinstruction_pilot -maxdepth 1 -type f | sort"`
+    - result:
+      - `scripts/push_to_arm.ps1` returned success after:
+        - upstream sync
+        - archive creation
+        - both `scp` uploads
+        - remote helper execution
+      - remote helper ran `interp_superinstruction_pilot.sh`
+      - final artifact list printed by the unified entrypoint:
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_const_load_fast_loop.cinderx.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_const_load_fast_loop.cpython.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_fast_pair_loop.cinderx.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_fast_pair_loop.cpython.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/store_fast_load_fast_loop.cinderx.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/store_fast_load_fast_loop.cpython.json`
+      - this is the required end-to-end `push_to_arm.ps1` success for Task 5
 
   - remote helper execution using the uploaded unified-entrypoint payload:
     - command:
@@ -110,7 +131,7 @@ entrypoint:
 - Overall status for this round:
   - local TDD + contract coverage: complete
   - unified remote entrypoint exercised multiple times: yes
-  - end-to-end pilot artifact generation from the uploaded unified-entrypoint payload: completed
+  - end-to-end pilot artifact generation via `scripts/push_to_arm.ps1`: completed
   - residual risk:
     - Windows-to-ARM SSH/SCP transport via `scripts/push_to_arm.ps1` is still flaky in this environment
     - this is an infrastructure risk, not a pilot-script contract or artifact-generation code risk
