@@ -6,17 +6,20 @@ import unittest
 
 class TieringApiTests(unittest.TestCase):
     def _run_tiering_script(self, body: str) -> list[str]:
-        script = textwrap.dedent(
-            f"""
-            import cinderx.jit as jit
+        script = (
+            textwrap.dedent(
+                """
+                import cinderx.jit as jit
 
-            jit.enable()
-            if not jit.is_enabled():
-                print("__SKIP__:requires JIT")
-                raise SystemExit(0)
-
-            {textwrap.dedent(body)}
-            """
+                jit.enable()
+                if not jit.is_enabled():
+                    print("__SKIP__:requires JIT")
+                    raise SystemExit(0)
+                """
+            ).strip()
+            + "\n\n"
+            + textwrap.dedent(body).strip()
+            + "\n"
         )
         result = subprocess.run(
             [sys.executable, "-S", "-u", "-c", script],
@@ -63,6 +66,33 @@ class TieringApiTests(unittest.TestCase):
             """
         )
         self.assertEqual(lines, ["baseline", "optimized"])
+
+    def test_force_compile_promotes_baseline_function_with_cached_optimized_tier(
+        self,
+    ) -> None:
+        lines = self._run_tiering_script(
+            """
+            def make_helper():
+                def helper(x):
+                    return x + 1
+                return helper
+
+            optimized = make_helper()
+            if not jit.force_compile(optimized):
+                raise AssertionError("force_compile(optimized) failed")
+            print(jit.get_function_tier(optimized))
+
+            baseline = make_helper()
+            if not jit.force_compile_baseline(baseline):
+                raise AssertionError("force_compile_baseline(baseline) failed")
+            print(jit.get_function_tier(baseline))
+            if not jit.force_compile(baseline):
+                raise AssertionError("force_compile(baseline) failed")
+            print(jit.get_function_tier(baseline))
+            print(jit.get_function_tier(optimized))
+            """
+        )
+        self.assertEqual(lines, ["optimized", "baseline", "optimized", "optimized"])
 
     def test_low_threshold_autocompiles_baseline_before_optimized(self) -> None:
         lines = self._run_tiering_script(

@@ -1867,8 +1867,11 @@ PyObject* force_compile(PyObject* /* self */, PyObject* arg) {
   if (func == nullptr) {
     return nullptr;
   }
+  // Another function object can share cached optimized code for the same
+  // code object while this function is still running baseline.
   if (!isJitUsable() ||
-      (isJitCompiled(func) && jitCtx()->hasOptimizedTier(func))) {
+      (isJitCompiled(func) &&
+       jitCtx()->lookupFuncTier(func) == FunctionTierState::kOptimized)) {
     Py_RETURN_FALSE;
   }
 
