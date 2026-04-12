@@ -6,11 +6,26 @@ import pytest
 from scripts.arm import interp_superinstruction_workloads as workloads
 
 
+RUNTIME_OPCODE_ALIASES = {
+    "LOAD_FAST_BORROW": ("LOAD_FAST",),
+    "LOAD_FAST_BORROW_LOAD_FAST_BORROW": ("LOAD_FAST", "LOAD_FAST"),
+    "LOAD_SMALL_INT": ("LOAD_CONST",),
+}
+
+
+def normalize_runtime_opname(opname: str) -> tuple[str, ...]:
+    return RUNTIME_OPCODE_ALIASES.get(opname, (opname,))
+
+
 def loop_pairs(fn) -> set[str]:
     instructions = list(dis.get_instructions(fn))
     loop_start = next(i for i, instr in enumerate(instructions) if instr.opname == "FOR_ITER")
     loop_end = next(i for i, instr in enumerate(instructions) if instr.opname == "JUMP_BACKWARD")
-    names = [instr.opname for instr in instructions[loop_start:loop_end]]
+    names = [
+        normalized
+        for instr in instructions[loop_start:loop_end]
+        for normalized in normalize_runtime_opname(instr.opname)
+    ]
     return {f"{a}->{b}" for a, b in zip(names, names[1:])}
 
 

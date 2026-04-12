@@ -234,13 +234,14 @@ def get_entry_code_object(module_code: CodeType, entry_name: str) -> CodeType:
 
 
 def load_cinder_workload(workload_name: str):
-    from cinderx.compiler import compile_code
+    from cinderx.compiler import CinderCodeGenerator, compile_code
 
     spec = get_workload_spec(workload_name)
     module_code = compile_code(
         spec.source,
         f"<{spec.name}>",
         "exec",
+        compiler=CinderCodeGenerator,
         modname=f"pilot::{spec.name}",
     )
     emitted_superinstructions = collect_emitted_superinstructions(

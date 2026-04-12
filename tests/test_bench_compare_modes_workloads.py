@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import types
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -85,7 +86,7 @@ def test_cinderx_interp_named_workload_requires_real_driver_env() -> None:
 
     assert result.returncode != 0
     assert "ModuleNotFoundError" in result.stderr
-    assert "from cinderx.compiler import compile_code" in result.stderr
+    assert "from cinderx.compiler import CinderCodeGenerator, compile_code" in result.stderr
 
 
 def test_cinder_producer_json_uses_helper_emission_evidence(
@@ -148,6 +149,54 @@ def test_cinder_producer_json_uses_helper_emission_evidence(
     payload = json.loads(capsys.readouterr().out)
     assert payload["producer"] == "cinder"
     assert payload["emitted_superinstructions"] == ["LOAD_FAST__LOAD_FAST"]
+
+
+def test_load_cinder_workload_uses_cinder_code_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_module(
+        Path("scripts/arm/bench_compare_modes.py"),
+        "_bench_compare_modes_cinder_generator_test",
+    )
+    helper = _load_module(
+        Path("scripts/arm/interp_superinstruction_workloads.py"),
+        "_interp_superinstruction_workloads_generator_test",
+    )
+    spec = helper.get_workload_spec("load_fast_pair_loop")
+    calls: list[object] = []
+
+    class FakeCinderCodeGenerator:
+        pass
+
+    def fake_compile_code(
+        source: str,
+        filename: str,
+        mode: str,
+        *,
+        compiler=None,
+        modname: str,
+    ):
+        assert source == spec.source
+        assert filename == f"<{spec.name}>"
+        assert mode == "exec"
+        assert modname == f"pilot::{spec.name}"
+        calls.append(compiler)
+        return compile(source, filename, mode)
+
+    fake_compiler_module = types.ModuleType("cinderx.compiler")
+    fake_compiler_module.CinderCodeGenerator = FakeCinderCodeGenerator
+    fake_compiler_module.compile_code = fake_compile_code
+    monkeypatch.setitem(sys.modules, "cinderx.compiler", fake_compiler_module)
+    monkeypatch.setattr(
+        script,
+        "collect_emitted_superinstructions",
+        lambda _code: ["LOAD_FAST__LOAD_FAST"],
+    )
+
+    _, emitted = script.load_cinder_workload("load_fast_pair_loop")
+
+    assert calls == [FakeCinderCodeGenerator]
+    assert emitted == ["LOAD_FAST__LOAD_FAST"]
 
 
 def _fake_static_opnames(storage_shape: str):
