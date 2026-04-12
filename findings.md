@@ -4902,3 +4902,59 @@ Conclusion:
     - interpretation:
       - current evidence supports `3.15` code/runtime compatibility
       - there is likely still a harness-level issue in the `3.15` compatibility-only path of `remote_update_build_test.sh`
+
+- 2026-04-12 phase 1.5 task 4: unified `3.14` runtime producer closed loop
+  - local verification (Windows host):
+    - command:
+      - `uv run --no-project --with pytest python -m pytest tests/test_interp_superinstruction_workloads.py tests/test_cinder_compiler_superinstructions.py tests/test_bench_compare_modes_workloads.py tests/test_interp_superinstruction_pilot_contract.py`
+    - result:
+      - `25 passed in 0.33s`
+    - note:
+      - the local follow-up fixes covered:
+        - `bench_compare_modes.py` forcing `CinderCodeGenerator` for the cinder producer path
+        - compiler/runtime opcode-name fallback for `LOAD_FAST__LOAD_FAST`, `STORE_FAST__LOAD_FAST`, `LOAD_CONST__LOAD_FAST`
+        - emitted-evidence capture moving from final code-object disassembly to the producer flow-graph stage
+        - runtime `dis` alias normalization in `tests/test_interp_superinstruction_workloads.py`
+  - unified remote entrypoint:
+    - command:
+      - `.\scripts\push_to_arm.ps1 -RepoPath C:\work\code\cinderx4 -ArmHost 124.70.162.35 -UpstreamRemote localorigin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/interpreter-optimization-design -RemoteDriverVenv /root/venv-cinderx314-pilot -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd 'OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh'`
+    - result:
+      - PASS
+      - the unified entrypoint completed archive/upload/build/install successfully
+      - `interp_superinstruction_pilot.sh` was executed through `EXTRA_VERIFY_CMD`
+      - pilot artifact directory on ARM:
+        - `/root/work/arm-sync/interp_superinstruction_pilot`
+  - post-entrypoint artifact readback:
+    - command:
+      - `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@124.70.162.35 "python3 - <<'PY'`
+      - `from pathlib import Path`
+      - `import json`
+      - `out_dir = Path('/root/work/arm-sync/interp_superinstruction_pilot')`
+      - `paths = sorted(out_dir.glob('*.cinderx.cinder.json'))`
+      - `print('artifact_count=' + str(len(paths)))`
+      - `for path in paths:`
+      - `    payload = json.loads(path.read_text(encoding='utf-8'))`
+      - `    print(path.name)`
+      - `    print('producer=' + str(payload.get('producer')))`
+      - `    print('emitted_superinstructions=' + json.dumps(payload.get('emitted_superinstructions')))`
+      - `PY"`
+    - result:
+      - `artifact_count=3`
+      - `load_const_load_fast_loop.cinderx.cinder.json`
+        - `producer=cinder`
+        - `emitted_superinstructions=[]`
+      - `load_fast_pair_loop.cinderx.cinder.json`
+        - `producer=cinder`
+        - `emitted_superinstructions=["LOAD_FAST__LOAD_FAST"]`
+      - `store_fast_load_fast_loop.cinderx.cinder.json`
+        - `producer=cinder`
+        - `emitted_superinstructions=["LOAD_FAST__LOAD_FAST"]`
+    - evidence conclusion:
+      - at least one real `*.cinderx.cinder.json` artifact now proves:
+        - `producer == "cinder"`
+        - `emitted_superinstructions` is non-empty
+      - concrete emitted evidence captured on `3.14`:
+        - `LOAD_FAST__LOAD_FAST`
+  - closure statement:
+    - `3.14` runtime producer closed loop is now complete through the unified entrypoint
+    - `3.15` remains at static wiring + contract level; this turn did not add a matching `3.15` runtime producer artifact
