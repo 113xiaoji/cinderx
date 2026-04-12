@@ -301,6 +301,22 @@ entrypoint:
     - `3.14` runtime producer evidence now covers the full Phase 1 shortlist with fresh artifacts from a clean remote workdir
     - `3.15` remains at static wiring + contract level
 
+- 2026-04-12 phase 1.5 post-close verification: fresh `push_to_arm` output directory check
+  - fresh artifact root:
+    - `/root/work/arm-sync/interp_superinstruction_pilot_phase15_5`
+  - post-run readback:
+    - `load_fast_pair_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST']`
+    - `store_fast_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST', 'STORE_FAST__LOAD_FAST']`
+    - `load_const_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_CONST__LOAD_FAST']`
+  - confirmed outcome:
+    - the fresh `phase15_5` run is the final clean proof that the complete Phase 1 shortlist is now covered on ARM for `3.14`
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
