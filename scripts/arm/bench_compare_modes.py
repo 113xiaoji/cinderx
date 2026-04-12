@@ -22,9 +22,16 @@ if WORKLOAD_HELPER_SPEC is None or WORKLOAD_HELPER_SPEC.loader is None:
 WORKLOAD_HELPER = importlib.util.module_from_spec(WORKLOAD_HELPER_SPEC)
 sys.modules[WORKLOAD_HELPER_SPEC.name] = WORKLOAD_HELPER
 WORKLOAD_HELPER_SPEC.loader.exec_module(WORKLOAD_HELPER)
-WORKLOAD_NAMES = tuple(spec.name for spec in WORKLOAD_HELPER.WORKLOAD_SPECS)
+WORKLOAD_NAMES = WORKLOAD_HELPER.get_workload_names()
 WORKLOAD_CHOICES = ("default",) + WORKLOAD_NAMES
+build_default_workload = WORKLOAD_HELPER.build_default_workload
+get_workload_spec = WORKLOAD_HELPER.get_workload_spec
 get_workload = WORKLOAD_HELPER.get_workload
+EMITTED_SUPERINSTRUCTIONS = (
+    "LOAD_FAST__LOAD_FAST",
+    "STORE_FAST__LOAD_FAST",
+    "LOAD_CONST__LOAD_FAST",
+)
 
 
 def workload(n: int) -> int:
@@ -197,10 +204,35 @@ def _best_backedge_offset(fn):
     return max(offsets)
 
 
+def collect_emitted_superinstructions(fn) -> list[str]:
+    names = {instr.opname for instr in dis.get_instructions(fn)}
+    return [name for name in EMITTED_SUPERINSTRUCTIONS if name in names]
+
+
+def load_cinder_workload(workload_name: str):
+    from cinderx.compiler import exec_cinder
+
+    spec = get_workload_spec(workload_name)
+    namespace: dict[str, object] = {}
+    exec_cinder(spec.source, namespace, namespace, modname=f"pilot::{spec.name}")
+    try:
+        workload = namespace[spec.entry_name]
+    except KeyError as exc:
+        raise RuntimeError(
+            f"workload {spec.name!r} did not define entry {spec.entry_name!r}"
+        ) from exc
+    if not callable(workload):
+        raise RuntimeError(
+            f"workload {spec.name!r} entry {spec.entry_name!r} is not callable"
+        )
+    return workload
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", choices=["cinderx", "cpython"], required=True)
     parser.add_argument("--mode", choices=["interp", "jit"], required=True)
+    parser.add_argument("--producer", choices=("default", "cinder"), default="default")
     parser.add_argument("--workload", choices=WORKLOAD_CHOICES, default="default")
     parser.add_argument("--n", type=int, default=250)
     parser.add_argument("--warmup", type=int, default=20000)
@@ -275,11 +307,19 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.workload == "default":
+    if args.producer == "cinder" and args.runtime != "cinderx":
+        parser.error("cinder producer requires --runtime cinderx")
+    if args.producer == "cinder" and args.workload == "default":
+        parser.error("cinder producer requires a named pilot workload")
+
+    if args.producer == "cinder":
+        fn = load_cinder_workload(args.workload)
+        workload_name = args.workload
+    elif args.workload == "default":
         fn = workload
         workload_name = "default"
     else:
-        fn = get_workload(args.workload)
+        fn = build_default_workload(get_workload_spec(args.workload))
         workload_name = args.workload
 
     if args.runtime == "cinderx":
@@ -302,6 +342,9 @@ def main() -> int:
             args.calls,
             args.repeats,
         )
+
+    result["producer"] = args.producer
+    result["emitted_superinstructions"] = collect_emitted_superinstructions(fn)
 
     text = json.dumps(result, indent=2, ensure_ascii=False)
     print(text)

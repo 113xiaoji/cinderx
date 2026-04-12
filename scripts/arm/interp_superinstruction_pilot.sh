@@ -39,7 +39,7 @@ echo "out_dir=$OUT_DIR"
 
 for workload in "${WORKLOADS[@]}"; do
   cpython_json="$OUT_DIR/${workload}.cpython.json"
-  cinderx_json="$OUT_DIR/${workload}.cinderx.json"
+  cinderx_json="$OUT_DIR/${workload}.cinderx.cinder.json"
 
   echo ">> workload=$workload runtime=cpython mode=interp"
   env PYTHON_JIT=0 "$CPYTHON_PY" "$BENCH_SCRIPT" \
@@ -56,6 +56,7 @@ for workload in "${WORKLOADS[@]}"; do
   env PYTHONJITDISABLE=1 "$DRIVER_PY" "$BENCH_SCRIPT" \
     --runtime cinderx \
     --mode interp \
+    --producer cinder \
     --workload "$workload" \
     --n "$N" \
     --warmup "$WARMUP" \

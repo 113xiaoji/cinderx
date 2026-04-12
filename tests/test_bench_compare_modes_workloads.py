@@ -17,7 +17,7 @@ def _load_module(path: Path, name: str):
     return module
 
 
-def run_bench(runtime: str) -> subprocess.CompletedProcess[str]:
+def run_bench(runtime: str, *extra_args: str) -> subprocess.CompletedProcess[str]:
     script = Path("scripts/arm/bench_compare_modes.py")
     return subprocess.run(
         [
@@ -27,6 +27,7 @@ def run_bench(runtime: str) -> subprocess.CompletedProcess[str]:
             runtime,
             "--mode",
             "interp",
+            *extra_args,
             "--workload",
             "load_fast_pair_loop",
             "--n",
@@ -43,8 +44,21 @@ def run_bench(runtime: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_cpython_interp_named_workload_is_reported_in_json() -> None:
-    result = run_bench("cpython")
+def test_bench_compare_modes_exposes_producer_choices() -> None:
+    script = _load_module(
+        Path("scripts/arm/bench_compare_modes.py"),
+        "_bench_compare_modes_producer_parser_test",
+    )
+    parser = script.build_parser()
+    producer_action = next(
+        action for action in parser._actions if action.dest == "producer"
+    )
+
+    assert producer_action.choices == ("default", "cinder")
+
+
+def test_cpython_default_output_includes_producer_and_emission_fields() -> None:
+    result = run_bench("cpython", "--producer", "default")
     assert result.returncode == 0, result.stderr
 
     payload = json.loads(result.stdout)
@@ -52,14 +66,23 @@ def test_cpython_interp_named_workload_is_reported_in_json() -> None:
     assert payload["workload"] == "load_fast_pair_loop"
     assert payload["runtime"] == "cpython"
     assert payload["mode"] == "interp"
+    assert payload["producer"] == "default"
+    assert payload["emitted_superinstructions"] == []
+
+
+def test_cpython_rejects_cinder_producer() -> None:
+    result = run_bench("cpython", "--producer", "cinder")
+
+    assert result.returncode != 0
+    assert "cinder producer requires --runtime cinderx" in result.stderr
 
 
 def test_cinderx_interp_named_workload_requires_real_driver_env() -> None:
-    result = run_bench("cinderx")
+    result = run_bench("cinderx", "--producer", "cinder")
 
     assert result.returncode != 0
     assert "ModuleNotFoundError" in result.stderr
-    assert "import cinderx.jit as jit" in result.stderr
+    assert "from cinderx.compiler import exec_cinder" in result.stderr
 
 
 def test_workload_choices_come_from_registry_and_no_repo_path_is_injected() -> None:

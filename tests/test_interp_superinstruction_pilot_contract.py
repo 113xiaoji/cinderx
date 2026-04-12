@@ -17,3 +17,5 @@ def test_interp_superinstruction_pilot_script_exists_and_references_phase1_workl
     for workload in EXPECTED_WORKLOADS:
         assert workload in script
     assert "bench_compare_modes.py" in script
+    assert "--producer cinder" in script
+    assert ".cinderx.cinder.json" in script
