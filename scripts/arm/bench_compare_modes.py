@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import CodeType
 
 WORKLOAD_HELPER_PATH = Path(__file__).with_name("interp_superinstruction_workloads.py")
 WORKLOAD_HELPER_SPEC = importlib.util.spec_from_file_location(
@@ -204,17 +205,33 @@ def _best_backedge_offset(fn):
     return max(offsets)
 
 
-def collect_emitted_superinstructions(fn) -> list[str]:
-    names = {instr.opname for instr in dis.get_instructions(fn)}
+def collect_emitted_superinstructions(code) -> list[str]:
+    names = {instr.opname for instr in dis.get_instructions(code)}
     return [name for name in EMITTED_SUPERINSTRUCTIONS if name in names]
 
 
+def get_entry_code_object(module_code: CodeType, entry_name: str) -> CodeType:
+    for const in module_code.co_consts:
+        if isinstance(const, CodeType) and const.co_name == entry_name:
+            return const
+    raise RuntimeError(f"module code did not define entry {entry_name!r}")
+
+
 def load_cinder_workload(workload_name: str):
-    from cinderx.compiler import exec_cinder
+    from cinderx.compiler import compile_code
 
     spec = get_workload_spec(workload_name)
+    module_code = compile_code(
+        spec.source,
+        f"<{spec.name}>",
+        "exec",
+        modname=f"pilot::{spec.name}",
+    )
+    emitted_superinstructions = collect_emitted_superinstructions(
+        get_entry_code_object(module_code, spec.entry_name)
+    )
     namespace: dict[str, object] = {}
-    exec_cinder(spec.source, namespace, namespace, modname=f"pilot::{spec.name}")
+    exec(module_code, namespace, namespace)
     try:
         workload = namespace[spec.entry_name]
     except KeyError as exc:
@@ -225,7 +242,7 @@ def load_cinder_workload(workload_name: str):
         raise RuntimeError(
             f"workload {spec.name!r} entry {spec.entry_name!r} is not callable"
         )
-    return workload
+    return workload, emitted_superinstructions
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -313,14 +330,16 @@ def main() -> int:
         parser.error("cinder producer requires a named pilot workload")
 
     if args.producer == "cinder":
-        fn = load_cinder_workload(args.workload)
+        fn, emitted_superinstructions = load_cinder_workload(args.workload)
         workload_name = args.workload
     elif args.workload == "default":
         fn = workload
         workload_name = "default"
+        emitted_superinstructions = []
     else:
         fn = build_default_workload(get_workload_spec(args.workload))
         workload_name = args.workload
+        emitted_superinstructions = []
 
     if args.runtime == "cinderx":
         result = cinderx_mode(
@@ -344,7 +363,7 @@ def main() -> int:
         )
 
     result["producer"] = args.producer
-    result["emitted_superinstructions"] = collect_emitted_superinstructions(fn)
+    result["emitted_superinstructions"] = emitted_superinstructions
 
     text = json.dumps(result, indent=2, ensure_ascii=False)
     print(text)

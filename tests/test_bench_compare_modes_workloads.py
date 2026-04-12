@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -82,7 +84,69 @@ def test_cinderx_interp_named_workload_requires_real_driver_env() -> None:
 
     assert result.returncode != 0
     assert "ModuleNotFoundError" in result.stderr
-    assert "from cinderx.compiler import exec_cinder" in result.stderr
+    assert "from cinderx.compiler import compile_code" in result.stderr
+
+
+def test_cinder_producer_json_uses_helper_emission_evidence(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = _load_module(
+        Path("scripts/arm/bench_compare_modes.py"),
+        "_bench_compare_modes_cinder_evidence_source_test",
+    )
+
+    def fake_load_cinder_workload(workload_name: str):
+        assert workload_name == "load_fast_pair_loop"
+        return (lambda n: n + 1), ["LOAD_FAST__LOAD_FAST"]
+
+    def fake_cinderx_mode(
+        mode: str, fn, workload_name: str, n: int, warmup: int, calls: int, repeats: int
+    ):
+        assert callable(fn)
+        assert mode == "interp"
+        assert workload_name == "load_fast_pair_loop"
+        assert (n, warmup, calls, repeats) == (3, 0, 1, 1)
+        return {"runtime": "cinderx", "mode": mode, "workload": workload_name}
+
+    def fail_collect_emitted_superinstructions(_fn):
+        raise AssertionError("cinder producer evidence should come from helper")
+
+    monkeypatch.setattr(script, "load_cinder_workload", fake_load_cinder_workload)
+    monkeypatch.setattr(script, "cinderx_mode", fake_cinderx_mode)
+    monkeypatch.setattr(
+        script,
+        "collect_emitted_superinstructions",
+        fail_collect_emitted_superinstructions,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "bench_compare_modes.py",
+            "--runtime",
+            "cinderx",
+            "--mode",
+            "interp",
+            "--producer",
+            "cinder",
+            "--workload",
+            "load_fast_pair_loop",
+            "--n",
+            "3",
+            "--warmup",
+            "0",
+            "--calls",
+            "1",
+            "--repeats",
+            "1",
+        ],
+    )
+
+    assert script.main() == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["producer"] == "cinder"
+    assert payload["emitted_superinstructions"] == ["LOAD_FAST__LOAD_FAST"]
 
 
 def test_workload_choices_come_from_registry_and_no_repo_path_is_injected() -> None:
