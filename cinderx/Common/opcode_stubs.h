@@ -193,7 +193,9 @@ enum {
   X(LOAD_ATTR_TYPE)                    \
   X(LOAD_ATTR_UNCACHABLE)              \
   X(LOAD_COMMON_CONSTANT)              \
+  X(LOAD_CONST__LOAD_FAST)             \
   X(LOAD_FAST_BORROW)                  \
+  X(LOAD_FAST__LOAD_FAST)              \
   X(LOAD_FAST_BORROW_LOAD_FAST_BORROW) \
   X(LOAD_FAST_LOAD_FAST)               \
   X(LOAD_METHOD_DICT_DESCR)            \
@@ -224,6 +226,7 @@ enum {
   X(STORE_ATTR_SPLIT_DICT)             \
   X(SET_FUNCTION_ATTRIBUTE)            \
   X(STORE_ATTR_UNCACHABLE)             \
+  X(STORE_FAST__LOAD_FAST)             \
   X(STORE_FAST_STORE_FAST)             \
   X(STORE_FAST_LOAD_FAST)              \
   X(TO_BOOL)                           \
@@ -297,6 +300,8 @@ enum {
   X(LOAD_ATTR_S_MODULE)            \
   X(LOAD_ATTR_TYPE)                \
   X(LOAD_ATTR_UNCACHABLE)          \
+  X(LOAD_CONST__LOAD_FAST)         \
+  X(LOAD_FAST__LOAD_FAST)          \
   X(LOAD_METHOD)                   \
   X(LOAD_METHOD_DICT_DESCR)        \
   X(LOAD_METHOD_DICT_METHOD)       \
@@ -322,6 +327,7 @@ enum {
   X(STORE_ATTR_DICT)               \
   X(STORE_ATTR_SPLIT_DICT)         \
   X(STORE_ATTR_UNCACHABLE)         \
+  X(STORE_FAST__LOAD_FAST)         \
   X(UNARY_POSITIVE)                \
   X(YIELD_FROM)
 

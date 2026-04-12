@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYTHONLIB = ROOT / "cinderx" / "PythonLib"
 OPCODE_STUBS_HEADER = ROOT / "cinderx" / "Common" / "opcode_stubs.h"
-EXTRA_OPCODE_NAMES = (
+REQUIRED_OPCODE_NAMES = (
     "LOAD_FAST__LOAD_FAST",
     "STORE_FAST__LOAD_FAST",
     "LOAD_CONST__LOAD_FAST",
@@ -57,11 +57,15 @@ def get_custom_opcode_names() -> tuple[str, ...]:
             if match:
                 matches.append(match.group(1))
 
-    names: list[str] = []
-    for name in (*matches, *EXTRA_OPCODE_NAMES):
-        if name not in opcode.opmap and name not in names:
-            names.append(name)
-    return tuple(names)
+    names = [name for name in matches if name not in opcode.opmap]
+    return tuple(dict.fromkeys(names))
+
+
+def test_opcode_stub_header_exposes_double_underscore_superinstructions() -> None:
+    names = get_custom_opcode_names()
+
+    for name in REQUIRED_OPCODE_NAMES:
+        assert name in names
 
 
 @contextmanager
