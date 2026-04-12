@@ -45,6 +45,12 @@
 - For loops that should never OSR, caching the decision is not enough if the
   interpreter still re-enters `_PyJIT_TryHotLoopOSR()` on every backward jump.
   Rewriting the backedge to `JUMP_BACKWARD_NO_JIT` removes that residual tax.
+- A fresh ARM driver venv can separate real runtime regressions from broken
+  reused environments. The auto-JIT helper gate looked broken while reusing the
+  old driver venv, but passed immediately on a new venv.
+- For object-heavy helper scheduling, a synthetic semantic A/B can be more
+  reliable than a direct benchmark delta when the real benchmark path still has
+  an unresolved crash under CinderX-enabled execution.
 
 ## 2026-04-07 issue85 kickoff
 

@@ -31,6 +31,13 @@
 - A failed remote helper retry can look like a broken test even when the first
   helper invocation already completed the deploy; always inspect the marker/log
   before assuming the latest deploy did not land.
+- I initially treated the old `/root/work/incoming/remote_update_build_test.sh`
+  as interchangeable with the updated workdir helper. That reused an outdated
+  script and sent the run into a pyperformance setup crash that was unrelated to
+  the candidate runtime change.
+- I also tried to interpret `bm_go` benchmark behavior before separating
+  \"fresh driver venv\" issues from \"real runtime path\" issues. The right
+  order is: fresh venv first, then semantic A/B, then benchmark claims.
 
 ## 2026-04-07
 

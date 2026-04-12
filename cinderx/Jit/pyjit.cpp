@@ -182,12 +182,6 @@ struct HotLoopOpcodeCounts {
 };
 
 HotLoopOpcodeCounts analyzeFunctionOpcodeCounts(BorrowedRef<PyCodeObject> code) {
-#if PY_VERSION_HEX >= 0x030D0000
-  auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
-#else
-  auto* bytecode = _PyCode_CODE(code);
-#endif
-
   int limit = countIndices(code);
   HotLoopOpcodeCounts counts;
   for (int idx = 0; idx < limit;) {

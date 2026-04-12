@@ -26,6 +26,11 @@
 - Once the broad regressions were confirmed, the right next move was to search
   for a common mechanism instead of treating each benchmark as an independent
   optimization problem.
+- Used the stale `incoming` helper once the workdir helper had already diverged,
+  which created a fake pyperformance/pip failure unrelated to the runtime
+  candidate under test.
+- Tried to read too much into `bm_go` before separating \"synthetic semantic
+  diff is good\" from \"full benchmark path still has a broader CinderX crash\".
 
 ## 2026-04-07
 

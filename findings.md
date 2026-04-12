@@ -5131,3 +5131,44 @@ Conclusion:
     - clear remaining regressions in this kernel-targeted mode:
       - `go`
       - `spectral_norm`
+
+## 2026-04-12 auto-JIT helper gate follow-up
+
+- Candidate commit:
+  - `fd2ae6f5` `jit: gate autojit for attr-heavy object helpers`
+- Remote correctness verification on a fresh ARM driver venv:
+  - helper path: `scripts/arm/remote_update_build_test.sh`
+  - params:
+    - `SKIP_PYPERF=1`
+    - `DRIVER_VENV=/root/venv-cinderx314-autojit-gate`
+  - result:
+    - `Ran 95 tests in 66.409s`
+    - `OK`
+- Synthetic regular auto-JIT semantic diff on ARM:
+  - baseline `fc1bf253`:
+    - `useful_fast` auto-compiles
+    - `hot` numeric loop auto-compiles
+  - current `fd2ae6f5`:
+    - `useful_fast` no longer auto-compiles
+    - `hot` numeric loop still auto-compiles
+  - direct payloads:
+    - base:
+      - `compiled_useful_fast = true`
+      - `compiled_size_useful_fast = 1336`
+      - `compiled_hot = true`
+      - `compiled_size_hot = 984`
+    - current:
+      - `compiled_useful_fast = false`
+      - `compiled_size_useful_fast = -1`
+      - `compiled_hot = true`
+      - `compiled_size_hot = 984`
+- Important scope correction:
+  - a real `bm_go.versus_cpu()` probe on the fresh current driver venv still
+    segfaults under CinderX-enabled execution
+  - the same probe succeeds with `CINDERX_DISABLE=1`
+  - this means the candidate gate is correctly changing regular auto-JIT
+    scheduling for attr-heavy helpers, but it does not by itself eliminate the
+    broader CinderX-enabled `bm_go` crash path
+  - the crash is therefore not strong evidence that `fd2ae6f5` regressed `go`;
+    it points to an older or wider benchmark-path problem that remains
+    unresolved

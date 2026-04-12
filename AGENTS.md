@@ -52,17 +52,29 @@
     - `scimark_lu`
   - rerunning the broader direct matrix after that fix now shows no stable
     median regression in the currently measured broad set
-  - 2026-04-12 follow-up:
-    - clean helper verification initially exposed a real regression introduced
-      after `91006d4c`
-    - final current worktree now re-stabilizes the clean helper path:
+- 2026-04-12 follow-up:
+  - clean helper verification initially exposed a real regression introduced
+    after `91006d4c`
+  - final current worktree now re-stabilizes the clean helper path:
       - `Ran 93 tests in 119.196s`
       - `OK`
       - `jit-effective-ok compiled_size 984 interp_calls 10`
-    - key runtime adjustments:
+  - key runtime adjustments:
       - defer no-OSR finalize to interpreter safe point
       - only no-OSR finalize loop-dominant shapes (no calls outside loop)
       - make `force_compile()` idempotent for already-compiled functions
+  - latest regular auto-JIT follow-up:
+      - `fd2ae6f5` adds an attr-heavy helper gate at `jitVectorcall`
+      - fresh ARM helper run with a new driver venv is green:
+        - `Ran 95 tests in 66.409s`
+        - `OK`
+      - synthetic ARM diff confirms the intended semantic change:
+        - baseline still auto-compiles `useful_fast`
+        - current no longer auto-compiles `useful_fast`
+        - numeric hot loops still auto-compile
+      - a real `bm_go.versus_cpu()` probe still crashes with CinderX enabled
+        and succeeds with `CINDERX_DISABLE=1`, so the remaining `go` issue is
+        broader than this gate
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

@@ -283,3 +283,18 @@
 - Updated conclusion:
   - explicit-kernel compare is the only trustworthy fresh compare mode so far
   - current representative set is mixed, not all-green
+- Latest follow-up:
+  - `fd2ae6f5` adds a regular auto-JIT gate for attr-heavy object helpers at
+    `jitVectorcall`
+  - fresh ARM helper verification on a new driver venv is green:
+    - `Ran 95 tests in 66.409s`
+    - `OK`
+  - synthetic semantic A/B is also green:
+    - baseline still auto-compiles `useful_fast`
+    - current no longer auto-compiles `useful_fast`
+    - numeric hot loops still auto-compile
+  - the real `bm_go.versus_cpu()` path still crashes whenever CinderX is
+    enabled, and succeeds with `CINDERX_DISABLE=1`
+  - current understanding:
+    - the helper gate itself is working
+    - the remaining `go` blocker is a broader CinderX-enabled benchmark crash

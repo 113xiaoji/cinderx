@@ -283,10 +283,32 @@
     mode after the harness cleanup
   - it also shows that some earlier “all-green” conclusions from the
     `compile_strategy none` path were overstated
-  - current representative-set picture is mixed rather than uniformly positive
-  - the clearest remaining regression signals in kernel-targeted mode are now:
-    - `go`
-    - `spectral_norm`
+- current representative-set picture is mixed rather than uniformly positive
+- the clearest remaining regression signals in kernel-targeted mode are now:
+  - `go`
+  - `spectral_norm`
+
+## 2026-04-12 auto-JIT helper gate
+
+- Added a regular auto-JIT gate in `jitVectorcall` for attr-heavy object helper
+  shapes.
+- Added two ARM regression tests:
+  - `test_attr_heavy_object_helper_skips_autojit_compile`
+  - `test_numeric_hot_loop_still_autojit_compiles`
+- Fresh ARM helper verification with a new driver venv passed:
+  - `Ran 95 tests in 66.409s`
+  - `OK`
+- Fresh semantic A/B on ARM:
+  - base `fc1bf253` still auto-compiles the synthetic `useful_fast`
+  - current `fd2ae6f5` no longer auto-compiles `useful_fast`
+  - both revisions still auto-compile the numeric hot loop
+- A real `bm_go.versus_cpu()` probe on the fresh current driver venv still
+  segfaults when CinderX is enabled, and succeeds with `CINDERX_DISABLE=1`.
+- Current interpretation:
+  - the new gate is working as intended on the regular auto-JIT scheduling path
+  - but it is not sufficient to make the full `bm_go` benchmark path stable
+  - the remaining `go` problem should be treated as a broader CinderX-enabled
+    benchmark crash, not as proof that the new gate regressed performance
 
 ## Initial prioritization
 
