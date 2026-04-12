@@ -310,6 +310,47 @@
   - the remaining `go` problem should be treated as a broader CinderX-enabled
     benchmark crash, not as proof that the new gate regressed performance
 
+## 2026-04-12 narrowed helper gate
+
+- Startup-state correction:
+  - installed current venv comes up as:
+    - `cinderx_initialized = true`
+    - `jit_enabled = true`
+    - `compile_after = null`
+  - `PYTHONJITDISABLE=1` keeps CinderX loaded but disables the JIT
+  - `CINDERX_DISABLE=1` disables `_cinderx` entirely
+- The earlier \"any CinderX-enabled bm_go crashes\" statement was too broad.
+  A plain `bm_go` probe with a stubbed `pyperf` import succeeds in the default
+  current startup state.
+- The real regression introduced by `fd2ae6f5` was narrower:
+  - it blocked `Board.useful`-like helpers from regular auto-JIT
+  - that behavior is now covered by
+    `test_attr_heavy_helper_with_internal_calls_still_autojit_compiles`
+- `6a7e4f9a` refines the gate so it only suppresses helpers that are:
+  - call-free
+  - attr-heavy
+  - loop-backed (have a backward jump)
+- Fresh ARM helper run on `/root/venv-cinderx314-autojit-gate3`:
+  - `Ran 96 tests in 65.857s`
+  - `OK`
+- Fresh regular auto-JIT `bm_go` compare with stubbed `pyperf`:
+  - baseline `fc1bf253`: `0.09656633200029319`
+  - current `6a7e4f9a`: `0.1031204009996145`
+  - delta: about `+6.79%`
+  - both sides now compile:
+    - `Board.useful_fast`
+    - `Board.useful`
+    - `UCTNode.random_playout`
+- Fresh regular auto-JIT `fannkuch` guardrail:
+  - baseline: `2.3607938189998094`
+  - current: `2.3303426259990374`
+  - delta: about `-1.29%`
+- Updated conclusion:
+  - the narrowed gate is acceptable on correctness and preserves a hot-loop
+    winner
+  - the remaining `go` gap is smaller and should be treated as a separate
+    follow-up
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

@@ -38,6 +38,12 @@
 - I also tried to interpret `bm_go` benchmark behavior before separating
   \"fresh driver venv\" issues from \"real runtime path\" issues. The right
   order is: fresh venv first, then semantic A/B, then benchmark claims.
+- I overgeneralized one crash probe into \"any CinderX-enabled bm_go path
+  crashes\" before checking the plain installed startup mode with a stubbed
+  `pyperf` import. That turned out to be too broad.
+- The first narrowed auto-JIT gate still used function-level attr density
+  without checking for a real loop, which suppressed profitable non-loop leaf
+  methods and broke unrelated runtime tests.
 
 ## 2026-04-07
 

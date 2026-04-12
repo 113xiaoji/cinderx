@@ -343,3 +343,11 @@ Phase 1 (requirements + platform decision): in_progress
     - synthetic semantic A/B confirms the intended helper scheduling change
     - remaining open item is not the helper gate itself, but why the real
       `bm_go` benchmark still crashes under any CinderX-enabled execution path
+  - latest correction:
+    - installed startup is JIT-on by default
+    - the first helper gate was too broad and blocked `Board.useful`-like
+      methods
+    - `6a7e4f9a` narrows the gate to loop-backed call-free helpers
+    - full ARM helper is green again on a fresh venv
+    - remaining follow-up is the smaller residual `bm_go` regression, not a
+      helper-gate correctness problem

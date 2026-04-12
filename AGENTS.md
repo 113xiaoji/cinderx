@@ -75,6 +75,18 @@
       - a real `bm_go.versus_cpu()` probe still crashes with CinderX enabled
         and succeeds with `CINDERX_DISABLE=1`, so the remaining `go` issue is
         broader than this gate
+  - latest narrowing pass:
+      - startup-state check showed installed current venv comes up with the JIT
+        enabled by default, while `PYTHONJITDISABLE=1` disables only the JIT
+      - the first gate was too broad and blocked `Board.useful`-like helpers
+      - `6a7e4f9a` narrows the rule to call-free attr-heavy helpers that also
+        contain a backward jump
+      - fresh ARM helper on `/root/venv-cinderx314-autojit-gate3` is green:
+        - `Ran 96 tests in 65.857s`
+        - `OK`
+      - fresh regular auto-JIT signal:
+        - `bm_go`: regression reduced to about `+6.79%`
+        - `fannkuch`: about `-1.29%`
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

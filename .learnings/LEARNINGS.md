@@ -51,6 +51,12 @@
 - For object-heavy helper scheduling, a synthetic semantic A/B can be more
   reliable than a direct benchmark delta when the real benchmark path still has
   an unresolved crash under CinderX-enabled execution.
+- The installed CinderX venv starts with the JIT enabled by default via
+  startup loading, so \"plain run\" is not an interpreter-only baseline unless
+  `PYTHONJITDISABLE=1` or `CINDERX_DISABLE=1` is set explicitly.
+- For regular auto-JIT helper gating, requiring a real backward jump is a
+  useful discriminator: it protects loop helpers like `useful_fast` without
+  accidentally suppressing profitable attr-heavy leaf methods.
 
 ## 2026-04-07 issue85 kickoff
 

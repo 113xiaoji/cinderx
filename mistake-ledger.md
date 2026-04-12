@@ -31,6 +31,11 @@
   candidate under test.
 - Tried to read too much into `bm_go` before separating \"synthetic semantic
   diff is good\" from \"full benchmark path still has a broader CinderX crash\".
+- Treated the installed current venv as if it were \"CinderX loaded but JIT
+  off\" when in fact the JIT is enabled by default there.
+- The first pass at narrowing the helper gate forgot to distinguish loop-backed
+  helpers from attr-heavy non-loop leaf methods, which immediately showed up as
+  broad ARM runtime failures.
 
 ## 2026-04-07
 

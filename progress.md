@@ -298,3 +298,15 @@
   - current understanding:
     - the helper gate itself is working
     - the remaining `go` blocker is a broader CinderX-enabled benchmark crash
+- Narrowing follow-up:
+  - startup-state checks showed the installed venv starts with the JIT enabled
+    by default
+  - `fd2ae6f5` was too broad and blocked `Board.useful`-like helpers
+  - `6a7e4f9a` now restricts the helper gate to call-free attr-heavy helpers
+    that actually contain a backward jump
+  - fresh ARM helper run is green again:
+    - `Ran 96 tests in 65.857s`
+    - `OK`
+  - fresh regular auto-JIT benchmark signal:
+    - `bm_go`: regression reduced to about `+6.79%`
+    - `fannkuch`: about `-1.29%`

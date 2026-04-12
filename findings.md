@@ -5172,3 +5172,71 @@ Conclusion:
   - the crash is therefore not strong evidence that `fd2ae6f5` regressed `go`;
     it points to an older or wider benchmark-path problem that remains
     unresolved
+- Additional startup-mode isolation on the fresh current driver venv:
+  - installed startup state:
+    - `cinderx_initialized = true`
+    - `jit_enabled = true`
+    - `compile_after = null`
+  - `PYTHONJITDISABLE=1`:
+    - `cinderx_initialized = true`
+    - `jit_enabled = false`
+  - `CINDERX_DISABLE=1`:
+    - `cinderx_initialized = false`
+    - `_cinderx` import is force-disabled
+- Important correction:
+  - a plain `bm_go` probe with a stubbed `pyperf` import succeeds in the
+    default current startup state
+  - the earlier crash reports were tied to a mixed probe setup, not to \"any
+    CinderX-enabled execution\" in general
+
+## 2026-04-12 narrowed helper gate
+
+- Follow-up commit:
+  - `6a7e4f9a` `jit: limit autojit helper gate to loop helpers`
+- Root cause found for the first helper-gate attempt:
+  - `fd2ae6f5` blocked not only `useful_fast`-style helpers, but also
+    `Board.useful`-style object/stateful methods with internal calls
+  - synthetic red before the fix:
+    - a `Board.useful`-like method with internal `useful_fast()` call and
+      attr-heavy loop body did **not** auto-compile
+- Gate refinement:
+  - regular auto-JIT suppression now only applies to helpers that are:
+    - call-free
+    - attr-heavy
+    - and actually contain a backward jump
+- Fresh ARM helper verification on a new driver venv:
+  - helper path: `scripts/arm/remote_update_build_test.sh`
+  - params:
+    - `SKIP_PYPERF=1`
+    - `DRIVER_VENV=/root/venv-cinderx314-autojit-gate3`
+  - result:
+    - `Ran 96 tests in 65.857s`
+    - `OK`
+- Regular auto-JIT `bm_go` compare, same stubbed-`pyperf` probe on isolated
+  baseline/current venvs:
+  - baseline `fc1bf253`:
+    - median: `0.09656633200029319`
+    - compiled:
+      - `Board.useful_fast = true`
+      - `Board.useful = true`
+      - `UCTNode.random_playout = true`
+  - current `6a7e4f9a`:
+    - median: `0.1031204009996145`
+    - compiled:
+      - `Board.useful_fast = true`
+      - `Board.useful = true`
+      - `UCTNode.random_playout = true`
+  - delta:
+    - about `+6.79%`
+- Winner guardrail check:
+  - `fannkuch` regular auto-JIT compare:
+    - baseline: `2.3607938189998094`
+    - current: `2.3303426259990374`
+    - delta: about `-1.29%`
+- Current interpretation:
+  - narrowing the gate fixed the broad runtime regression introduced by
+    `fd2ae6f5`
+  - the remaining `go` regression is much smaller and no longer explained by
+    `Board.useful` being blocked from compilation
+  - `go` still deserves follow-up, but the helper-gate direction is now
+    substantially safer
