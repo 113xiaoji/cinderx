@@ -213,7 +213,12 @@ BCOffset BytecodeInstruction::getJumpTarget() const {
   }
 
   int delta = oparg();
-  if (opcode() == JUMP_BACKWARD || opcode() == JUMP_BACKWARD_NO_INTERRUPT) {
+  if (
+      opcode() == JUMP_BACKWARD || opcode() == JUMP_BACKWARD_NO_INTERRUPT
+#if PY_VERSION_HEX >= 0x030E0000
+      || opcode() == JUMP_BACKWARD_JIT || opcode() == JUMP_BACKWARD_NO_JIT
+#endif
+  ) {
     delta = -delta;
   }
   BCIndex target = BCIndex{nextInstrOffset()} + delta;

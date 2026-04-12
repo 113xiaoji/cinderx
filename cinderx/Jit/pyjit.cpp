@@ -166,6 +166,38 @@ std::optional<Phase1OSRArgs> buildPhase1OSRArgs(
   return args;
 }
 
+const OSREntryMetadata* lookupNormalizedOSREntry(
+    CompiledFunction* compiled_func,
+    BorrowedRef<PyCodeObject> code,
+    BCOffset start_offset,
+    BCOffset* resolved_offset) {
+  const OSREntryMetadata* entry =
+      compiled_func->runtime()->lookupOSREntry(start_offset);
+  if (entry != nullptr) {
+    if (resolved_offset != nullptr) {
+      *resolved_offset = start_offset;
+    }
+    return entry;
+  }
+
+  BytecodeInstruction instr{code, start_offset};
+  while (!instr.isTerminator()) {
+    BCOffset next = instr.nextInstrOffset();
+    if (next.value() <= instr.baseOffset().value()) {
+      break;
+    }
+    instr = BytecodeInstruction{code, next};
+    entry = compiled_func->runtime()->lookupOSREntry(instr.baseOffset());
+    if (entry != nullptr) {
+      if (resolved_offset != nullptr) {
+        *resolved_offset = instr.baseOffset();
+      }
+      return entry;
+    }
+  }
+  return nullptr;
+}
+
 // If functions in the cinderx module get compiled, they will somehow keep the
 // module alive forever and the module will never get finalized on shutdown.
 // This breaks many assumptions and has a high chance of use-after-frees or ASAN
@@ -3938,7 +3970,7 @@ extern "C" int _PyJIT_TryHotLoopOSR(
 
   BCOffset bc_offset = hotLoopBCOffset(frame, loop_start);
   const OSREntryMetadata* entry =
-      compiled_func->runtime()->lookupOSREntry(bc_offset);
+      lookupNormalizedOSREntry(compiled_func, code, bc_offset, &bc_offset);
   if (entry == nullptr || entry->test_entry_address == 0) {
     return 0;
   }

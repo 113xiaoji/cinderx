@@ -74,6 +74,10 @@ std::unordered_set<int> collectLoopHeaderOffsets(BorrowedRef<PyCodeObject> code)
     switch (instr.opcode()) {
       case JUMP_BACKWARD:
       case JUMP_BACKWARD_NO_INTERRUPT:
+#if PY_VERSION_HEX >= 0x030E0000
+      case JUMP_BACKWARD_JIT:
+      case JUMP_BACKWARD_NO_JIT:
+#endif
         offsets.emplace(instr.getJumpTarget().value());
         break;
       default:
@@ -83,8 +87,66 @@ std::unordered_set<int> collectLoopHeaderOffsets(BorrowedRef<PyCodeObject> code)
   return offsets;
 }
 
+std::unordered_set<int> normalizeLoopHeaderOffsets(
+    BorrowedRef<PyCodeObject> code,
+    const std::unordered_set<int>& raw_offsets,
+    const std::unordered_set<int>& candidate_offsets) {
+  if (candidate_offsets.empty()) {
+    return raw_offsets;
+  }
+
+  std::unordered_set<int> offsets;
+  offsets.reserve(raw_offsets.size());
+  for (int raw_offset : raw_offsets) {
+    BytecodeInstruction instr{code, BCOffset{raw_offset}};
+    int normalized_offset = raw_offset;
+    while (true) {
+      int current_offset = instr.baseOffset().value();
+      if (candidate_offsets.contains(current_offset)) {
+        normalized_offset = current_offset;
+        break;
+      }
+      if (instr.isTerminator()) {
+        break;
+      }
+      BCOffset next = instr.nextInstrOffset();
+      if (next.value() <= current_offset) {
+        break;
+      }
+      instr = BytecodeInstruction{code, next};
+    }
+    offsets.emplace(normalized_offset);
+  }
+  return offsets;
+}
+
 void recordPhase0LoopHeaders(const hir::Function& func, CodeRuntime* code_rt) {
-  auto loop_headers = collectLoopHeaderOffsets(func.code);
+  auto raw_loop_headers = collectLoopHeaderOffsets(func.code);
+  std::unordered_set<int> candidate_offsets;
+  for (auto& block : func.cfg.blocks) {
+    hir::FrameState* frame = nullptr;
+    for (auto& instr : block) {
+      if (instr.IsSnapshot()) {
+        frame = static_cast<const hir::Snapshot&>(instr).frameState();
+        break;
+      }
+      if (auto* deopt = instr.asDeoptBase()) {
+        frame = deopt->frameState();
+        break;
+      }
+    }
+    if (frame == nullptr) {
+      continue;
+    }
+    if (
+        frame->parent != nullptr || !frame->block_stack.isEmpty() ||
+        !frame->stack.isEmpty()) {
+      continue;
+    }
+    candidate_offsets.emplace(frame->cur_instr_offs.value());
+  }
+  auto loop_headers =
+      normalizeLoopHeaderOffsets(func.code, raw_loop_headers, candidate_offsets);
   for (auto& block : func.cfg.blocks) {
     hir::FrameState* frame = nullptr;
     for (auto& instr : block) {
