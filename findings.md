@@ -136,6 +136,102 @@ entrypoint:
     - Windows-to-ARM SSH/SCP transport via `scripts/push_to_arm.ps1` is still flaky in this environment
     - this is an infrastructure risk, not a pilot-script contract or artifact-generation code risk
 
+### 2026-04-12 Phase 1.5 producer runtime evidence refresh
+
+- Scope:
+  - rerun the latest `codex/interpreter-optimization-design` branch after the
+    workload/source refresh
+  - refresh local regression evidence
+  - rerun the required 3.14 producer path through `scripts/push_to_arm.ps1`
+  - re-read remote `*.cinderx.cinder.json` payloads over `ssh`
+
+- Local regression:
+  - command:
+    - `$env:PYTHONPATH='.'; uv run --no-project --with pytest python -m pytest tests/test_interp_superinstruction_workloads.py tests/test_cinder_compiler_superinstructions.py tests/test_bench_compare_modes_workloads.py tests/test_interp_superinstruction_pilot_contract.py -q`
+  - result:
+    - `25 passed in 0.33s`
+  - local workload/compiler sanity:
+    - `load_fast_pair_loop -> ['LOAD_FAST__LOAD_FAST']`
+    - `store_fast_load_fast_loop -> ['LOAD_FAST__LOAD_FAST', 'STORE_FAST__LOAD_FAST']`
+    - `load_const_load_fast_loop -> ['LOAD_CONST__LOAD_FAST']`
+
+- Unified ARM rerun via the required entrypoint:
+  - command:
+    - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\work\code\cinderx4 -ArmHost 124.70.162.35 -UpstreamRemote localorigin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/interpreter-optimization-design -RemoteDriverVenv /root/venv-cinderx314-pilot -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd 'OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh'`
+  - bounded retry summary:
+    - attempts `1` to `3` failed in SSH/SCP transport before remote execution
+    - attempt `4` completed upstream sync, archive upload, helper upload, remote
+      build, and wheel install, then failed inside `EXTRA_VERIFY_CMD`
+  - latest failure point:
+    - `scripts/arm/interp_superinstruction_pilot.sh: line 40: ... Segmentation fault (core dumped) env PYTHONJITDISABLE=1 "$DRIVER_PY" "$BENCH_SCRIPT" --runtime cinderx --mode interp --producer cinder --workload "$workload" ...`
+  - assessment:
+    - this refresh did exercise the required producer path from the unified
+      entrypoint, but it did not finish end to end because the remote cinder
+      producer run now crashes during pilot execution
+
+- Post-ssh artifact inspection of `/root/work/arm-sync/interp_superinstruction_pilot`:
+  - command:
+    - `ssh root@124.70.162.35 "python3 - <<'PY' ... glob('/root/work/arm-sync/interp_superinstruction_pilot/*.cinderx.cinder.json') ... print(path, producer, emitted_superinstructions) ... PY"`
+  - observed payloads:
+    - `load_fast_pair_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST']`
+      - `mtime == 2026-04-12 16:01:14`
+    - `store_fast_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST']`
+      - `mtime == 2026-04-12 15:04:07`
+    - `load_const_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == []`
+      - `mtime == 2026-04-12 15:04:09`
+  - interpretation:
+    - the failed unified rerun refreshed `load_fast_pair_loop` but stopped before
+      producing fresh `store_fast_load_fast_loop` / `load_const_load_fast_loop`
+      artifacts in the original output directory
+    - the timestamp split makes the artifact directory mixed-generation and
+      unsuitable as sole proof for the two later workloads
+
+- Fresh post-ssh producer probes against the just-pushed ARM worktree:
+  - command pattern:
+    - `ssh root@124.70.162.35 'PYTHONJITDISABLE=1 /root/venv-cinderx314-pilot/bin/python /root/work/cinderx-main/scripts/arm/bench_compare_modes.py --runtime cinderx --mode interp --producer cinder --workload <name> --n 250 --warmup 20000 --calls 12000 --repeats 5 --output /root/work/arm-sync/interp_superinstruction_pilot_postssh/<name>.cinderx.cinder.json'`
+  - results:
+    - `load_fast_pair_loop`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST']`
+      - fresh artifact:
+        - `/root/work/arm-sync/interp_superinstruction_pilot_postssh/load_fast_pair_loop.cinderx.cinder.json`
+      - status:
+        - success
+    - `store_fast_load_fast_loop`
+      - process exited with `rc=139`
+      - result:
+        - segmentation fault before fresh JSON emission
+      - note:
+        - this refresh did not reproduce the locally expected
+          `STORE_FAST__LOAD_FAST` on ARM
+    - `load_const_load_fast_loop`
+      - process exited with `rc=139`
+      - result:
+        - segmentation fault before fresh JSON emission
+      - note:
+        - this refresh did not reproduce the locally expected
+          `LOAD_CONST__LOAD_FAST` on ARM
+
+- Current conclusion:
+  - confirmed on ARM for the latest pushed branch:
+    - at least one fresh producer artifact satisfies the Task 4 bar:
+      - `producer == 'cinder'`
+      - `emitted_superinstructions` non-empty
+      - concrete case:
+        - `load_fast_pair_loop -> ['LOAD_FAST__LOAD_FAST']`
+  - not confirmed on ARM for this refresh:
+    - `store_fast_load_fast_loop -> STORE_FAST__LOAD_FAST`
+    - `load_const_load_fast_loop -> LOAD_CONST__LOAD_FAST`
+  - remaining blocker:
+    - the cinder producer path crashes on ARM for the latter two workloads
+      before it can emit fresh JSON evidence
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
