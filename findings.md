@@ -4958,3 +4958,17 @@ Conclusion:
   - closure statement:
     - `3.14` runtime producer closed loop is now complete through the unified entrypoint
     - `3.15` remains at static wiring + contract level; this turn did not add a matching `3.15` runtime producer artifact
+
+- 2026-04-12 phase 1.5 task 4 follow-up: pilot workload source alignment
+  - local verification (Windows host):
+    - command:
+      - `uv run --python 3.12 --no-project --with pytest python -m pytest tests/test_interp_superinstruction_workloads.py tests/test_cinder_compiler_superinstructions.py tests/test_bench_compare_modes_workloads.py -q`
+    - result:
+      - `24 passed in 0.31s`
+  - source alignment:
+    - `load_fast_pair_loop` remains the stable `LOAD_FAST__LOAD_FAST` pilot
+    - `store_fast_load_fast_loop` now keeps `current = i ^ current; total += current` on one source line so the producer can emit `STORE_FAST__LOAD_FAST`
+    - `load_const_load_fast_loop` now uses `257 * i` so the producer can emit `LOAD_CONST__LOAD_FAST`
+  - scope note:
+    - the artifact readback above was captured before this source alignment and is now historical evidence only
+    - do not use the old `load_const_load_fast_loop.cinderx.cinder.json` empty-emission snapshot as current-state proof

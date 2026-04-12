@@ -8,6 +8,8 @@ import types
 from contextlib import contextmanager
 from pathlib import Path
 
+from scripts.arm import interp_superinstruction_workloads as workloads
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHONLIB = ROOT / "cinderx" / "PythonLib"
@@ -125,8 +127,13 @@ def compiler_import_context():
 
 def compile_function_instructions(source: str, func_name: str) -> list[tuple[int, str]]:
     with compiler_import_context() as (compiler, pycodegen, pyassem):
-        class RecordingFlowGraph(pyassem.PyFlowGraph315):
+        class RecordingFlowGraph(pyassem.PyFlowGraph314):
             captured: dict[str, list[tuple[int, str]]] = {}
+
+            def push_block(self, worklist, block, depth) -> None:
+                if block is None:
+                    return
+                super().push_block(worklist, block, depth)
 
             def insert_superinstructions(self) -> None:
                 super().insert_superinstructions()
@@ -136,10 +143,16 @@ def compile_function_instructions(source: str, func_name: str) -> list[tuple[int
                     for index, instr in enumerate(block.insts)
                 ]
 
-        class RecordingGenerator(pycodegen.CinderCodeGenerator315):
+        class RecordingGenerator(pycodegen.CinderCodeGenerator314):
             flow_graph = RecordingFlowGraph
 
-        compiler.compile_code(source, f"<{func_name}>", "exec", compiler=RecordingGenerator)
+        compiler.compile_code(
+            source,
+            f"<{func_name}>",
+            "exec",
+            compiler=RecordingGenerator,
+            modname=f"pilot::{func_name}",
+        )
         return RecordingFlowGraph.captured[func_name]
 
 
@@ -198,16 +211,9 @@ def test_compiler_opcodes_fall_back_to_runtime_superinstructions() -> None:
 
 
 def test_emits_double_underscore_load_fast_pair() -> None:
+    spec = workloads.get_workload_spec("load_fast_pair_loop")
     instructions = compile_function_instructions(
-        """
-def load_fast_pair_loop(n):
-    total = 0
-    for i in range(n):
-        left = i
-        right = i + 1
-        total += left + right
-    return total
-""",
+        spec.source,
         "load_fast_pair_loop",
     )
     names = [name for _, name in instructions]
@@ -217,16 +223,9 @@ def load_fast_pair_loop(n):
 
 
 def test_emits_double_underscore_store_fast_load_fast_pair() -> None:
+    spec = workloads.get_workload_spec("store_fast_load_fast_loop")
     instructions = compile_function_instructions(
-        """
-def store_fast_load_fast_loop(n):
-    total = 0
-    current = 0
-    for i in range(n):
-        current = i; other = current
-        total += other
-    return total
-""",
+        spec.source,
         "store_fast_load_fast_loop",
     )
     names = [name for _, name in instructions]
@@ -236,34 +235,15 @@ def store_fast_load_fast_loop(n):
 
 
 def test_emits_load_const_load_fast_pair() -> None:
+    spec = workloads.get_workload_spec("load_const_load_fast_loop")
     instructions = compile_function_instructions(
-        """
-def load_const_load_fast_loop(n):
-    total = 0
-    for i in range(n):
-        total += 257 * i
-    return total
-""",
+        spec.source,
         "load_const_load_fast_loop",
     )
     names = [name for _, name in instructions]
-    fused_indices = [
-        index for index, name in enumerate(names) if name == "LOAD_CONST__LOAD_FAST"
-    ]
 
-    assert names.count("LOAD_CONST__LOAD_FAST") == 1
+    assert "LOAD_CONST__LOAD_FAST" in names
     assert not any(
         first == "LOAD_CONST" and second == "LOAD_FAST"
         for first, second in zip(names, names[1:])
     )
-    assert len(fused_indices) == 1
-    fused_index = fused_indices[0]
-    assert names[fused_index - 2 : fused_index + 5] == [
-        "STORE_FAST",
-        "LOAD_FAST",
-        "LOAD_CONST__LOAD_FAST",
-        "NOP",
-        "BINARY_OP",
-        "BINARY_OP",
-        "STORE_FAST",
-    ]

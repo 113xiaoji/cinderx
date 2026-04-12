@@ -9,7 +9,6 @@ from scripts.arm import interp_superinstruction_workloads as workloads
 RUNTIME_OPCODE_ALIASES = {
     "LOAD_FAST_BORROW": ("LOAD_FAST",),
     "LOAD_FAST_BORROW_LOAD_FAST_BORROW": ("LOAD_FAST", "LOAD_FAST"),
-    "LOAD_SMALL_INT": ("LOAD_CONST",),
 }
 
 
@@ -48,6 +47,10 @@ def test_workload_specs_are_the_single_source_of_truth() -> None:
         True,
         True,
     ]
+    assert "current = i ^ current; total += current" in workloads.get_workload_spec(
+        "store_fast_load_fast_loop"
+    ).source
+    assert "257 * i" in workloads.get_workload_spec("load_const_load_fast_loop").source
     assert workloads.get_workload_names() == (
         "load_fast_pair_loop",
         "store_fast_load_fast_loop",

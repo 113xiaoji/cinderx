@@ -40,8 +40,7 @@ WORKLOAD_SPECS: tuple[WorkloadSpec, ...] = (
                 total = 0
                 current = 1
                 for i in range(n):
-                    current = i ^ current
-                    total += current
+                    current = i ^ current; total += current
                 return total
             """
         ).strip(),
@@ -55,7 +54,7 @@ WORKLOAD_SPECS: tuple[WorkloadSpec, ...] = (
             def load_const_load_fast_loop(n: int) -> int:
                 total = 0
                 for i in range(n):
-                    total += 7 * i
+                    total += 257 * i
                 return total
             """
         ).strip(),
