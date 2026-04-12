@@ -393,8 +393,7 @@ PyObject* jitVectorcall(
   }
 
   HotLoopOpcodeCounts counts = analyzeFunctionOpcodeCounts(code);
-  if ((counts.call_ops == 0 && counts.attr_ops >= 3) ||
-      (counts.attr_ops >= 6 && counts.attr_ops >= counts.call_ops + 2)) {
+  if (counts.call_ops == 0 && counts.attr_ops >= 3) {
     auto entry = getInterpretedVectorcall(func);
     setVectorcall(func, entry);
     incrementShadowcodeCall(code);

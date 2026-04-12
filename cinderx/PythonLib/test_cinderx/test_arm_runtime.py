@@ -697,6 +697,93 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertFalse(payload["compiled"], proc.stdout)
             self.assertLess(payload["compiled_size"], 0, proc.stdout)
 
+    def test_attr_heavy_helper_with_internal_calls_still_autojit_compiles(self) -> None:
+        code = textwrap.dedent(
+            """
+            import json
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(10)
+
+            EMPTY = 0
+
+            class Node:
+                def __init__(self, color: int) -> None:
+                    self.color = color
+                    self.seen = 0
+
+            class Square:
+                def __init__(self, used: bool, neighbours) -> None:
+                    self.used = used
+                    self.neighbours = neighbours
+
+            class Board:
+                def __init__(self) -> None:
+                    self.stamp = 1
+                    self.limit = 3
+
+                def useful_fast(self, square) -> bool:
+                    if not square.used:
+                        for neighbour in square.neighbours:
+                            if neighbour.color == EMPTY:
+                                return True
+                    return False
+
+                def useful(self, square) -> bool:
+                    self.stamp += 1
+                    if self.useful_fast(square):
+                        return True
+                    seen = 0
+                    for neighbour in square.neighbours:
+                        if neighbour.color == EMPTY:
+                            seen += 1
+                            continue
+                        if neighbour.seen != self.stamp:
+                            neighbour.seen = self.stamp
+                            if square.used:
+                                seen += self.limit
+                    return seen > 0
+
+            board = Board()
+            square = Square(True, [Node(1) for _ in range(8)])
+            for _ in range(200):
+                board.useful(square)
+
+            print(
+                json.dumps(
+                    {
+                        "compiled": jit.is_jit_compiled(Board.useful),
+                        "compiled_size": jit.get_compiled_size(Board.useful),
+                    }
+                )
+            )
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/attr_heavy_helper_with_calls_autojit.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertTrue(payload["compiled"], proc.stdout)
+            self.assertGreater(payload["compiled_size"], 0, proc.stdout)
+
     def test_numeric_hot_loop_still_autojit_compiles(self) -> None:
         code = textwrap.dedent(
             """
