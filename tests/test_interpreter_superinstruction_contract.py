@@ -22,6 +22,28 @@ VERSION_FILES = {
         "opcode_targets": "cinderx_opcode_targets.h",
     },
 }
+EXPECTED_OPCODE_NUMBERS = {
+    "3.14": {
+        "LOAD_CONST__LOAD_FAST": 122,
+        "LOAD_FAST__LOAD_FAST": 123,
+        "STORE_FAST__LOAD_FAST": 124,
+    },
+    "3.15": {
+        "LOAD_CONST__LOAD_FAST": 122,
+        "LOAD_FAST__LOAD_FAST": 123,
+        "STORE_FAST__LOAD_FAST": 124,
+    },
+}
+NEIGHBOR_OPCODES = {
+    "3.14": {
+        "EAGER_IMPORT_NAME": 121,
+        "EXTENDED_OPCODE": 126,
+    },
+    "3.15": {
+        "EAGER_IMPORT_NAME": 121,
+        "EXTENDED_OPCODE": 126,
+    },
+}
 
 
 def _interpreter_file(version: str, relative_path: str) -> Path:
@@ -38,6 +60,16 @@ def _opcode_numbers(version: str) -> dict[str, int]:
     definitions = _read(version, "opcode_definitions")
     result: dict[str, int] = {}
     for name in SUPERINSTRUCTIONS:
+        match = re.search(rf"^#define\s+{re.escape(name)}\s+(\d+)\b", definitions, re.M)
+        assert match is not None, f"{version} is missing opcode definition for {name}"
+        result[name] = int(match.group(1))
+    return result
+
+
+def _selected_opcode_numbers(version: str) -> dict[str, int]:
+    definitions = _read(version, "opcode_definitions")
+    result: dict[str, int] = {}
+    for name in (*SUPERINSTRUCTIONS, *NEIGHBOR_OPCODES[version]):
         match = re.search(rf"^#define\s+{re.escape(name)}\s+(\d+)\b", definitions, re.M)
         assert match is not None, f"{version} is missing opcode definition for {name}"
         result[name] = int(match.group(1))
@@ -74,13 +106,19 @@ def test_generated_cases_define_targets_without_preprocessor_guards() -> None:
 def test_opcode_definition_layer_contains_phase1_superinstructions() -> None:
     for version in VERSION_FILES:
         opcode_numbers = _opcode_numbers(version)
-        assert len(set(opcode_numbers.values())) == len(SUPERINSTRUCTIONS)
+        assert opcode_numbers == EXPECTED_OPCODE_NUMBERS[version]
+
+
+def test_new_superinstructions_do_not_conflict_with_neighbor_opcodes() -> None:
+    for version in VERSION_FILES:
+        opcode_numbers = _selected_opcode_numbers(version)
+        assert len(set(opcode_numbers.values())) == len(opcode_numbers)
 
 
 def test_opcode_target_headers_align_with_phase1_opcode_numbers() -> None:
     for version in VERSION_FILES:
         targets = _opcode_target_entries(version)
         assert len(targets) == 256
-        opcode_numbers = _opcode_numbers(version)
+        opcode_numbers = EXPECTED_OPCODE_NUMBERS[version]
         for name, opcode_number in opcode_numbers.items():
             assert targets[opcode_number] == f"TARGET_{name}"
