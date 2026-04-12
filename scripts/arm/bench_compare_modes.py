@@ -11,6 +11,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from scripts.arm.interp_superinstruction_workloads import get_workload
+
 
 def workload(n: int) -> int:
     s = 0
@@ -33,7 +35,7 @@ def time_calls(fn, n: int, calls: int, repeats: int):
     return times, check
 
 
-def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
+def cinderx_mode(mode: str, fn, workload_name: str, n: int, warmup: int, calls: int, repeats: int):
     import cinderx.jit as jit
     try:
         import cinderjit  # type: ignore[import-not-found]
@@ -59,7 +61,7 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
         jit.enable()
         # Keep interpreter mode interpreted by default.
         jit.compile_after_n_calls(1000000)
-        jit.force_uncompile(workload)
+        jit.force_uncompile(fn)
 
     api_flags = {
         "cinderjit_available": cinderjit is not None,
@@ -74,20 +76,20 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
     }
 
     for _ in range(warmup):
-        workload(n)
+        fn(n)
 
     forced = False
     if mode == "jit":
-        forced = bool(jit.force_compile(workload))
+        forced = bool(jit.force_compile(fn))
 
-    compiled = bool(jit.is_jit_compiled(workload)) if collect_jit_metadata else False
+    compiled = bool(jit.is_jit_compiled(fn)) if collect_jit_metadata else False
     compiled_size = (
-        int(jit.get_compiled_size(workload))
+        int(jit.get_compiled_size(fn))
         if collect_jit_metadata and compiled
         else 0
     )
     stack_size = (
-        int(cinderjit.get_compiled_stack_size(workload))
+        int(cinderjit.get_compiled_stack_size(fn))
         if collect_jit_metadata
         and compiled
         and cinderjit is not None
@@ -95,7 +97,7 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
         else 0
     )
     spill_stack_size = (
-        int(cinderjit.get_compiled_spill_stack_size(workload))
+        int(cinderjit.get_compiled_spill_stack_size(fn))
         if collect_jit_metadata
         and compiled
         and cinderjit is not None
@@ -106,7 +108,7 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
     disassemble_ok = "skipped_interp_mode" if not collect_jit_metadata else None
     if collect_jit_metadata and api_flags["disassemble"] and cinderjit is not None:
         try:
-            cinderjit.disassemble(workload)
+            cinderjit.disassemble(fn)
             disassemble_ok = True
         except Exception as exc:
             disassemble_ok = f"error:{type(exc).__name__}:{exc}"
@@ -140,10 +142,11 @@ def cinderx_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
             except Exception as exc:
                 dump_elf_info = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
 
-    times, check = time_calls(workload, n=n, calls=calls, repeats=repeats)
+    times, check = time_calls(fn, n=n, calls=calls, repeats=repeats)
     return {
         "runtime": "cinderx",
         "mode": mode,
+        "workload": workload_name,
         "python": sys.version,
         "env": {
             "PYTHONJIT": os.environ.get("PYTHONJIT"),
@@ -181,12 +184,12 @@ def _best_backedge_offset(fn):
     return max(offsets)
 
 
-def cpython_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
+def cpython_mode(mode: str, fn, workload_name: str, n: int, warmup: int, calls: int, repeats: int):
     import _opcode
 
     if mode == "jit":
         for _ in range(warmup):
-            workload(n)
+            fn(n)
 
     # Keep interpreter measurements free of executor probing side effects.
     offset = None
@@ -194,11 +197,11 @@ def cpython_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
     executor_error = "skipped_interp_mode"
     jit_code_len = 0
     if mode == "jit":
-        offset = _best_backedge_offset(workload)
+        offset = _best_backedge_offset(fn)
         executor_error = None
         if offset is not None:
             try:
-                executor = _opcode.get_executor(workload.__code__, offset)
+                executor = _opcode.get_executor(fn.__code__, offset)
             except Exception as exc:
                 executor_error = f"{type(exc).__name__}:{exc}"
 
@@ -223,10 +226,11 @@ def cpython_mode(mode: str, n: int, warmup: int, calls: int, repeats: int):
         "error": executor_error,
     }
 
-    times, check = time_calls(workload, n=n, calls=calls, repeats=repeats)
+    times, check = time_calls(fn, n=n, calls=calls, repeats=repeats)
     return {
         "runtime": "cpython",
         "mode": mode,
+        "workload": workload_name,
         "python": sys.version,
         "env": {"PYTHON_JIT": os.environ.get("PYTHON_JIT")},
         "warmup": warmup,
@@ -245,6 +249,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runtime", choices=["cinderx", "cpython"], required=True)
     parser.add_argument("--mode", choices=["interp", "jit"], required=True)
+    parser.add_argument(
+        "--workload",
+        choices=[
+            "default",
+            "load_fast_pair_loop",
+            "store_fast_load_fast_loop",
+            "load_const_load_fast_loop",
+        ],
+        default="default",
+    )
     parser.add_argument("--n", type=int, default=250)
     parser.add_argument("--warmup", type=int, default=20000)
     parser.add_argument("--calls", type=int, default=12000)
@@ -252,10 +266,33 @@ def main() -> int:
     parser.add_argument("--output", default="")
     args = parser.parse_args()
 
-    if args.runtime == "cinderx":
-        result = cinderx_mode(args.mode, args.n, args.warmup, args.calls, args.repeats)
+    if args.workload == "default":
+        fn = workload
+        workload_name = "default"
     else:
-        result = cpython_mode(args.mode, args.n, args.warmup, args.calls, args.repeats)
+        fn = get_workload(args.workload)
+        workload_name = args.workload
+
+    if args.runtime == "cinderx":
+        result = cinderx_mode(
+            args.mode,
+            fn,
+            workload_name,
+            args.n,
+            args.warmup,
+            args.calls,
+            args.repeats,
+        )
+    else:
+        result = cpython_mode(
+            args.mode,
+            fn,
+            workload_name,
+            args.n,
+            args.warmup,
+            args.calls,
+            args.repeats,
+        )
 
     text = json.dumps(result, indent=2, ensure_ascii=False)
     print(text)
