@@ -68,6 +68,8 @@ $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss")
 $tmpDir = Join-Path $env:TEMP ("cinderx_arm_push_" + $timestamp)
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 $tarPath = Join-Path $tmpDir ("cinderx-src_" + $timestamp + ".tar")
+$remoteHelperName = "remote_update_build_test_$timestamp.sh"
+$remoteHelperPath = "$RemoteIncomingDir/$remoteHelperName"
 
 $sshOpts = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 
@@ -114,10 +116,10 @@ try {
     throw "Missing remote helper script: $remoteScript"
   }
 
-  Exec ("scp {0} `"{1}`" {2}@{3}:{4}/remote_update_build_test.sh" -f $sshOpts, $remoteScript, $User, $ArmHost, $RemoteIncomingDir)
+  Exec ("scp {0} `"{1}`" {2}@{3}:{4}" -f $sshOpts, $remoteScript, $User, $ArmHost, $remoteHelperPath)
 
   # Ensure LF line endings on the ARM host (Windows checkouts often use CRLF).
-  Exec ("ssh {0} {1}@{2} `"tr -d '\r' < {3}/remote_update_build_test.sh > {3}/remote_update_build_test.sh.lf && mv {3}/remote_update_build_test.sh.lf {3}/remote_update_build_test.sh`"" -f $sshOpts, $User, $ArmHost, $RemoteIncomingDir)
+  Exec ("ssh {0} {1}@{2} `"tr -d '\r' < {3} > {3}.lf && mv {3}.lf {3}`"" -f $sshOpts, $User, $ArmHost, $remoteHelperPath)
 
   $skip = $(if ($SkipPyperformance) { 1 } else { 0 })
   $skipRuntimeValidation = $(if ($SkipArmRuntimeValidation) { 1 } else { 0 })
@@ -142,10 +144,10 @@ try {
   }) -join " "
 
   $runCmd = @(
-    "chmod +x $RemoteIncomingDir/remote_update_build_test.sh",
+    "chmod +x $remoteHelperPath",
     "&&",
     "$envPrefix",
-    "$RemoteIncomingDir/remote_update_build_test.sh"
+    "$remoteHelperPath"
   ) -join " "
 
   Exec ("ssh {0} {1}@{2} `"{3}`"" -f $sshOpts, $User, $ArmHost, $runCmd)

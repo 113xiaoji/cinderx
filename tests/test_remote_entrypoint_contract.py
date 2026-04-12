@@ -14,3 +14,12 @@ def test_push_to_arm_exposes_arm_runtime_validation_skip_flag() -> None:
     text = Path("scripts/push_to_arm.ps1").read_text(encoding="utf-8")
     assert '[switch]$SkipArmRuntimeValidation' in text
     assert 'SKIP_ARM_RUNTIME_VALIDATION' in text
+
+
+def test_push_to_arm_uses_unique_remote_helper_path_per_run() -> None:
+    text = Path("scripts/push_to_arm.ps1").read_text(encoding="utf-8")
+    assert '$remoteHelperName = "remote_update_build_test_$timestamp.sh"' in text
+    assert '$remoteHelperPath = "$RemoteIncomingDir/$remoteHelperName"' in text
+    assert 'scp {0} `"{1}`" {2}@{3}:{4}' in text
+    assert '$remoteHelperPath' in text
+    assert '/remote_update_build_test.sh"' not in text
