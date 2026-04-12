@@ -1,4 +1,7 @@
+import builtins
 import dis
+
+import pytest
 
 from scripts.arm import interp_superinstruction_workloads as workloads
 
@@ -51,6 +54,33 @@ def test_build_default_workload_executes_source() -> None:
     assert fn(8) == fn(8)
 
 
+def test_build_default_workload_compiles_source_before_exec() -> None:
+    spec = workloads.get_workload_spec("load_fast_pair_loop")
+    real_compile = builtins.compile
+    calls: list[tuple[str, str, str]] = []
+
+    def spy_compile(source, filename, mode, *args, **kwargs):
+        calls.append((source, filename, mode))
+        return real_compile(source, filename, mode, *args, **kwargs)
+
+    original_exec = builtins.exec
+
+    def spy_exec(code, namespace=None, *args, **kwargs):
+        assert not isinstance(code, str)
+        return original_exec(code, namespace, *args, **kwargs)
+
+    try:
+        builtins.compile = spy_compile
+        builtins.exec = spy_exec
+        fn = workloads.build_default_workload(spec)
+    finally:
+        builtins.compile = real_compile
+        builtins.exec = original_exec
+
+    assert calls == [(spec.source, f"<{spec.name}>", "exec")]
+    assert fn(6) == workloads.get_workload(spec.name)(6)
+
+
 def test_load_fast_pair_loop_runs_and_contains_adjacent_load_fast_in_loop() -> None:
     fn = workloads.get_workload("load_fast_pair_loop")
     assert isinstance(fn(8), int)
@@ -79,3 +109,27 @@ def test_unknown_workload_raises_key_error() -> None:
         assert "missing" in str(exc)
     else:
         raise AssertionError("expected KeyError for unknown workload")
+
+
+def test_build_default_workload_raises_for_missing_entry() -> None:
+    spec = workloads.WorkloadSpec(
+        name="broken",
+        target_pair="LOAD_FAST->LOAD_FAST",
+        entry_name="broken",
+        source="value = 1",
+    )
+
+    with pytest.raises(RuntimeError, match="broken"):
+        workloads.build_default_workload(spec)
+
+
+def test_build_default_workload_raises_for_non_callable_entry() -> None:
+    spec = workloads.WorkloadSpec(
+        name="broken",
+        target_pair="LOAD_FAST->LOAD_FAST",
+        entry_name="broken",
+        source="broken = 1",
+    )
+
+    with pytest.raises(RuntimeError, match="not callable"):
+        workloads.build_default_workload(spec)

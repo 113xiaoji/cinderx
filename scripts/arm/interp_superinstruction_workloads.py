@@ -13,86 +13,55 @@ class WorkloadSpec:
     source: str
 
 
-def load_fast_pair_loop(n: int) -> int:
-    total = 0
-    for i in range(n):
-        left = i
-        right = i + 1
-        total += left + right
-    return total
-
-
-def store_fast_load_fast_loop(n: int) -> int:
-    total = 0
-    current = 1
-    for i in range(n):
-        current = i ^ current
-        total += current
-    return total
-
-
-def load_const_load_fast_loop(n: int) -> int:
-    total = 0
-    for i in range(n):
-        total += 7 * i
-    return total
-
-
-LOAD_FAST_PAIR_LOOP_SOURCE = dedent(
-    """
-    def load_fast_pair_loop(n: int) -> int:
-        total = 0
-        for i in range(n):
-            left = i
-            right = i + 1
-            total += left + right
-        return total
-    """
-).strip()
-
-STORE_FAST_LOAD_FAST_LOOP_SOURCE = dedent(
-    """
-    def store_fast_load_fast_loop(n: int) -> int:
-        total = 0
-        current = 1
-        for i in range(n):
-            current = i ^ current
-            total += current
-        return total
-    """
-).strip()
-
-LOAD_CONST_LOAD_FAST_LOOP_SOURCE = dedent(
-    """
-    def load_const_load_fast_loop(n: int) -> int:
-        total = 0
-        for i in range(n):
-            total += 7 * i
-        return total
-    """
-).strip()
-
-
 WORKLOAD_SPECS: tuple[WorkloadSpec, ...] = (
     WorkloadSpec(
         "load_fast_pair_loop",
         "LOAD_FAST->LOAD_FAST",
         "load_fast_pair_loop",
-        LOAD_FAST_PAIR_LOOP_SOURCE,
+        dedent(
+            """
+            def load_fast_pair_loop(n: int) -> int:
+                total = 0
+                for i in range(n):
+                    left = i
+                    right = i + 1
+                    total += left + right
+                return total
+            """
+        ).strip(),
     ),
     WorkloadSpec(
         "store_fast_load_fast_loop",
         "STORE_FAST->LOAD_FAST",
         "store_fast_load_fast_loop",
-        STORE_FAST_LOAD_FAST_LOOP_SOURCE,
+        dedent(
+            """
+            def store_fast_load_fast_loop(n: int) -> int:
+                total = 0
+                current = 1
+                for i in range(n):
+                    current = i ^ current
+                    total += current
+                return total
+            """
+        ).strip(),
     ),
     WorkloadSpec(
         "load_const_load_fast_loop",
         "LOAD_CONST->LOAD_FAST",
         "load_const_load_fast_loop",
-        LOAD_CONST_LOAD_FAST_LOOP_SOURCE,
+        dedent(
+            """
+            def load_const_load_fast_loop(n: int) -> int:
+                total = 0
+                for i in range(n):
+                    total += 7 * i
+                return total
+            """
+        ).strip(),
     ),
 )
+
 
 def get_workload_spec(name: str) -> WorkloadSpec:
     for spec in WORKLOAD_SPECS:
@@ -107,9 +76,18 @@ def get_workload_names() -> tuple[str, ...]:
 
 def build_default_workload(spec: WorkloadSpec) -> Callable[[int], int]:
     namespace: dict[str, object] = {}
-    exec(spec.source, namespace)
-    workload = namespace[spec.entry_name]
-    assert callable(workload)
+    code = compile(spec.source, f"<{spec.name}>", "exec")
+    exec(code, namespace)
+    try:
+        workload = namespace[spec.entry_name]
+    except KeyError as exc:
+        raise RuntimeError(
+            f"workload {spec.name!r} did not define entry {spec.entry_name!r}"
+        ) from exc
+    if not callable(workload):
+        raise RuntimeError(
+            f"workload {spec.name!r} entry {spec.entry_name!r} is not callable"
+        )
     return workload
 
 
