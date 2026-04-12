@@ -165,8 +165,20 @@ def test_load_cinder_workload_uses_cinder_code_generator(
     spec = helper.get_workload_spec("load_fast_pair_loop")
     calls: list[object] = []
 
+    class FakeFlowGraph:
+        captured: dict[str, list[str]] = {}
+
+        def __init__(self, name: str, filename: str, scope) -> None:
+            self.name = name
+            self.filename = filename
+            self.scope = scope
+            self.ordered_blocks = []
+
+        def insert_superinstructions(self) -> None:
+            return None
+
     class FakeCinderCodeGenerator:
-        pass
+        flow_graph = FakeFlowGraph
 
     def fake_compile_code(
         source: str,
@@ -181,6 +193,18 @@ def test_load_cinder_workload_uses_cinder_code_generator(
         assert mode == "exec"
         assert modname == f"pilot::{spec.name}"
         calls.append(compiler)
+        flow_graph = compiler.flow_graph("module", filename, None)
+        entry_graph = compiler.flow_graph(spec.entry_name, filename, None)
+        entry_graph.ordered_blocks = [
+            SimpleNamespace(
+                insts=[
+                    SimpleNamespace(opname="LOAD_FAST__LOAD_FAST"),
+                    SimpleNamespace(opname="RETURN_VALUE"),
+                ]
+            )
+        ]
+        compiler.flow_graph.captured[spec.entry_name] = []
+        entry_graph.insert_superinstructions()
         return compile(source, filename, mode)
 
     fake_compiler_module = types.ModuleType("cinderx.compiler")
@@ -190,12 +214,15 @@ def test_load_cinder_workload_uses_cinder_code_generator(
     monkeypatch.setattr(
         script,
         "collect_emitted_superinstructions",
-        lambda _code: ["LOAD_FAST__LOAD_FAST"],
+        lambda _code: (_ for _ in ()).throw(
+            AssertionError("producer evidence should come from recording flow graph")
+        ),
     )
 
     _, emitted = script.load_cinder_workload("load_fast_pair_loop")
 
-    assert calls == [FakeCinderCodeGenerator]
+    assert len(calls) == 1
+    assert issubclass(calls[0], FakeCinderCodeGenerator)
     assert emitted == ["LOAD_FAST__LOAD_FAST"]
 
 

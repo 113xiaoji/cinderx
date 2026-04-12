@@ -237,16 +237,33 @@ def load_cinder_workload(workload_name: str):
     from cinderx.compiler import CinderCodeGenerator, compile_code
 
     spec = get_workload_spec(workload_name)
+
+    class RecordingFlowGraph(CinderCodeGenerator.flow_graph):
+        captured: dict[str, list[str]] = {}
+
+        def insert_superinstructions(self) -> None:
+            super().insert_superinstructions()
+            RecordingFlowGraph.captured[self.name] = [
+                instr.opname
+                for block in self.ordered_blocks
+                for instr in block.insts
+            ]
+
+    class RecordingGenerator(CinderCodeGenerator):
+        flow_graph = RecordingFlowGraph
+
     module_code = compile_code(
         spec.source,
         f"<{spec.name}>",
         "exec",
-        compiler=CinderCodeGenerator,
+        compiler=RecordingGenerator,
         modname=f"pilot::{spec.name}",
     )
-    emitted_superinstructions = collect_emitted_superinstructions(
-        get_entry_code_object(module_code, spec.entry_name)
-    )
+    emitted_superinstructions = [
+        name
+        for name in EMITTED_SUPERINSTRUCTIONS
+        if name in RecordingFlowGraph.captured.get(spec.entry_name, [])
+    ]
     namespace: dict[str, object] = {}
     exec(module_code, namespace, namespace)
     try:
