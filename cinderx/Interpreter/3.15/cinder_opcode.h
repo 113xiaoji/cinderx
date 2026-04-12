@@ -24,6 +24,10 @@
 #define EAGER_IMPORT_NAME 121
 #endif
 
+#define LOAD_CONST__LOAD_FAST 121
+#define LOAD_FAST__LOAD_FAST 122
+#define STORE_FAST__LOAD_FAST 123
+
 #include "cinderx/Interpreter/cinder_opcode_ids.h"
 
 #endif

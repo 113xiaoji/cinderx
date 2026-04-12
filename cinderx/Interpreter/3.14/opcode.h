@@ -132,6 +132,9 @@ extern "C" {
 #define UNPACK_SEQUENCE                        119
 #define YIELD_VALUE                            120
 #define EAGER_IMPORT_NAME                      121
+#define LOAD_CONST__LOAD_FAST                  122
+#define LOAD_FAST__LOAD_FAST                   123
+#define STORE_FAST__LOAD_FAST                  124
 #define EXTENDED_OPCODE                        126
 #define RESUME                                 128
 #define BINARY_OP_ADD_FLOAT                    129

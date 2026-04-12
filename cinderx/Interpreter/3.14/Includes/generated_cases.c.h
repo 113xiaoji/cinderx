@@ -10594,7 +10594,6 @@
             DISPATCH();
         }
 
-#ifdef LOAD_CONST__LOAD_FAST
         TARGET(LOAD_CONST__LOAD_FAST) {
             #if Py_TAIL_CALL_INTERP
             int opcode = LOAD_CONST__LOAD_FAST;
@@ -10616,7 +10615,6 @@
             assert(WITHIN_STACK_BOUNDS());
             DISPATCH();
         }
-#endif
 
         TARGET(LOAD_CONST_IMMORTAL) {
             #if Py_TAIL_CALL_INTERP
@@ -10700,7 +10698,6 @@
             DISPATCH();
         }
 
-#ifdef LOAD_FAST__LOAD_FAST
         TARGET(LOAD_FAST__LOAD_FAST) {
             #if Py_TAIL_CALL_INTERP
             int opcode = LOAD_FAST__LOAD_FAST;
@@ -10722,7 +10719,6 @@
             assert(WITHIN_STACK_BOUNDS());
             DISPATCH();
         }
-#endif
 
         TARGET(LOAD_FAST_AND_CLEAR) {
             #if Py_TAIL_CALL_INTERP
@@ -12915,7 +12911,6 @@
             DISPATCH();
         }
 
-#ifdef STORE_FAST__LOAD_FAST
         TARGET(STORE_FAST__LOAD_FAST) {
             #if Py_TAIL_CALL_INTERP
             int opcode = STORE_FAST__LOAD_FAST;
@@ -12942,7 +12937,6 @@
             stack_pointer = _PyFrame_GetStackPointer(frame);
             DISPATCH();
         }
-#endif
 
         TARGET(STORE_FAST_LOAD_FAST) {
             #if Py_TAIL_CALL_INTERP
