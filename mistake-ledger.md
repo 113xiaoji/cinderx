@@ -36,6 +36,9 @@
 - The first pass at narrowing the helper gate forgot to distinguish loop-backed
   helpers from attr-heavy non-loop leaf methods, which immediately showed up as
   broad ARM runtime failures.
+- A small residual benchmark delta after a correctness-preserving narrowing pass
+  is exactly the kind of signal that should get a thick-sample recheck before
+  any more runtime changes.
 
 ## 2026-04-07
 

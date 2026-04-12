@@ -84,9 +84,12 @@
       - fresh ARM helper on `/root/venv-cinderx314-autojit-gate3` is green:
         - `Ran 96 tests in 65.857s`
         - `OK`
-      - fresh regular auto-JIT signal:
-        - `bm_go`: regression reduced to about `+6.79%`
-        - `fannkuch`: about `-1.29%`
+      - thick-sample regular auto-JIT signal:
+        - `bm_go`: about `-1.33%`
+        - `fannkuch`: about `-0.26%`
+      - current working conclusion:
+        - the narrowed helper gate is now in the safe zone on both correctness
+          and performance
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

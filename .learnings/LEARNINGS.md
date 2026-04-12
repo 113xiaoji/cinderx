@@ -57,6 +57,9 @@
 - For regular auto-JIT helper gating, requiring a real backward jump is a
   useful discriminator: it protects loop helpers like `useful_fast` without
   accidentally suppressing profitable attr-heavy leaf methods.
+- A small benchmark delta right after a policy change still needs thick-sample
+  confirmation. The apparent `bm_go` regression after `6a7e4f9a` flipped to a
+  slight win once it was rechecked at 15 samples.
 
 ## 2026-04-07 issue85 kickoff
 

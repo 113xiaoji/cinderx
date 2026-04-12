@@ -44,6 +44,8 @@
 - The first narrowed auto-JIT gate still used function-level attr density
   without checking for a real loop, which suppressed profitable non-loop leaf
   methods and broke unrelated runtime tests.
+- I almost treated the first `+6.79%` `bm_go` result after `6a7e4f9a` as the
+  new steady-state truth before running a thicker confirmation pass.
 
 ## 2026-04-07
 

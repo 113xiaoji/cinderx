@@ -5240,3 +5240,27 @@ Conclusion:
     `Board.useful` being blocked from compilation
   - `go` still deserves follow-up, but the helper-gate direction is now
     substantially safer
+- Thick-sample confirmation for the same regular auto-JIT `bm_go` compare
+  (15-sample medians):
+  - baseline `fc1bf253`:
+    - median: `0.09528918399882969`
+  - current `6a7e4f9a`:
+    - median: `0.09401855399846681`
+  - delta:
+    - about `-1.33%`
+  - both revisions compile the same key functions in this mode:
+    - `Board.useful_fast = true`
+    - `Board.useful = true`
+    - `UCTNode.random_playout = true`
+- Thick-sample winner guardrail for regular auto-JIT `fannkuch`
+  (15-sample medians):
+  - baseline: `2.3779402840009425`
+  - current: `2.3718443339985242`
+  - delta:
+    - about `-0.26%`
+- Updated conclusion:
+  - after thicker confirmation, `go` is no longer a stable regression in this
+    regular auto-JIT compare mode
+  - the narrowed helper gate is currently compatible with both:
+    - object-heavy helper suppression goals
+    - existing hot-loop winners

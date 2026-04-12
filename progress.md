@@ -308,5 +308,11 @@
     - `Ran 96 tests in 65.857s`
     - `OK`
   - fresh regular auto-JIT benchmark signal:
-    - `bm_go`: regression reduced to about `+6.79%`
-    - `fannkuch`: about `-1.29%`
+    - initial 7-sample:
+      - `bm_go`: about `+6.79%`
+      - `fannkuch`: about `-1.29%`
+    - thick 15-sample confirmation:
+      - `bm_go`: about `-1.33%`
+      - `fannkuch`: about `-0.26%`
+  - updated takeaway:
+    - the narrowed helper gate no longer shows a stable performance regression

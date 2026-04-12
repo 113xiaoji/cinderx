@@ -348,8 +348,21 @@
 - Updated conclusion:
   - the narrowed gate is acceptable on correctness and preserves a hot-loop
     winner
-  - the remaining `go` gap is smaller and should be treated as a separate
-    follow-up
+  - the initial small `go` gap needed thicker confirmation before treating it
+    as actionable
+- 15-sample recheck:
+  - `bm_go` regular auto-JIT compare:
+    - baseline: `0.09528918399882969`
+    - current: `0.09401855399846681`
+    - delta: about `-1.33%`
+  - `fannkuch` regular auto-JIT compare:
+    - baseline: `2.3779402840009425`
+    - current: `2.3718443339985242`
+    - delta: about `-0.26%`
+- Current conclusion:
+  - `go` is no longer a stable regression after thick-sample confirmation
+  - the narrowed helper gate now looks acceptable on both correctness and
+    performance
 
 ## Initial prioritization
 

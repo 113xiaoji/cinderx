@@ -349,5 +349,7 @@ Phase 1 (requirements + platform decision): in_progress
       methods
     - `6a7e4f9a` narrows the gate to loop-backed call-free helpers
     - full ARM helper is green again on a fresh venv
-    - remaining follow-up is the smaller residual `bm_go` regression, not a
-      helper-gate correctness problem
+    - thicker follow-up removed the apparent residual `bm_go` regression
+    - current state:
+      - helper-gate correctness is green
+      - helper-gate performance signal is flat-to-positive
