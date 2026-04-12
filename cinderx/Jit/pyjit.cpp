@@ -181,6 +181,18 @@ struct HotLoopOpcodeCounts {
   int attr_ops{0};
 };
 
+bool functionHasBackwardJump(BorrowedRef<PyCodeObject> code) {
+  int limit = countIndices(code);
+  for (int idx = 0; idx < limit;) {
+    int opcode = unspecialize(uninstrument(code, idx));
+    if (isBackwardJumpOpcode(opcode)) {
+      return true;
+    }
+    idx += inlineCacheSize(code, idx) + 1;
+  }
+  return false;
+}
+
 HotLoopOpcodeCounts analyzeFunctionOpcodeCounts(BorrowedRef<PyCodeObject> code) {
   int limit = countIndices(code);
   HotLoopOpcodeCounts counts;
@@ -393,7 +405,9 @@ PyObject* jitVectorcall(
   }
 
   HotLoopOpcodeCounts counts = analyzeFunctionOpcodeCounts(code);
-  if (counts.call_ops == 0 && counts.attr_ops >= 3) {
+  if (
+      counts.call_ops == 0 && counts.attr_ops >= 3 &&
+      functionHasBackwardJump(code)) {
     auto entry = getInterpretedVectorcall(func);
     setVectorcall(func, entry);
     incrementShadowcodeCall(code);
