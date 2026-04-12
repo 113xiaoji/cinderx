@@ -150,8 +150,23 @@ def test_cinder_producer_json_uses_helper_emission_evidence(
     assert payload["emitted_superinstructions"] == ["LOAD_FAST__LOAD_FAST"]
 
 
+def _fake_static_opnames(storage_shape: str):
+    if storage_shape == "dict":
+        return {
+            17: "LOAD_FAST__LOAD_FAST",
+            18: "STORE_FAST",
+        }
+    if storage_shape == "list":
+        opnames = [f"<{index}>" for index in range(32)]
+        opnames[17] = "LOAD_FAST__LOAD_FAST"
+        opnames[18] = "STORE_FAST"
+        return opnames
+    raise AssertionError(f"unsupported static opnames shape in test fixture: {storage_shape}")
+
+
+@pytest.mark.parametrize("storage_shape", ["dict", "list"])
 def test_collect_emitted_superinstructions_uses_cinder_static_opnames(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, storage_shape: str
 ) -> None:
     script = _load_module(
         Path("scripts/arm/bench_compare_modes.py"),
@@ -167,10 +182,7 @@ def test_collect_emitted_superinstructions_uses_cinder_static_opnames(
     monkeypatch.setattr(
         script,
         "get_cinder_static_opnames",
-        lambda: {
-            17: "LOAD_FAST__LOAD_FAST",
-            18: "STORE_FAST",
-        },
+        lambda: _fake_static_opnames(storage_shape),
         raising=False,
     )
 
