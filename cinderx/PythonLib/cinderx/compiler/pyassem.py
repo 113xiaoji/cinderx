@@ -190,6 +190,10 @@ class Instruction:
         self.oparg = self.ioparg = 0
         self.target = None
 
+    def set_to_nop_preserving_argument(self) -> None:
+        self.opname = "NOP"
+        self.target = None
+
     def set_to_nop_no_loc(self) -> None:
         self.opname = "NOP"
         self.oparg = self.ioparg = 0
@@ -3165,6 +3169,17 @@ class PyFlowGraph314(PyFlowGraph312):
         line2 = inst2.loc.lineno
         # Skip if instructions are on different lines
         if line1 >= 0 and line2 >= 0 and line1 != line2:
+            return
+
+        if super_op in {
+            "LOAD_FAST__LOAD_FAST",
+            "STORE_FAST__LOAD_FAST",
+            "LOAD_CONST__LOAD_FAST",
+        }:
+            if inst2.ioparg >= 256:
+                return
+            inst1.opname = super_op
+            inst2.set_to_nop_preserving_argument()
             return
 
         if inst1.ioparg >= 16 or inst2.ioparg >= 16:
