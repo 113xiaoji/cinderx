@@ -205,8 +205,24 @@ def _best_backedge_offset(fn):
     return max(offsets)
 
 
+def get_cinder_static_opnames():
+    from cinderx.compiler.opcodes import STATIC_OPNAMES
+
+    return STATIC_OPNAMES
+
+
 def collect_emitted_superinstructions(code) -> list[str]:
-    names = {instr.opname for instr in dis.get_instructions(code)}
+    static_opnames = get_cinder_static_opnames()
+    names = set()
+    for instr in dis.get_instructions(code):
+        if isinstance(static_opnames, dict):
+            opname = static_opnames.get(instr.opcode)
+        elif 0 <= instr.opcode < len(static_opnames):
+            opname = static_opnames[instr.opcode]
+        else:
+            opname = None
+        if opname is not None:
+            names.add(opname)
     return [name for name in EMITTED_SUPERINSTRUCTIONS if name in names]
 
 

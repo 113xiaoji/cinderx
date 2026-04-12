@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -147,6 +148,35 @@ def test_cinder_producer_json_uses_helper_emission_evidence(
     payload = json.loads(capsys.readouterr().out)
     assert payload["producer"] == "cinder"
     assert payload["emitted_superinstructions"] == ["LOAD_FAST__LOAD_FAST"]
+
+
+def test_collect_emitted_superinstructions_uses_cinder_static_opnames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_module(
+        Path("scripts/arm/bench_compare_modes.py"),
+        "_bench_compare_modes_opcode_name_resolution_test",
+    )
+
+    fake_instructions = [
+        SimpleNamespace(opcode=17, opname="<unknown>"),
+        SimpleNamespace(opcode=18, opname="<unknown>"),
+    ]
+
+    monkeypatch.setattr(script.dis, "get_instructions", lambda _code: fake_instructions)
+    monkeypatch.setattr(
+        script,
+        "get_cinder_static_opnames",
+        lambda: {
+            17: "LOAD_FAST__LOAD_FAST",
+            18: "STORE_FAST",
+        },
+        raising=False,
+    )
+
+    assert script.collect_emitted_superinstructions(object()) == [
+        "LOAD_FAST__LOAD_FAST"
+    ]
 
 
 def test_workload_choices_come_from_registry_and_no_repo_path_is_injected() -> None:
