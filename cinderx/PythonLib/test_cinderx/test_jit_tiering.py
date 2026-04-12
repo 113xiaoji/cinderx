@@ -138,5 +138,5 @@ class TieringApiTests(unittest.TestCase):
         )
         self.assertEqual(
             lines,
-            ["optimized", "interp", "interp", "baseline", "optimized"],
+            ["optimized", "interp", "baseline", "baseline", "optimized"],
         )
