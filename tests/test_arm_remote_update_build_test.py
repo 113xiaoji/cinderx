@@ -78,7 +78,7 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
             text,
         )
         self.assertIn(
-            'CINDERX_DEFER_WORKER_JIT=1',
+            'CINDERX_DEFER_WORKER_JIT="$DEFER_WORKER_JIT"',
             text,
         )
 
@@ -114,6 +114,19 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
             'python - <<\'PY\' "$COMPILE_SUMMARY_JSON" "$BENCH" "$AUTOJIT_GATE" "$AUTOJIT_USE_JITLIST_FILTER" \\',
             text,
         )
+
+    def test_only_richards_defaults_to_deferred_worker_jit(self) -> None:
+        text = self._helper_text()
+        self.assertIn('DEFER_WORKER_JIT="${DEFER_WORKER_JIT:-}"', text)
+        self.assertIn('if [[ -z "$DEFER_WORKER_JIT" ]]; then', text)
+        self.assertIn('if [[ "$BENCH" == "richards" ]]; then', text)
+        self.assertIn('DEFER_WORKER_JIT=1', text)
+        self.assertIn('DEFER_WORKER_JIT=0', text)
+
+    def test_autojit_gate_uses_configured_worker_jit_deferral(self) -> None:
+        text = self._helper_text()
+        self.assertIn('CINDERX_DEFER_WORKER_JIT="$DEFER_WORKER_JIT"', text)
+        self.assertNotIn('CINDERX_DEFER_WORKER_JIT=1 \\', text)
 
 
 if __name__ == "__main__":
