@@ -138,6 +138,9 @@ pop_1_error:
 
   switch (opcode) {
     // BEGIN BYTECODES //
+    super(LOAD_FAST__LOAD_FAST) = LOAD_FAST + LOAD_FAST;
+    super(STORE_FAST__LOAD_FAST) = STORE_FAST + LOAD_FAST;
+    super(LOAD_CONST__LOAD_FAST) = LOAD_CONST + LOAD_FAST;
     override op(_PUSH_FRAME, (new_frame--)) {
       // Write it out explicitly because it's subtly different.
       // Eventually this should be the only occurrence of this code.

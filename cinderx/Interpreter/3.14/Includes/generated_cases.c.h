@@ -10594,6 +10594,30 @@
             DISPATCH();
         }
 
+#ifdef LOAD_CONST__LOAD_FAST
+        TARGET(LOAD_CONST__LOAD_FAST) {
+            #if Py_TAIL_CALL_INTERP
+            int opcode = LOAD_CONST__LOAD_FAST;
+            (void)(opcode);
+            #endif
+            frame->instr_ptr = next_instr;
+            next_instr += 1;
+            INSTRUCTION_STATS(LOAD_CONST__LOAD_FAST);
+            _PyStackRef value1;
+            _PyStackRef value2;
+            PyObject *obj = GETITEM(FRAME_CO_CONSTS, oparg);
+            value1 = PyStackRef_FromPyObjectNew(obj);
+            oparg = (next_instr++)->op.arg;
+            assert(!PyStackRef_IsNull(GETLOCAL(oparg)));
+            value2 = PyStackRef_DUP(GETLOCAL(oparg));
+            stack_pointer[0] = value1;
+            stack_pointer[1] = value2;
+            stack_pointer += 2;
+            assert(WITHIN_STACK_BOUNDS());
+            DISPATCH();
+        }
+#endif
+
         TARGET(LOAD_CONST_IMMORTAL) {
             #if Py_TAIL_CALL_INTERP
             int opcode = LOAD_CONST_IMMORTAL;
@@ -10675,6 +10699,30 @@
             assert(WITHIN_STACK_BOUNDS());
             DISPATCH();
         }
+
+#ifdef LOAD_FAST__LOAD_FAST
+        TARGET(LOAD_FAST__LOAD_FAST) {
+            #if Py_TAIL_CALL_INTERP
+            int opcode = LOAD_FAST__LOAD_FAST;
+            (void)(opcode);
+            #endif
+            frame->instr_ptr = next_instr;
+            next_instr += 1;
+            INSTRUCTION_STATS(LOAD_FAST__LOAD_FAST);
+            _PyStackRef value1;
+            _PyStackRef value2;
+            assert(!PyStackRef_IsNull(GETLOCAL(oparg)));
+            value1 = PyStackRef_DUP(GETLOCAL(oparg));
+            oparg = (next_instr++)->op.arg;
+            assert(!PyStackRef_IsNull(GETLOCAL(oparg)));
+            value2 = PyStackRef_DUP(GETLOCAL(oparg));
+            stack_pointer[0] = value1;
+            stack_pointer[1] = value2;
+            stack_pointer += 2;
+            assert(WITHIN_STACK_BOUNDS());
+            DISPATCH();
+        }
+#endif
 
         TARGET(LOAD_FAST_AND_CLEAR) {
             #if Py_TAIL_CALL_INTERP
@@ -12866,6 +12914,35 @@
             stack_pointer = _PyFrame_GetStackPointer(frame);
             DISPATCH();
         }
+
+#ifdef STORE_FAST__LOAD_FAST
+        TARGET(STORE_FAST__LOAD_FAST) {
+            #if Py_TAIL_CALL_INTERP
+            int opcode = STORE_FAST__LOAD_FAST;
+            (void)(opcode);
+            #endif
+            frame->instr_ptr = next_instr;
+            next_instr += 1;
+            INSTRUCTION_STATS(STORE_FAST__LOAD_FAST);
+            _PyStackRef value1;
+            _PyStackRef value2;
+            value1 = stack_pointer[-1];
+            assert(
+                   ((_PyFrame_GetCode(frame)->co_flags & (CO_COROUTINE | CO_GENERATOR)) == 0) ||
+                   PyStackRef_IsHeapSafe(value1)
+            );
+            _PyStackRef tmp = GETLOCAL(oparg);
+            GETLOCAL(oparg) = value1;
+            oparg = (next_instr++)->op.arg;
+            assert(!PyStackRef_IsNull(GETLOCAL(oparg)));
+            value2 = PyStackRef_DUP(GETLOCAL(oparg));
+            stack_pointer[-1] = value2;
+            _PyFrame_SetStackPointer(frame, stack_pointer);
+            PyStackRef_XCLOSE(tmp);
+            stack_pointer = _PyFrame_GetStackPointer(frame);
+            DISPATCH();
+        }
+#endif
 
         TARGET(STORE_FAST_LOAD_FAST) {
             #if Py_TAIL_CALL_INTERP

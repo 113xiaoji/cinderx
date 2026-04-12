@@ -145,6 +145,9 @@ dummy_func(
     switch (opcode) {
 
 // BEGIN BYTECODES //
+        super(LOAD_FAST__LOAD_FAST) = LOAD_FAST + LOAD_FAST;
+        super(STORE_FAST__LOAD_FAST) = STORE_FAST + LOAD_FAST;
+        super(LOAD_CONST__LOAD_FAST) = LOAD_CONST + LOAD_FAST;
         override inst(LOAD_ATTR_GETATTRIBUTE_OVERRIDDEN, (unused/1, type_version/2, func_version/2, getattribute/4, owner -- unused)) {
             PyObject *owner_o = PyStackRef_AsPyObjectBorrow(owner);
 
