@@ -182,6 +182,8 @@ class Instruction:
         return f"Instruction({', '.join(args)})"
 
     def is_jump(self, opcode: Opcode) -> bool:
+        if self.opname == "LOAD_FAST__LOAD_FAST":
+            return False
         op = opcode.opmap[self.opname]
         return opcode.has_jump(op)
 
@@ -2514,7 +2516,25 @@ class PyFlowGraph314(PyFlowGraph312):
                     assert inst.target is not None, inst
                     inst.ioparg = label_map[inst.target]
 
-        super().flatten_graph()
+        load_fast_pair = self.opcode.opmap.get("LOAD_FAST__LOAD_FAST")
+        load_fast_pair_was_jrel = (
+            load_fast_pair is not None and load_fast_pair in self.opcode.hasjrel
+        )
+        load_fast_pair_was_jabs = (
+            load_fast_pair is not None and load_fast_pair in self.opcode.hasjabs
+        )
+        if load_fast_pair_was_jrel:
+            self.opcode.hasjrel.discard(load_fast_pair)
+        if load_fast_pair_was_jabs:
+            self.opcode.hasjabs.discard(load_fast_pair)
+
+        try:
+            super().flatten_graph()
+        finally:
+            if load_fast_pair_was_jrel:
+                self.opcode.hasjrel.add(load_fast_pair)
+            if load_fast_pair_was_jabs:
+                self.opcode.hasjabs.add(load_fast_pair)
 
     # The following bits are chosen so that the value of
     # COMPARSION_BIT(left, right)
@@ -3083,8 +3103,6 @@ class PyFlowGraph314(PyFlowGraph312):
                 if i not in instr_flags:
                     if instr.opname == "LOAD_FAST":
                         instr.opname = "LOAD_FAST_BORROW"
-                    elif instr.opname == "LOAD_FAST__LOAD_FAST":
-                        instr.opname = "LOAD_FAST_BORROW_LOAD_FAST_BORROW"
 
     def get_generator_prefix(self) -> list[Instruction]:
         firstline = self.firstline or self.first_inst_lineno or 1

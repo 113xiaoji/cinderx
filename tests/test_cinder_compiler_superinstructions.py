@@ -272,6 +272,20 @@ def test_emits_double_underscore_load_fast_pair() -> None:
     assert "LOAD_FAST_LOAD_FAST" not in names
 
 
+def test_dunder_load_fast_pair_keeps_final_superinstruction_and_cache() -> None:
+    spec = workloads.get_workload_spec("load_fast_pair_loop")
+    capture = compile_function_instructions(
+        spec.source,
+        "load_fast_pair_loop",
+    )
+    names = [name for _, name, _ in capture.final_instructions]
+    final_super = find_instruction(capture.final_instructions, "LOAD_FAST__LOAD_FAST")
+    final_cache = capture.final_instructions[final_super[0] + 1]
+
+    assert "LOAD_FAST_BORROW_LOAD_FAST_BORROW" not in names
+    assert final_cache[1] == "CACHE"
+
+
 def test_emits_double_underscore_store_fast_load_fast_pair() -> None:
     spec = workloads.get_workload_spec("store_fast_load_fast_loop")
     capture = compile_function_instructions(
