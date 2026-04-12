@@ -3,6 +3,7 @@
 
 import argparse
 import dis
+import importlib.util
 import json
 import os
 import statistics
@@ -11,13 +12,19 @@ import tempfile
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-for candidate in (REPO_ROOT / "cinderx" / "PythonLib", REPO_ROOT):
-    candidate_text = str(candidate)
-    if candidate_text not in sys.path:
-        sys.path.insert(0, candidate_text)
-
-from scripts.arm.interp_superinstruction_workloads import get_workload
+WORKLOAD_HELPER_PATH = Path(__file__).with_name("interp_superinstruction_workloads.py")
+WORKLOAD_HELPER_SPEC = importlib.util.spec_from_file_location(
+    "scripts.arm.interp_superinstruction_workloads",
+    WORKLOAD_HELPER_PATH,
+)
+if WORKLOAD_HELPER_SPEC is None or WORKLOAD_HELPER_SPEC.loader is None:
+    raise RuntimeError(f"unable to load workload helper from {WORKLOAD_HELPER_PATH}")
+WORKLOAD_HELPER = importlib.util.module_from_spec(WORKLOAD_HELPER_SPEC)
+sys.modules[WORKLOAD_HELPER_SPEC.name] = WORKLOAD_HELPER
+WORKLOAD_HELPER_SPEC.loader.exec_module(WORKLOAD_HELPER)
+WORKLOAD_NAMES = tuple(spec.name for spec in WORKLOAD_HELPER.WORKLOAD_SPECS)
+WORKLOAD_CHOICES = ("default",) + WORKLOAD_NAMES
+get_workload = WORKLOAD_HELPER.get_workload
 
 
 def workload(n: int) -> int:
@@ -190,6 +197,19 @@ def _best_backedge_offset(fn):
     return max(offsets)
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--runtime", choices=["cinderx", "cpython"], required=True)
+    parser.add_argument("--mode", choices=["interp", "jit"], required=True)
+    parser.add_argument("--workload", choices=WORKLOAD_CHOICES, default="default")
+    parser.add_argument("--n", type=int, default=250)
+    parser.add_argument("--warmup", type=int, default=20000)
+    parser.add_argument("--calls", type=int, default=12000)
+    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--output", default="")
+    return parser
+
+
 def cpython_mode(mode: str, fn, workload_name: str, n: int, warmup: int, calls: int, repeats: int):
     import _opcode
 
@@ -252,24 +272,7 @@ def cpython_mode(mode: str, fn, workload_name: str, n: int, warmup: int, calls: 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--runtime", choices=["cinderx", "cpython"], required=True)
-    parser.add_argument("--mode", choices=["interp", "jit"], required=True)
-    parser.add_argument(
-        "--workload",
-        choices=[
-            "default",
-            "load_fast_pair_loop",
-            "store_fast_load_fast_loop",
-            "load_const_load_fast_loop",
-        ],
-        default="default",
-    )
-    parser.add_argument("--n", type=int, default=250)
-    parser.add_argument("--warmup", type=int, default=20000)
-    parser.add_argument("--calls", type=int, default=12000)
-    parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--output", default="")
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.workload == "default":
