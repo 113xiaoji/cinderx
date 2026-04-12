@@ -2139,6 +2139,86 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(int(lines[-1]), 9, proc.stdout)
 
+    def test_collection_derived_monomorphic_method_load_restores_inlining(
+        self,
+    ) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        # Regression guard:
+        # a receiver pulled from a monomorphic object collection should still be
+        # able to recover the profiled method-with-values fast path and expose an
+        # inliner-visible VectorCall. This shape is common in object-heavy loops
+        # such as bm_go's Board.useful().
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Square:
+                def __init__(self, value, ref=None):
+                    self.value = value
+                    self.ref = ref
+
+                def find(self, update):
+                    if self.ref is None:
+                        return self.value + update
+                    return self.ref.find(update) + self.value + update
+
+            class Board:
+                def __init__(self):
+                    root = Square(1, None)
+                    mid = Square(2, root)
+                    self.squares = [Square(3, mid) for _ in range(4)]
+
+                def useful(self):
+                    total = 0
+                    for sq in self.squares:
+                        total += sq.find(1)
+                    return total
+
+            board = Board()
+            for _ in range(20000):
+                board.useful()
+
+            assert jit.force_compile(Board.useful)
+            counts = cinderjit.get_function_hir_opcode_counts(Board.useful)
+            stats = jit.get_inlined_functions_stats(Board.useful)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("VectorCall", 0))
+            print(stats.get("num_inlined_functions", 0))
+            print(board.useful())
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/collection_derived_monomorphic_method_load.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertGreaterEqual(int(lines[-3]), 1, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 36, proc.stdout)
+
     def test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts(
         self,
     ) -> None:

@@ -52,6 +52,7 @@
 #endif
 #include <fmt/std.h>
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -4375,6 +4376,33 @@ std::vector<BorrowedRef<PyFunctionObject>> preloadFuncAndDeps(
          getCompilationEligibility(f) != JitEligibility::Ineligible);
   };
 
+  auto collectProfiledMWVFunctionTargets =
+      [&](BorrowedRef<PyFunctionObject> owner) {
+        std::vector<BorrowedRef<PyFunctionObject>> targets;
+        int mwv_sites = 0;
+        for (auto bc_instr : BytecodeInstructionBlock{owner->func_code}) {
+          if (bc_instr.specializedOpcode() != LOAD_ATTR_METHOD_WITH_VALUES) {
+            continue;
+          }
+          mwv_sites++;
+          PyObject* descr = bc_instr.cacheObj(6);
+          if (descr == nullptr || !PyFunction_Check(descr)) {
+            continue;
+          }
+          auto target = BorrowedRef<PyFunctionObject>{
+              reinterpret_cast<PyFunctionObject*>(descr)};
+          if (std::find(targets.begin(), targets.end(), target) == targets.end()) {
+            targets.push_back(target);
+          }
+        }
+        JIT_LOG(
+            "collectProfiledMWVFunctionTargets owner={} mwv_sites={} targets={}",
+            funcFullname(owner),
+            mwv_sites,
+            targets.size());
+        return targets;
+      };
+
   while (worklist.size() > 0 && result.size() < limit) {
     BorrowedRef<PyFunctionObject> f = worklist.front();
     worklist.pop_front();
@@ -4414,6 +4442,16 @@ std::vector<BorrowedRef<PyFunctionObject>> preloadFuncAndDeps(
       }
       BorrowedRef<PyFunctionObject> target_func = obj.get();
       if (shouldPreload(target_func)) {
+        worklist.push_back(target_func);
+      }
+    }
+
+    // Preload Python-function targets recovered from profiled
+    // LOAD_ATTR_METHOD_WITH_VALUES sites so a later profiled VectorCall fast
+    // path can actually be inlined in single-function compile mode.
+    for (BorrowedRef<PyFunctionObject> target_func :
+         collectProfiledMWVFunctionTargets(f)) {
+      if (!isPreloaded(target_func)) {
         worklist.push_back(target_func);
       }
     }
