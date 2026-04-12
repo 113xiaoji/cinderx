@@ -143,6 +143,60 @@ def compile_function_instructions(source: str, func_name: str) -> list[tuple[int
         return RecordingFlowGraph.captured[func_name]
 
 
+def test_compiler_opcodes_fall_back_to_runtime_superinstructions() -> None:
+    if str(PYTHONLIB) not in sys.path:
+        sys.path.insert(0, str(PYTHONLIB))
+
+    original_version = sys.version_info
+    original_inline_cache_entries = opcode._inline_cache_entries
+    original_cinderx_opcode = sys.modules.get("cinderx.opcode")
+
+    for name in list(sys.modules):
+        if name == "cinderx" or name.startswith("cinderx.compiler"):
+            del sys.modules[name]
+
+    sys.version_info = FakeVersionInfo((3, 14, 0, "final", 0))
+    opcode._inline_cache_entries = normalize_inline_cache_entries(
+        original_inline_cache_entries
+    )
+
+    module = types.ModuleType("cinderx.opcode")
+
+    def init(
+        opnames: list[str],
+        opmap: dict[str, int],
+        hasname: list[int],
+        hasjrel: list[int],
+        hasjabs: list[int],
+        hasconst: list[int],
+        hasarg: list[int],
+        cache_format: dict[object, object],
+        specializations: dict[object, object],
+        inline_cache_entries: dict[object, object],
+    ) -> None:
+        return None
+
+    module.init = init
+    sys.modules["cinderx.opcode"] = module
+
+    try:
+        opcodes_module = importlib.import_module("cinderx.compiler.opcodes")
+        compiler_opcode = opcodes_module.opcode
+        for name in REQUIRED_OPCODE_NAMES:
+            assert name in compiler_opcode.opmap
+        assert "LOAD_CONST__LOAD_FAST" in compiler_opcode.hasconst
+    finally:
+        sys.version_info = original_version
+        opcode._inline_cache_entries = original_inline_cache_entries
+        if original_cinderx_opcode is None:
+            sys.modules.pop("cinderx.opcode", None)
+        else:
+            sys.modules["cinderx.opcode"] = original_cinderx_opcode
+        for name in list(sys.modules):
+            if name == "cinderx" or name.startswith("cinderx.compiler"):
+                del sys.modules[name]
+
+
 def test_emits_double_underscore_load_fast_pair() -> None:
     instructions = compile_function_instructions(
         """

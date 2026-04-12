@@ -20,6 +20,11 @@ from .opcodebase import Opcode
 STATIC_OPMAP: dict[str, int] = {}
 STATIC_OPNAMES: list[str] = [f"<{i}>" for i in range(256)]
 STATIC_CONST_OPCODES: list[int] = []
+RUNTIME_SUPERINSTRUCTION_OPCODES = {
+    "LOAD_CONST__LOAD_FAST": 122,
+    "LOAD_FAST__LOAD_FAST": 123,
+    "STORE_FAST__LOAD_FAST": 124,
+}
 
 if sys.version_info >= (3, 12):
     # pyre-fixme[21]: Could not find name `_cache_format` in `opcode` (stubbed).
@@ -51,9 +56,20 @@ if sys.version_info >= (3, 12):
         _inline_cache_entries,
     )
     if sys.version_info >= (3, 14):
+        for name, opcode_number in RUNTIME_SUPERINSTRUCTION_OPCODES.items():
+            STATIC_OPMAP.setdefault(name, opcode_number)
+            STATIC_OPNAMES[opcode_number] = name
+        for opcode_number in RUNTIME_SUPERINSTRUCTION_OPCODES.values():
+            if opcode_number not in hasarg:
+                hasarg.append(opcode_number)
+        if RUNTIME_SUPERINSTRUCTION_OPCODES["LOAD_CONST__LOAD_FAST"] not in STATIC_CONST_OPCODES:
+            STATIC_CONST_OPCODES.append(
+                RUNTIME_SUPERINSTRUCTION_OPCODES["LOAD_CONST__LOAD_FAST"]
+            )
         opname[126] = "EXTENDED_OPCODE"
         opmap["EXTENDED_OPCODE"] = 126
-        hasarg.append(126)
+        if 126 not in hasarg:
+            hasarg.append(126)
 
     opmap.update(STATIC_OPMAP)
 
