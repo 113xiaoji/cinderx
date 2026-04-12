@@ -232,6 +232,44 @@ entrypoint:
     - the cinder producer path crashes on ARM for the latter two workloads
       before it can emit fresh JSON evidence
 
+- 2026-04-12 phase 1.5 task 4 final refresh: clean remote workdir with current helper
+  - local regression:
+    - command:
+      - `$env:PYTHONPATH='.'; uv run --python 3.12 --no-project --with pytest python -m pytest tests/test_interp_superinstruction_workloads.py tests/test_cinder_compiler_superinstructions.py tests/test_bench_compare_modes_workloads.py tests/test_interp_superinstruction_pilot_contract.py -q`
+    - result:
+      - `32 passed in 0.42s`
+  - key fixes included in this rerun:
+    - `fix: align dunder superinstruction encoding`
+    - `fix: preserve dunder superinstruction cache slots`
+    - `fix: keep dunder load-fast superinstructions intact`
+    - `fix: retain consts for dunder load-const superinstructions`
+  - clean remote execution:
+    - helper source:
+      - current local `scripts/arm/remote_update_build_test.sh`
+    - remote workdir:
+      - `/root/work/cinderx-phase15-producer4`
+    - output dir:
+      - `/root/work/arm-sync/interp_superinstruction_pilot_phase15_4`
+    - note:
+      - this rerun used the current helper uploaded under a separate filename because the stock `push_to_arm.ps1` run had been observed to leave an older helper payload in `/root/work/incoming/remote_update_build_test.sh`
+      - the source tar was still produced from the current local `HEAD`
+  - fresh emitted evidence:
+    - `load_fast_pair_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST']`
+    - `store_fast_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST', 'STORE_FAST__LOAD_FAST']`
+    - `load_const_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_CONST__LOAD_FAST']`
+  - closure statement:
+    - `3.14` runtime producer coverage now reaches the full Phase 1 shortlist on ARM
+    - `3.15` remains at static wiring + contract level
+  - residual tooling risk:
+    - `scripts/push_to_arm.ps1` still appears to upload a stale helper payload in this environment
+    - this is now treated as a deployment/tooling issue, not as a blocker on the `3.14` superinstruction producer/runtime path itself
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
