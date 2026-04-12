@@ -207,6 +207,11 @@ deactivate
 
 run_extra_cmd "extra verification command" "$EXTRA_VERIFY_CMD"
 
+if [[ "$SKIP_PYPERF" == "1" ]]; then
+  echo "SKIP_PYPERF=1 set; done after smoke."
+  exit 0
+fi
+
 echo ">> ensure pyperformance venv exists"
 . "$DRIVER_VENV/bin/activate"
 ensure_pyperf_venv() {
@@ -317,11 +322,6 @@ run_extra_cmd "post pyperformance command" "$POST_PYPERF_CMD"
 
 if [[ "$SKIP_DEFAULT_PYPERF_GATES" == "1" ]]; then
   echo "SKIP_DEFAULT_PYPERF_GATES=1 set; done after post-pyperf command."
-  exit 0
-fi
-
-if [[ "$SKIP_PYPERF" == "1" ]]; then
-  echo "SKIP_PYPERF=1 set; done after smoke."
   exit 0
 fi
 

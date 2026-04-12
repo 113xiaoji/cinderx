@@ -99,6 +99,37 @@ entrypoint:
       ad-hoc `EXTRA_TEST_CMD` quoting mistake for the temporary tiering harness,
       not in the helper's build/install flow itself
 
+- Driver-venv recovery proof:
+  - after the patched helper reinstalled the wheel into `/root/venv-cinderx314`,
+    the old crash no longer reproduced on direct startup
+  - direct checks now succeed without `CINDERX_DISABLE=1`:
+    - `python -m pip --version`
+    - `python - <<'PY' ... import cinderx, cinderx.jit ...`
+  - observed output:
+    - `pip 26.0.1 ...`
+    - `cinderx_ok True`
+    - `jit_enabled True`
+  - conclusion:
+    - the driver venv itself is no longer wedged after helper-driven repair
+
+- SKIP_PYPERF semantics fix:
+  - previous behavior:
+    - `SKIP_PYPERF=1` still proceeded into pyperformance venv creation and
+      dependency installation before exiting
+    - this could derail focused helper validation on unrelated pyperformance
+      dependency/network failures
+  - fix:
+    - move the `SKIP_PYPERF=1` early-exit to immediately after smoke and
+      `EXTRA_VERIFY_CMD`, before any pyperformance venv setup
+    - add guardrail coverage in
+      `tests/test_arm_remote_update_build_test.py`
+  - verification:
+    - local guardrail tests: `Ran 4 tests ... OK`
+    - standard helper rerun with `SKIP_PYPERF=1`:
+      - completed build/install + ARM runtime filtering + JIT smoke
+      - printed `SKIP_PYPERF=1 set; done after smoke.`
+      - exited successfully without entering pyperformance setup
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
