@@ -6,7 +6,7 @@ import re
 import sys
 import types
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -29,6 +29,7 @@ InstructionRecord = tuple[int, str, int]
 class FunctionInstructionCapture:
     before_superinstructions: list[InstructionRecord]
     after_superinstructions: list[InstructionRecord]
+    final_instructions: list[InstructionRecord] = field(default_factory=list)
 
 
 class FakeVersionInfo(tuple):
@@ -145,6 +146,13 @@ def snapshot_instructions(flow_graph) -> list[InstructionRecord]:
     return instructions
 
 
+def snapshot_instruction_sequence(sequence) -> list[InstructionRecord]:
+    return [
+        (index, instr.opname, instr.ioparg)
+        for index, instr in enumerate(sequence)
+    ]
+
+
 def compile_function_instructions(
     source: str, func_name: str
 ) -> FunctionInstructionCapture:
@@ -163,6 +171,17 @@ def compile_function_instructions(
                 RecordingFlowGraph.captured[self.name] = FunctionInstructionCapture(
                     before_superinstructions=before,
                     after_superinstructions=snapshot_instructions(self),
+                )
+
+            def flatten_graph(self) -> None:
+                super().flatten_graph()
+                capture = RecordingFlowGraph.captured.get(self.name)
+                if capture is None:
+                    return
+                RecordingFlowGraph.captured[self.name] = FunctionInstructionCapture(
+                    before_superinstructions=capture.before_superinstructions,
+                    after_superinstructions=capture.after_superinstructions,
+                    final_instructions=snapshot_instruction_sequence(self.insts),
                 )
 
         class RecordingGenerator(pycodegen.CinderCodeGenerator314):
@@ -319,11 +338,46 @@ def test_dunder_superinstructions_preserve_split_operands(
     super_instruction = find_instruction(capture.after_superinstructions, super_opname)
     first_before = capture.before_superinstructions[super_instruction[0]]
     second_before = capture.before_superinstructions[super_instruction[0] + 1]
-    nop_instruction = capture.after_superinstructions[super_instruction[0] + 1]
+    cache_instruction = capture.after_superinstructions[super_instruction[0] + 1]
 
     assert first_before[1] == first_opname
     assert second_before[1] == second_opname
     assert super_instruction[2] == first_before[2]
     assert super_instruction[2] != ((first_before[2] << 4) | second_before[2])
-    assert nop_instruction[1] == "NOP"
-    assert nop_instruction[2] == second_before[2]
+    assert cache_instruction[1] == "CACHE"
+    assert cache_instruction[2] == second_before[2]
+
+
+@pytest.mark.parametrize(
+    ("workload_name", "entry_name", "super_opname"),
+    [
+        (
+            "store_fast_load_fast_loop",
+            "store_fast_load_fast_loop",
+            "STORE_FAST__LOAD_FAST",
+        ),
+        (
+            "load_const_load_fast_loop",
+            "load_const_load_fast_loop",
+            "LOAD_CONST__LOAD_FAST",
+        ),
+    ],
+)
+def test_dunder_superinstructions_keep_cache_slots_in_final_instructions(
+    workload_name: str,
+    entry_name: str,
+    super_opname: str,
+) -> None:
+    spec = workloads.get_workload_spec(workload_name)
+    capture = compile_function_instructions(spec.source, entry_name)
+
+    after_super = find_instruction(capture.after_superinstructions, super_opname)
+    first_before = capture.before_superinstructions[after_super[0]]
+    second_before = capture.before_superinstructions[after_super[0] + 1]
+    final_super = find_instruction(capture.final_instructions, super_opname)
+    final_cache = capture.final_instructions[final_super[0] + 1]
+
+    assert final_super[2] == first_before[2]
+    assert final_super[2] != ((first_before[2] << 4) | second_before[2])
+    assert final_cache[1] == "CACHE"
+    assert final_cache[2] == second_before[2]

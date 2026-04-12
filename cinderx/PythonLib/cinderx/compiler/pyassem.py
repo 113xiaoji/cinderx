@@ -194,6 +194,10 @@ class Instruction:
         self.opname = "NOP"
         self.target = None
 
+    def set_to_cache_preserving_argument(self) -> None:
+        self.opname = "CACHE"
+        self.target = None
+
     def set_to_nop_no_loc(self) -> None:
         self.opname = "NOP"
         self.oparg = self.ioparg = 0
@@ -3179,7 +3183,7 @@ class PyFlowGraph314(PyFlowGraph312):
             if inst2.ioparg >= 256:
                 return
             inst1.opname = super_op
-            inst2.set_to_nop_preserving_argument()
+            inst2.set_to_cache_preserving_argument()
             return
 
         if inst1.ioparg >= 16 or inst2.ioparg >= 16:
