@@ -30,6 +30,7 @@ class FunctionInstructionCapture:
     before_superinstructions: list[InstructionRecord]
     after_superinstructions: list[InstructionRecord]
     final_instructions: list[InstructionRecord] = field(default_factory=list)
+    compiled_code: types.CodeType | None = None
 
 
 class FakeVersionInfo(tuple):
@@ -153,6 +154,20 @@ def snapshot_instruction_sequence(sequence) -> list[InstructionRecord]:
     ]
 
 
+def find_code_object(code: types.CodeType, name: str) -> types.CodeType:
+    if code.co_name == name:
+        return code
+
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            try:
+                return find_code_object(const, name)
+            except AssertionError:
+                pass
+
+    raise AssertionError(f"expected to find code object {name!r}")
+
+
 def compile_function_instructions(
     source: str, func_name: str
 ) -> FunctionInstructionCapture:
@@ -187,14 +202,20 @@ def compile_function_instructions(
         class RecordingGenerator(pycodegen.CinderCodeGenerator314):
             flow_graph = RecordingFlowGraph
 
-        compiler.compile_code(
+        compiled_code = compiler.compile_code(
             source,
             f"<{func_name}>",
             "exec",
             compiler=RecordingGenerator,
             modname=f"pilot::{func_name}",
         )
-        return RecordingFlowGraph.captured[func_name]
+        capture = RecordingFlowGraph.captured[func_name]
+        return FunctionInstructionCapture(
+            before_superinstructions=capture.before_superinstructions,
+            after_superinstructions=capture.after_superinstructions,
+            final_instructions=capture.final_instructions,
+            compiled_code=compiled_code,
+        )
 
 
 def find_instruction(
@@ -311,6 +332,26 @@ def test_emits_load_const_load_fast_pair() -> None:
         first == "LOAD_CONST" and second == "LOAD_FAST"
         for first, second in zip(names, names[1:])
     )
+
+
+def test_load_const_load_fast_loop_keeps_257_in_final_code_object() -> None:
+    spec = workloads.get_workload_spec("load_const_load_fast_loop")
+    capture = compile_function_instructions(
+        spec.source,
+        "load_const_load_fast_loop",
+    )
+
+    assert capture.compiled_code is not None
+    function_code = find_code_object(
+        capture.compiled_code,
+        "load_const_load_fast_loop",
+    )
+    final_super = find_instruction(
+        capture.final_instructions,
+        "LOAD_CONST__LOAD_FAST",
+    )
+
+    assert function_code.co_consts[final_super[2]] == 257
 
 
 @pytest.mark.parametrize(

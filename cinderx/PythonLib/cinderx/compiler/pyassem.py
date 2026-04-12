@@ -3313,7 +3313,10 @@ class PyFlowGraph314(PyFlowGraph312):
         self.push_cold_blocks_to_end(None, optimizer)
         self.propagate_line_numbers()
 
-    _const_opcodes: set[str] = set(PyFlowGraph312._const_opcodes) | {"LOAD_SMALL_INT"}
+    _const_opcodes: set[str] = set(PyFlowGraph312._const_opcodes) | {
+        "LOAD_SMALL_INT",
+        "LOAD_CONST__LOAD_FAST",
+    }
 
 
 class PyFlowGraph315(PyFlowGraph314):
