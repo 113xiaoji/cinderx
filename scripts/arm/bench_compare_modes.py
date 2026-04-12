@@ -11,6 +11,12 @@ import tempfile
 import time
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+for candidate in (REPO_ROOT / "cinderx" / "PythonLib", REPO_ROOT):
+    candidate_text = str(candidate)
+    if candidate_text not in sys.path:
+        sys.path.insert(0, candidate_text)
+
 from scripts.arm.interp_superinstruction_workloads import get_workload
 
 

@@ -1,23 +1,19 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 
-def test_cpython_interp_named_workload_is_reported_in_json() -> None:
+def run_bench(runtime: str) -> dict[str, object]:
     script = Path("scripts/arm/bench_compare_modes.py")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = "."
-
     result = subprocess.run(
         [
             sys.executable,
             str(script),
             "--runtime",
-            "cpython",
+            runtime,
             "--mode",
             "interp",
             "--workload",
@@ -34,10 +30,21 @@ def test_cpython_interp_named_workload_is_reported_in_json() -> None:
         capture_output=True,
         text=True,
         check=True,
-        env=env,
     )
+    return json.loads(result.stdout)
 
-    payload = json.loads(result.stdout)
+
+def test_cpython_interp_named_workload_is_reported_in_json() -> None:
+    payload = run_bench("cpython")
+
     assert payload["workload"] == "load_fast_pair_loop"
     assert payload["runtime"] == "cpython"
+    assert payload["mode"] == "interp"
+
+
+def test_cinderx_interp_named_workload_is_reported_in_json() -> None:
+    payload = run_bench("cinderx")
+
+    assert payload["workload"] == "load_fast_pair_loop"
+    assert payload["runtime"] == "cinderx"
     assert payload["mode"] == "interp"
