@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
+
+
+@dataclass(frozen=True)
+class WorkloadSpec:
+    name: str
+    target_pair: str
+    workload: Callable[[int], int]
 
 
 def load_fast_pair_loop(n: int) -> int:
@@ -28,10 +36,22 @@ def load_const_load_fast_loop(n: int) -> int:
     return total
 
 
+WORKLOAD_SPECS: tuple[WorkloadSpec, ...] = (
+    WorkloadSpec("load_fast_pair_loop", "LOAD_FAST->LOAD_FAST", load_fast_pair_loop),
+    WorkloadSpec(
+        "store_fast_load_fast_loop",
+        "STORE_FAST->LOAD_FAST",
+        store_fast_load_fast_loop,
+    ),
+    WorkloadSpec(
+        "load_const_load_fast_loop",
+        "LOAD_CONST->LOAD_FAST",
+        load_const_load_fast_loop,
+    ),
+)
+
 WORKLOADS: dict[str, Callable[[int], int]] = {
-    "load_fast_pair_loop": load_fast_pair_loop,
-    "store_fast_load_fast_loop": store_fast_load_fast_loop,
-    "load_const_load_fast_loop": load_const_load_fast_loop,
+    spec.name: spec.workload for spec in WORKLOAD_SPECS
 }
 
 
