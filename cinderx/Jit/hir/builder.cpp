@@ -113,21 +113,25 @@ BorrowedRef<PyTypeObject> getStdlibArrayType() {
     return array_type;
   }
 
-  ThreadedCompileSerialize guard;
-  Ref<> mod = Ref<>::steal(PyImport_ImportModule("array"));
-  if (mod == nullptr) {
-    PyErr_Clear();
+  BorrowedRef<> modules = PyImport_GetModuleDict();
+  if (modules == nullptr || !PyDict_Check(modules)) {
+    return nullptr;
+  }
+  BorrowedRef<> mod = PyDict_GetItemString(modules, "array");
+  if (mod == nullptr || !PyModule_Check(mod)) {
     return nullptr;
   }
 
-  Ref<> type = Ref<>::steal(PyObject_GetAttrString(mod, "array"));
+  BorrowedRef<> module_dict = PyModule_GetDict(mod);
+  if (module_dict == nullptr || !PyDict_Check(module_dict)) {
+    return nullptr;
+  }
+  BorrowedRef<> type = PyDict_GetItemString(module_dict, "array");
   if (type == nullptr || !PyType_Check(type)) {
-    PyErr_Clear();
     return nullptr;
   }
 
-  array_type =
-      Ref<PyTypeObject>::steal(reinterpret_cast<PyTypeObject*>(type.release()));
+  array_type = Ref<PyTypeObject>::create(reinterpret_cast<PyTypeObject*>(type.get()));
   return array_type;
 }
 

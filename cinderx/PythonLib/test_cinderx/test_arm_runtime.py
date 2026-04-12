@@ -836,6 +836,65 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertTrue(payload["compiled"], proc.stdout)
             self.assertGreater(payload["compiled_size"], 0, proc.stdout)
 
+    def test_hir_inliner_autojit_store_subscr_does_not_import_array(self) -> None:
+        # Regression guard:
+        # regular auto-JIT compilation with the HIR inliner enabled should not
+        # try to import stdlib `array` while compiling an ordinary store-subscr
+        # function. That import path is unsafe during auto-JIT compilation and
+        # previously crashed even for simple list stores.
+        code = textwrap.dedent(
+            """
+            import json
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(2)
+
+            def f(a, i, v):
+                a[i] = v
+                return a
+
+            result = None
+            for _ in range(20):
+                result = f([0.0, 1.0], 0, 3.0)
+
+            print(
+                json.dumps(
+                    {
+                        "compiled": jit.is_jit_compiled(f),
+                        "compiled_size": jit.get_compiled_size(f),
+                        "result": result,
+                    }
+                )
+            )
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/hir_inliner_store_subscr_autojit.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertTrue(payload["compiled"], proc.stdout)
+            self.assertGreater(payload["compiled_size"], 0, proc.stdout)
+            self.assertEqual(payload["result"], [3.0, 1.0], proc.stdout)
+
     def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
         code = textwrap.dedent(
             """
