@@ -68,10 +68,13 @@ payload = {
 
 try:
     import cinderx
-    import cinderx.jit as jit
+    try:
+        import cinderjit as jit_ext
+    except Exception:
+        import cinderx.jit as jit_ext
 
     payload["cinderx_initialized"] = bool(cinderx.is_initialized())
-    payload["jit_enabled"] = bool(jit.is_enabled())
+    payload["jit_enabled"] = bool(jit_ext.is_enabled())
 except Exception as exc:
     payload["probe_error"] = f"{type(exc).__name__}:{exc}"
 

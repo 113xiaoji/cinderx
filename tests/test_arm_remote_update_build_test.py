@@ -48,6 +48,23 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
         ensure_pos = text.index('echo ">> ensure pyperformance venv exists"')
         self.assertLess(skip_pos, ensure_pos)
 
+    def test_pyperformance_venv_creation_is_scoped_to_requested_benchmark(
+        self,
+    ) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'PYPERF_VENV_BENCHMARKS="${PYPERF_VENV_BENCHMARKS:-$BENCH}"',
+            text,
+        )
+        self.assertIn(
+            'cmd=(python -m pyperformance venv recreate -b "$PYPERF_VENV_BENCHMARKS")',
+            text,
+        )
+        self.assertIn(
+            'cmd=(python -m pyperformance venv create -b "$PYPERF_VENV_BENCHMARKS")',
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

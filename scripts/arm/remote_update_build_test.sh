@@ -12,6 +12,7 @@ WORKDIR="${WORKDIR:-/root/work/cinderx-main}"
 PY="${PYTHON:-/opt/python-3.14/bin/python3.14}"
 DRIVER_VENV="${DRIVER_VENV:-/root/venv-cinderx314}"
 BENCH="${BENCH:-richards}"
+PYPERF_VENV_BENCHMARKS="${PYPERF_VENV_BENCHMARKS:-$BENCH}"
 AUTOJIT="${AUTOJIT:-50}"
 SMOKE_AUTOJIT="${SMOKE_AUTOJIT:-10}"
 PARALLEL="${PARALLEL:-1}"
@@ -218,9 +219,9 @@ ensure_pyperf_venv() {
   local action="$1"
   local cmd=()
   if [[ "$action" == "recreate" ]]; then
-    cmd=(python -m pyperformance venv recreate)
+    cmd=(python -m pyperformance venv recreate -b "$PYPERF_VENV_BENCHMARKS")
   else
-    cmd=(python -m pyperformance venv create)
+    cmd=(python -m pyperformance venv create -b "$PYPERF_VENV_BENCHMARKS")
   fi
 
   set +e
