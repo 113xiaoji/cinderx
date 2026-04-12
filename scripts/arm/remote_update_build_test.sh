@@ -77,7 +77,7 @@ cd "$WORKDIR"
 export CMAKE_BUILD_PARALLEL_LEVEL="$PARALLEL"
 
 echo ">> build wheel (CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL)"
-"$PY" -m build --wheel
+"$PY" -m build --wheel -n
 WHEEL="$(ls -1t dist/cinderx-*.whl | head -n 1)"
 echo "wheel=$WHEEL"
 
@@ -88,9 +88,9 @@ fi
 
 echo ">> install wheel + pyperformance into driver venv"
 . "$DRIVER_VENV/bin/activate"
-PYTHONJIT=0 python -m pip install -q -U pip
-PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
-PYTHONJIT=0 python -m pip install -q -U pyperformance
+CINDERX_DISABLE=1 PYTHONJIT=0 python -m pip install -q -U pip
+CINDERX_DISABLE=1 PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
+CINDERX_DISABLE=1 PYTHONJIT=0 python -m pip install -q -U pyperformance
 
 echo ">> unittest: ARM runtime checks"
 if [[ -z "$ARM_RUNTIME_SKIP_TESTS" ]]; then
@@ -219,7 +219,7 @@ ensure_pyperf_venv() {
   fi
 
   set +e
-  PYTHONJIT=0 "${cmd[@]}"
+  CINDERX_DISABLE=1 PYTHONJIT=0 "${cmd[@]}"
   local rc=$?
   set -e
   if [[ $rc -eq 0 ]]; then
@@ -228,12 +228,12 @@ ensure_pyperf_venv() {
 
   echo "WARN: pyperformance venv ${action} failed (rc=$rc), cleanup '$WORKDIR/venv' and retry once"
   rm -rf "$WORKDIR/venv"
-  PYTHONJIT=0 "${cmd[@]}"
+  CINDERX_DISABLE=1 PYTHONJIT=0 "${cmd[@]}"
 }
 
 set +e
 PYVENV_PATH="$(
-  PYTHONJIT=0 python -m pyperformance venv show 2>/dev/null | \
+  CINDERX_DISABLE=1 PYTHONJIT=0 python -m pyperformance venv show 2>/dev/null | \
     sed -n 's/^Virtual environment path: \([^ ]*\).*$/\1/p'
 )"
 set -e
@@ -243,13 +243,13 @@ elif [[ -z "$PYVENV_PATH" || ! -x "$PYVENV_PATH/bin/python" ]]; then
   ensure_pyperf_venv create
 fi
 PYVENV_PATH="$(
-  PYTHONJIT=0 python -m pyperformance venv show | \
+  CINDERX_DISABLE=1 PYTHONJIT=0 python -m pyperformance venv show | \
     sed -n 's/^Virtual environment path: \([^ ]*\).*$/\1/p'
 )"
 echo "pyperf_venv=$PYVENV_PATH"
 if [[ -z "$PYVENV_PATH" || ! -d "$PYVENV_PATH" ]]; then
   echo "ERROR: failed to determine pyperformance venv path"
-  python -m pyperformance venv show || true
+  CINDERX_DISABLE=1 PYTHONJIT=0 python -m pyperformance venv show || true
   exit 1
 fi
 if [[ "$PYPERF_REQUIRE_SYSTEM_SITE_PACKAGES" == "1" ]]; then
@@ -284,7 +284,7 @@ deactivate
 
 echo ">> install wheel into pyperformance venv"
 . "$PYVENV_PATH/bin/activate"
-PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
+CINDERX_DISABLE=1 PYTHONJIT=0 python -m pip install -q --force-reinstall "$WHEEL"
 deactivate
 HOOK_DIR="$WORKDIR/scripts/arm/pyperf_env_hook"
 if [[ ! -f "$HOOK_DIR/sitecustomize.py" ]]; then

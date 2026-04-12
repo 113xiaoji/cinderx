@@ -6,6 +6,99 @@ entrypoint:
 
 `scripts/push_to_arm.ps1` -> `scripts/arm/remote_update_build_test.sh`
 
+### Validation follow-up: baseline tier fast-mode snapshot
+
+- Date: `2026-04-12`
+- Branch/worktree:
+  - `codex/baseline-tier-fastmode-mvp`
+  - `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp`
+- Snapshot:
+  - `c2ee2dce` `test: align cached baseline tier expectation`
+- Delta since earlier findings:
+  - subprocess-isolated tiering checks now live in
+    `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - baseline auto-tier semantics are preserved on the automatic path
+  - `force_compile()` now promotes a baseline-bound function to
+    `optimized`, including when another function object already has an
+    optimized tier for the same code shape
+
+- Current intended semantics verified in this round:
+  - `force_compile_baseline()` exposes `baseline`, not `optimized`
+  - low-threshold auto-tiering follows `interp -> interp -> baseline`
+  - explicit promotion follows `baseline -> force_compile() -> optimized`
+  - cached optimized code for a sibling function object no longer causes the
+    current baseline function to report `optimized` early
+
+- Remote validation path:
+  - the standard helper path is still blocked by the ARM environment at
+    `PYTHONJIT=0 python -m pip install -q -U pip`
+  - to keep verification moving, this round used a fresh remote scratch build
+    from an archived source snapshot:
+    - source/build root: `'/root/ '`
+    - interpreter:
+      `/root/venv-cinderx314/bin/python -S -u`
+    - `PYTHONPATH`:
+      `'/root/ /scratch/lib.linux-aarch64-cpython-314:/root/ /cinderx/PythonLib'`
+
+- Focused remote probe result:
+  - script config:
+    - `jit.baseline_compile_after_n_calls(1)`
+    - `jit.compile_after_n_calls(1000000)`
+  - observed output:
+    - `tier_before interp`
+    - `tier_after_1 interp`
+    - `tier_after_2 baseline`
+    - `force_compile_ret True`
+    - `tier_after_force optimized`
+    - `value 45`
+  - conclusion:
+    - the intended baseline-to-optimized semantics reproduce on a fresh ARM
+      scratch build
+
+- Focused remote test result:
+  - command shape:
+    - load `cinderx/PythonLib/test_cinderx/test_jit_tiering.py` by path under
+      the same fresh scratch `PYTHONPATH`
+  - result:
+    - `Ran 5 tests in 0.565s`
+    - `OK`
+  - covered checks:
+    - `force_compile_baseline()` exposes `baseline`
+    - `force_compile()` promotes baseline functions to `optimized`
+    - cached optimized siblings do not prevent correct promotion
+    - low-threshold automatic compilation reaches `baseline` on the second call
+    - cached optimized siblings do not cause a fresh low-threshold function to
+      skip directly to `optimized`
+
+- Remaining caveat:
+  - this round closes the focused tiering proof on fresh ARM scratch builds,
+    but it does not resolve the separate helper-environment failure in the
+    standard `remote_update_build_test.sh` install path
+  - earlier hot-loop OSR traceback noise was not reproduced in these focused
+    tiering checks
+
+- Helper root-cause follow-up:
+  - the repeated helper crash in `/root/venv-cinderx314` was narrowed to
+    driver-venv startup, not to `pip` itself
+  - focused reproducer:
+    - `python -m pip --version` segfaulted before argument handling
+    - faulthandler showed startup importing `cinderx` from site-packages and
+      crashing in `_cinderx.so` during `jit::initialize()`
+  - direct mitigation proof:
+    - `CINDERX_DISABLE=1 python -m pip --version` succeeded
+    - `CINDERX_DISABLE=1 python -m pyperformance venv show` succeeded
+  - helper fix applied in this branch:
+    - `scripts/arm/remote_update_build_test.sh`
+    - `"$PY" -m build --wheel` -> `"$PY" -m build --wheel -n`
+    - driver-venv maintenance commands now run with `CINDERX_DISABLE=1`
+      alongside `PYTHONJIT=0`
+  - patched-helper rerun result:
+    - the standard helper no longer failed at the previous
+      `python -m pip install -q -U pip` crash point on `/root/venv-cinderx314`
+    - the rerun advanced through build/install and failed later only in an
+      ad-hoc `EXTRA_TEST_CMD` quoting mistake for the temporary tiering harness,
+      not in the helper's build/install flow itself
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
