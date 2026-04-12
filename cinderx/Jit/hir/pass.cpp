@@ -350,6 +350,19 @@ Type outputTypeWithRecursiveCoroHint(
       return TObject;
     }
 
+    case Opcode::kSend: {
+      if (recursive_coro_result_type.has_value() && current_func != nullptr) {
+        auto callee = sendCalleeFunction(static_cast<const Send&>(instr));
+        if (callee != nullptr) {
+          auto* preloader = preloaderManager().find(callee);
+          if (preloader != nullptr && preloader->fullname() == current_func->fullname) {
+            return *recursive_coro_result_type;
+          }
+        }
+      }
+      auto ret_type = sendResultType(static_cast<const Send&>(instr));
+      return ret_type.value_or(TObject);
+    }
     case Opcode::kBuildInterpolation:
     case Opcode::kBuildTemplate:
     case Opcode::kCallIntrinsic:
@@ -378,19 +391,7 @@ Type outputTypeWithRecursiveCoroHint(
     case Opcode::kLoadSpecial:
     case Opcode::kLoadTupleItem:
     case Opcode::kMatchKeys:
-    case Opcode::kSend: {
-      if (recursive_coro_result_type.has_value() && current_func != nullptr) {
-        auto callee = sendCalleeFunction(static_cast<const Send&>(instr));
-        if (callee != nullptr) {
-          auto* preloader = preloaderManager().find(callee);
-          if (preloader != nullptr && preloader->fullname() == current_func->fullname) {
-            return *recursive_coro_result_type;
-          }
-        }
-      }
-      auto ret_type = sendResultType(static_cast<const Send&>(instr));
-      return ret_type.value_or(TObject);
-    }
+      return TObject;
     case Opcode::kWaitHandleLoadCoroOrResult:
     case Opcode::kYieldAndYieldFrom:
     case Opcode::kYieldFrom:

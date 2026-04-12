@@ -542,9 +542,7 @@ std::optional<TupleGenexprPattern> matchInlineableTupleGenexprPattern(
         /*returns_directly=*/false};
   }
 
-  return TupleGenexprPattern{
-      /*resume_off=*/next_instr.baseOffset(),
-      /*returns_directly=*/false};
+  return std::nullopt;
 }
 
 std::optional<AnyGenexprPattern> matchInlineableAnyGenexprPattern(

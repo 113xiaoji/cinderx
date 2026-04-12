@@ -130,6 +130,90 @@ entrypoint:
       - printed `SKIP_PYPERF=1 set; done after smoke.`
       - exited successfully without entering pyperformance setup
 
+- Follow-up runtime crash fixes after helper recovery:
+  - focused ARM reproducer:
+    - worker-style startup with `PYTHONPATH=scripts/arm/pyperf_env_hook`
+    - `PYPERFORMANCE_RUNID=...`
+    - `import pyperf` or `pyperf.Runner()`
+  - first crash fixed:
+    - symptom:
+      - hot-loop OSR segfault while importing `typing` / `importlib.metadata`
+      - backtrace:
+        `sendResultType() -> outputTypeWithRecursiveCoroHint() -> reflowTypes() -> SSAify()`
+    - root cause:
+      - `outputTypeWithRecursiveCoroHint()` still called `sendResultType()`
+        through an over-broad tuple of object-returning opcodes after upstream
+        changes
+    - fix:
+      - isolate `Opcode::kSend`
+      - return plain `TObject` for the remaining non-`Send` opcodes
+    - verification:
+      - new ARM regression:
+        `test_pyperf_worker_import_smoke`
+      - result: `PASS`
+
+  - second crash fixed:
+    - symptom:
+      - richards worker then crashed in
+        `HIRBuilder::tryInlineTupleGenexprCall()`
+      - reproducer path:
+        `argparse/_colorize -> dataclasses._fields_in_init_order`
+    - root cause:
+      - tuple(genexpr) matcher accepted arbitrary continuation after collector
+        finalization, beyond the issue51-supported shapes
+    - fix:
+      - keep only:
+        - direct `RETURN_VALUE`
+        - branch continuation
+      - reject arbitrary fall-through continuation
+    - verification:
+      - `test_pyperf_worker_import_smoke` remained `PASS`
+      - direct `richards` jitlist worker run:
+        - `richards: 83.7 ms`
+        - `PASS`
+
+  - third crash fixed:
+    - symptom:
+      - subsequent worker startup crashed in
+        `AnnotationIndex::from_function()`
+    - root cause:
+      - 3.14 lazy annotations were being touched from the compiler/OSR path
+      - local follow-up bug:
+        `PyDict_Check(nullptr)` after switching away from
+        `PyFunction_GetAnnotations()`
+    - fix:
+      - on 3.14+, only consume already-materialized `func_annotations` dicts
+      - guard null before `PyDict_Check`
+    - verification:
+      - new ARM regression:
+        `test_pyperf_runner_smoke`
+      - result: `PASS`
+      - direct `pyperf.Runner()` worker-style probe:
+        - prints `ok`
+
+  - autojit harness scoping fix:
+    - symptom:
+      - worker inherited driver `PYTHONJITDISABLE=1`, leaving worker JIT off
+    - fix:
+      - autojit gate now keeps the driver effectively interpreted with
+        `PYTHONJITAUTO=1000000`
+      - worker still receives `CINDERX_WORKER_PYTHONJITAUTO=$AUTOJIT_GATE`
+    - verification:
+      - local guardrail:
+        `tests/test_arm_remote_update_build_test.py`
+      - ARM regression:
+        `test_pyperf_worker_autojit_uses_worker_threshold`
+      - result: `PASS`
+
+- Current remaining stop:
+  - `richards` autojit gate still fails in the pyperformance manager path with
+    worker exit code `-11`
+  - current evidence:
+    - worker startup and `pyperf.Runner()` smoke are already green
+    - direct `richards` jitlist worker path is green
+    - remaining failure is specific to the full autojit benchmark worker path,
+      not the earlier startup/helper crashes
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`

@@ -11,8 +11,11 @@ std::unique_ptr<AnnotationIndex> AnnotationIndex::from_function(
   if (getMutableConfig().emit_type_annotation_guards ||
       getConfig().specialized_opcodes) {
 #if PY_VERSION_HEX >= 0x030E0000
-    BorrowedRef<> annotations = PyFunction_GetAnnotations(func);
-    if (!PyDict_Check(annotations)) {
+    // On 3.14+, PyFunction_GetAnnotations() may materialize lazy annotations
+    // by executing Python code. Avoid re-entering Python from the compiler/OSR
+    // path; only use annotations that have already been realized as a dict.
+    BorrowedRef<> annotations{func->func_annotations};
+    if (annotations == nullptr || !PyDict_Check(annotations)) {
       return nullptr;
     }
     BorrowedRef<PyDictObject> dict_annotations{annotations};

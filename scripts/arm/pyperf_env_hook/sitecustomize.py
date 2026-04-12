@@ -102,6 +102,14 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
     raw_jitlist = os.environ.get("CINDERX_JITLIST_ENTRIES", "")
 
     try:
+        # The driver process keeps itself interpreted with PYTHONJITDISABLE=1
+        # for the auto-JIT gate. Worker processes must not inherit that
+        # disable once we've explicitly asked them to enable JIT.
+        if os.environ.get("PYTHONJITDISABLE") not in (None, "") and (
+            worker_autojit not in (None, "") or raw_jitlist
+        ):
+            os.environ.pop("PYTHONJITDISABLE", None)
+
         if os.environ.get("PYPERFORMANCE_RUNID"):
             import platform
 

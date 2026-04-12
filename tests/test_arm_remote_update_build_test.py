@@ -65,6 +65,19 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
             text,
         )
 
+    def test_autojit_gate_uses_driver_threshold_instead_of_global_disable(
+        self,
+    ) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'env PYTHONJITAUTO="1000000" CINDERX_WORKER_PYTHONJITAUTO="$AUTOJIT_GATE"',
+            text,
+        )
+        self.assertNotIn(
+            'env PYTHONJITDISABLE=1 CINDERX_WORKER_PYTHONJITAUTO="$AUTOJIT_GATE"',
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

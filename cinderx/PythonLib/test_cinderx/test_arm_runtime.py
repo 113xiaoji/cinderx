@@ -1974,6 +1974,156 @@ class ArmRuntimeTests(unittest.TestCase):
             )
             self.assertIn("ok", proc.stdout)
 
+    def test_pyperf_worker_import_smoke(self) -> None:
+        # Regression guard:
+        # pyperformance worker-style startup should not segfault while importing
+        # pyperf under the sitecustomize JIT hook path.
+        code = textwrap.dedent(
+            """
+            import pyperf
+
+            print("ok")
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/pyperf_worker_import_smoke.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            hook_dir = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "..",
+                    "..",
+                    "scripts",
+                    "arm",
+                    "pyperf_env_hook",
+                )
+            )
+            env = dict(os.environ)
+            env.update(
+                {
+                    "PYPERFORMANCE_RUNID": "arm-runtime-probe",
+                    "CINDERX_ENABLE_SPECIALIZED_OPCODES": "0",
+                    "PYTHONPATH": hook_dir
+                    + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""),
+                }
+            )
+            proc = subprocess.run(
+                [sys.executable, "-X", "faulthandler", script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            self.assertIn("ok", proc.stdout)
+
+    def test_pyperf_runner_smoke(self) -> None:
+        # Regression guard:
+        # pyperf.Runner() should not segfault under the worker-style startup
+        # environment used by pyperformance benchmark workers.
+        code = textwrap.dedent(
+            """
+            import pyperf
+
+            pyperf.Runner()
+            print("ok")
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/pyperf_runner_smoke.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            hook_dir = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "..",
+                    "..",
+                    "scripts",
+                    "arm",
+                    "pyperf_env_hook",
+                )
+            )
+            env = dict(os.environ)
+            env.update(
+                {
+                    "PYPERFORMANCE_RUNID": "arm-runner-probe",
+                    "CINDERX_ENABLE_SPECIALIZED_OPCODES": "0",
+                    "PYTHONPATH": hook_dir
+                    + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""),
+                }
+            )
+            proc = subprocess.run(
+                [sys.executable, "-X", "faulthandler", script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            self.assertIn("ok", proc.stdout)
+
+    def test_pyperf_worker_autojit_uses_worker_threshold(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            print(jit.is_enabled())
+            """
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/pyperf_worker_autojit_env.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            hook_dir = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "..",
+                    "..",
+                    "scripts",
+                    "arm",
+                    "pyperf_env_hook",
+                )
+            )
+            env = dict(os.environ)
+            env.update(
+                {
+                    "PYPERFORMANCE_RUNID": "arm-autojit-probe",
+                    "CINDERX_WORKER_PYTHONJITAUTO": "50",
+                    "PYTHONJITAUTO": "1000000",
+                    "CINDERX_ENABLE_SPECIALIZED_OPCODES": "0",
+                    "PYTHONPATH": hook_dir
+                    + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""),
+                }
+            )
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            self.assertEqual(proc.stdout.strip(), "True", proc.stdout)
+
     def test_aarch64_call_sites_are_compact(self) -> None:
         # Performance regression guard:
         # on aarch64, repeated helper-call sites can bloat native code size.
