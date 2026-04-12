@@ -181,6 +181,28 @@ struct HotLoopOpcodeCounts {
   int attr_ops{0};
 };
 
+HotLoopOpcodeCounts analyzeFunctionOpcodeCounts(BorrowedRef<PyCodeObject> code) {
+#if PY_VERSION_HEX >= 0x030D0000
+  auto* bytecode = reinterpret_cast<_Py_CODEUNIT*>(code->co_code_adaptive);
+#else
+  auto* bytecode = _PyCode_CODE(code);
+#endif
+
+  int limit = countIndices(code);
+  HotLoopOpcodeCounts counts;
+  for (int idx = 0; idx < limit;) {
+    int opcode = unspecialize(uninstrument(code, idx));
+    if (isCallOpcode(opcode)) {
+      counts.call_ops++;
+    }
+    if (isAttrOpcode(opcode)) {
+      counts.attr_ops++;
+    }
+    idx += inlineCacheSize(code, idx) + 1;
+  }
+  return counts;
+}
+
 HotLoopOpcodeCounts analyzeHotLoopOpcodeCounts(
     BorrowedRef<PyCodeObject> code,
     _Py_CODEUNIT* loop_start,
@@ -374,6 +396,15 @@ PyObject* jitVectorcall(
       auto entry = getInterpretedVectorcall(func);
       return entry(func_obj, stack, nargsf, kwnames);
     }
+  }
+
+  HotLoopOpcodeCounts counts = analyzeFunctionOpcodeCounts(code);
+  if ((counts.call_ops == 0 && counts.attr_ops >= 3) ||
+      (counts.attr_ops >= 6 && counts.attr_ops >= counts.call_ops + 2)) {
+    auto entry = getInterpretedVectorcall(func);
+    setVectorcall(func, entry);
+    incrementShadowcodeCall(code);
+    return entry(func_obj, stack, nargsf, kwnames);
   }
 
   return forcedJitVectorcall(func_obj, stack, nargsf, kwnames);

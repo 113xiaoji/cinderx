@@ -632,6 +632,123 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertTrue(payload["compiled"], proc.stdout)
             self.assertGreater(payload["compiled_size"], 0, proc.stdout)
 
+    def test_attr_heavy_object_helper_skips_autojit_compile(self) -> None:
+        code = textwrap.dedent(
+            """
+            import json
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(10)
+
+            EMPTY = 0
+
+            class Node:
+                def __init__(self, color: int) -> None:
+                    self.color = color
+
+            class Square:
+                def __init__(self, used: bool, neighbours) -> None:
+                    self.used = used
+                    self.neighbours = neighbours
+
+            def useful_fast(square):
+                if not square.used:
+                    for neighbour in square.neighbours:
+                        if neighbour.color == EMPTY:
+                            return True
+                return False
+
+            square = Square(False, [Node(EMPTY) for _ in range(8)])
+            for _ in range(200):
+                useful_fast(square)
+
+            print(
+                json.dumps(
+                    {
+                        "compiled": jit.is_jit_compiled(useful_fast),
+                        "compiled_size": jit.get_compiled_size(useful_fast),
+                    }
+                )
+            )
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/attr_heavy_helper_autojit.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertFalse(payload["compiled"], proc.stdout)
+            self.assertLess(payload["compiled_size"], 0, proc.stdout)
+
+    def test_numeric_hot_loop_still_autojit_compiles(self) -> None:
+        code = textwrap.dedent(
+            """
+            import json
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(10)
+
+            def hot(n: int) -> int:
+                total = 0
+                for i in range(n):
+                    total += i
+                return total
+
+            for _ in range(200):
+                hot(100)
+
+            print(
+                json.dumps(
+                    {
+                        "compiled": jit.is_jit_compiled(hot),
+                        "compiled_size": jit.get_compiled_size(hot),
+                    }
+                )
+            )
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/numeric_hot_loop_autojit.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertTrue(payload["compiled"], proc.stdout)
+            self.assertGreater(payload["compiled_size"], 0, proc.stdout)
+
     def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
         code = textwrap.dedent(
             """
