@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import textwrap
 import unittest
 
 import cinderx.jit as jit
@@ -35,11 +38,32 @@ class TieringApiTests(unittest.TestCase):
         self.assertEqual(jit.get_function_tier(helper), "optimized")
 
     def test_low_threshold_autocompiles_baseline_before_optimized(self) -> None:
-        def helper(x):
-            return x + 1
+        script = textwrap.dedent(
+            """
+            import cinderx.jit as jit
 
-        jit.baseline_compile_after_n_calls(1)
-        jit.compile_after_n_calls(1000000)
-        self.assertEqual(jit.get_function_tier(helper), "interp")
-        helper(7)
-        self.assertEqual(jit.get_function_tier(helper), "baseline")
+            jit.enable()
+
+            def helper(x):
+                return x + 1
+
+            jit.baseline_compile_after_n_calls(1)
+            jit.compile_after_n_calls(1000000)
+            print(jit.get_function_tier(helper))
+            helper(7)
+            print(jit.get_function_tier(helper))
+            helper(7)
+            print(jit.get_function_tier(helper))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [line.strip() for line in result.stdout.splitlines() if line.strip()],
+            ["interp", "interp", "baseline"],
+        )
