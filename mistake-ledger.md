@@ -39,6 +39,9 @@
 - A small residual benchmark delta after a correctness-preserving narrowing pass
   is exactly the kind of signal that should get a thick-sample recheck before
   any more runtime changes.
+- After the helper gate was stable, the next wrong move would have been to keep
+  tightening scheduling policy. The suppression matrix showed the next
+  generalized opportunity is on the compiled-path quality side instead.
 
 ## 2026-04-07
 

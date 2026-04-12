@@ -5264,3 +5264,61 @@ Conclusion:
   - the narrowed helper gate is currently compatible with both:
     - object-heavy helper suppression goals
     - existing hot-loop winners
+
+## 2026-04-12 current-only bm_go profitability opportunities
+
+- Current compiled set after 12 regular auto-JIT `bm_go` runs includes many
+  object-heavy methods:
+  - `Board.useful`
+  - `Board.useful_fast`
+  - `EmptySet.random_choice`
+  - `UCTNode.play`
+  - `UCTNode.random_playout`
+  - `Square.move`
+  - `Square.remove`
+  - `Square.find`
+  - plus several constructors and setup helpers
+- Current `hot_loop_skip` reasons show the existing gates are mostly screening
+  loop-OSR candidates such as:
+  - `Board.score`
+  - `UCTNode.best_visited`
+  - `Square.set_neighbours`
+  - `UCTNode.update_path`
+  - `Square.move`
+  - `Square.remove`
+  all with `attr_heavy_loop`
+- `load_method` inline-cache stats under `PYTHONJITCOLLECTINLINECACHESTATS=1`
+  show essentially no benchmark-specific cache misses for the compiled `bm_go`
+  methods. That means the next likely opportunity is not \"fix obvious
+  load-method cache misses\".
+- Current-only suppression matrix on `bm_go`:
+  - baseline current regular auto-JIT:
+    - median: `0.09277341999950295`
+  - suppress constructors:
+    - median: `0.2750769520007452`
+    - large regression
+  - suppress broad logic method set:
+    - median: `0.6084853360007401`
+    - massive regression
+- Interpretation:
+  - the next high-ROI direction is **not** to compile less of `bm_go`
+  - constructors and logic methods are both contributing positively enough that
+    suppressing them hurts badly
+- More focused current-only suppression:
+  - `Square.find` suppressed:
+    - median: `0.29555792700011807`
+    - much worse than current baseline
+  - `Board.useful_fast` suppressed:
+    - median: `1.0589095140003337`
+    - drastically worse
+- Highest-confidence generalized opportunity:
+  - continue improving **object-heavy exact/self/attr-derived call chains**
+    rather than scheduling more methods away from JIT
+  - the strongest evidence points to:
+    - `Square.find`
+    - `Board.useful_fast`
+    as methods whose compiled paths are materially valuable
+- Practical next step:
+  - revisit the issue60-style profile-driven / attr-derived method-call
+    fast-path work, because `Square.find` remains a strongly leverageful
+    compiled hotspot

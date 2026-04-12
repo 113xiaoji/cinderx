@@ -60,6 +60,10 @@
 - A small benchmark delta right after a policy change still needs thick-sample
   confirmation. The apparent `bm_go` regression after `6a7e4f9a` flipped to a
   slight win once it was rechecked at 15 samples.
+- In object-heavy workloads, a useful triage step is a suppression matrix:
+  suppress constructors, suppress broad logic methods, then suppress one or two
+  hot functions. If everything gets much worse, the next opportunity is
+  probably \"compile better\", not \"compile less\".
 
 ## 2026-04-07 issue85 kickoff
 

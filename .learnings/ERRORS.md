@@ -46,6 +46,9 @@
   methods and broke unrelated runtime tests.
 - I almost treated the first `+6.79%` `bm_go` result after `6a7e4f9a` as the
   new steady-state truth before running a thicker confirmation pass.
+- It is tempting to answer every object-heavy question with \"add a more
+  conservative gate\". The current `bm_go` suppression matrix showed that would
+  have been the wrong instinct here.
 
 ## 2026-04-07
 

@@ -316,3 +316,8 @@
       - `fannkuch`: about `-0.26%`
   - updated takeaway:
     - the narrowed helper gate no longer shows a stable performance regression
+  - next object-heavy profitability readout:
+    - current-only suppression matrix says the next likely win is not more
+      scheduling conservatism
+    - best next opportunity is improving compiled object-heavy call chains such
+      as `Square.find` / `Board.useful_fast`

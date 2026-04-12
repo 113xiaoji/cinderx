@@ -90,6 +90,14 @@
       - current working conclusion:
         - the narrowed helper gate is now in the safe zone on both correctness
           and performance
+      - next profitability readout from current-only `bm_go` probes:
+        - compiling less is not the next win
+        - suppressing constructors regresses badly
+        - suppressing logic methods regresses even more
+        - `Square.find` and `Board.useful_fast` look especially valuable as
+          compiled hotspots
+        - best next generalized direction is to improve object-heavy
+          exact/self/attr-derived call chains, not to add more scheduling gates
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

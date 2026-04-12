@@ -364,6 +364,23 @@
   - the narrowed helper gate now looks acceptable on both correctness and
     performance
 
+## 2026-04-12 next profitability direction
+
+- Current `bm_go` compiled set still includes many object-heavy methods, and
+  they are not obviously a mistake:
+  - suppressing constructors regresses badly
+  - suppressing broad logic methods regresses even more
+- So the next direction should not be \"compile less\".
+- Inline cache stats do not show obvious benchmark-specific `load_method`
+  misses, so the next likely win is not a simple cache-miss bugfix.
+- Focused suppression showed two especially valuable compiled methods:
+  - `Square.find`
+  - `Board.useful_fast`
+- That points to a more promising next generalized opportunity:
+  - keep improving exact/self/attr-derived object call chains
+  - especially issue60-style profile-driven method-call fast paths that make
+    hot calls easier for the inliner to see
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

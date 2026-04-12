@@ -353,3 +353,5 @@ Phase 1 (requirements + platform decision): in_progress
     - current state:
       - helper-gate correctness is green
       - helper-gate performance signal is flat-to-positive
+      - next most promising generalized optimization target is object-heavy
+        call-chain quality, not additional helper scheduling gates
