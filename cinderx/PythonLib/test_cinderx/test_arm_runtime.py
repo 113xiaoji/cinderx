@@ -2124,6 +2124,47 @@ class ArmRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(proc.stdout.strip(), "True", proc.stdout)
 
+    def test_richards_schedule_jitlist_smoke(self) -> None:
+        hook_dir = os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "..",
+                "scripts",
+                "arm",
+                "pyperf_env_hook",
+            )
+        )
+        env = dict(os.environ)
+        env.update(
+            {
+                "CINDERX_JITLIST_ENTRIES": "__main__:*",
+                "PYTHONJITENABLEJITLISTWILDCARDS": "1",
+                "CINDERX_DEFER_WORKER_JIT": "1",
+                "CINDERX_ENABLE_SPECIALIZED_OPCODES": "0",
+                "PYTHONPATH": hook_dir
+                + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""),
+            }
+        )
+        richards_script = (
+            "/root/venv-cinderx314/lib/python3.14/site-packages/"
+            "pyperformance/data-files/benchmarks/bm_richards/run_benchmark.py"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-X", "faulthandler", richards_script, "--debug-single-value"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+        )
+        self.assertIn("richards:", proc.stdout)
+
     def test_aarch64_call_sites_are_compact(self) -> None:
         # Performance regression guard:
         # on aarch64, repeated helper-call sites can bloat native code size.

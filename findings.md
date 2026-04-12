@@ -206,13 +206,62 @@ entrypoint:
       - result: `PASS`
 
 - Current remaining stop:
-  - `richards` autojit gate still fails in the pyperformance manager path with
-    worker exit code `-11`
-  - current evidence:
-    - worker startup and `pyperf.Runner()` smoke are already green
-    - direct `richards` jitlist worker path is green
-    - remaining failure is specific to the full autojit benchmark worker path,
-      not the earlier startup/helper crashes
+  - resolved in this round
+
+- Richards worker stabilization:
+  - focused ARM regressions added:
+    - `test_pyperf_worker_import_smoke`
+    - `test_pyperf_runner_smoke`
+    - `test_pyperf_worker_autojit_uses_worker_threshold`
+    - `test_richards_schedule_jitlist_smoke`
+  - outcomes:
+    - worker import smoke: `PASS`
+    - `pyperf.Runner()` smoke: `PASS`
+    - autojit worker-threshold smoke: `PASS`
+    - richards schedule jitlist smoke: `PASS`
+
+  - root-cause chain resolved:
+    - compile-time worker crashes in:
+      - `outputTypeWithRecursiveCoroHint()`
+      - `tryInlineTupleGenexprCall()`
+      - `AnnotationIndex::from_function()`
+    - worker-startup timing issue:
+      - richards benchmark workers were still fragile when JIT was enabled too
+        early from `sitecustomize.py`
+    - final worker-startup fix:
+      - add `CINDERX_DEFER_WORKER_JIT=1`
+      - helper now passes this only for real pyperformance benchmark gates
+      - `sitecustomize.py` defers worker JIT activation until the first Python
+        call from the benchmark script's `__main__` frame
+      - this keeps probe/smoke workers eager, but avoids richards benchmark
+        import-time failures
+
+  - autojit gate contract fix:
+    - driver keeps itself interpreted with `PYTHONJITAUTO=1000000`
+    - worker receives `CINDERX_WORKER_PYTHONJITAUTO=$AUTOJIT_GATE`
+    - this replaced the earlier parent-process `PYTHONJITDISABLE=1` pattern
+      that leaked into workers and left JIT off
+
+  - exact richards benchmark evidence on ARM:
+    - direct jitlist benchmark run:
+      - `richards: 83.7 ms`
+    - direct autojit benchmark run:
+      - `richards: 102 ms`
+    - both complete without worker crashes
+
+  - full remote entrypoint closure:
+    - `scripts/push_to_arm.ps1 -> scripts/arm/remote_update_build_test.sh`
+    - parameters:
+      - `BENCH=richards`
+      - `AUTOJIT=50`
+      - `SKIP_PYPERF=0`
+      - `RECREATE_PYPERF_VENV=1`
+    - result:
+      - build/install path: `PASS`
+      - ARM runtime filtered path: `PASS`
+      - JIT smoke: `PASS`
+      - pyperformance `richards` jitlist gate: `PASS`
+      - pyperformance `richards` autojit gate: `PASS`
 
 ### Open case: nqueens residual MakeFunction / issue #61
 

@@ -7282,13 +7282,23 @@ void HIRBuilder::insertRunPeriodicActivites(
   check.emit<CondBranch>(eval_breaker, body.block, succ);
   // If set, run periodic tasks
   body.emitSnapshot();
-  body.emit<RunPeriodicTasks>(temps_.AllocateStack(), body.frame);
-  body.emit<Branch>(succ);
+  if (getConfig().frame_mode == FrameMode::kLightweight) {
+    // Lightweight-frame pending handling inside tight compiled loops is still
+    // crash-prone on 3.14 ARM worker-style workloads. Fall back to
+    // interpreter-side handling by deopting at the periodic safe point.
+    body.emit<Deopt>();
+  } else {
+    body.emit<RunPeriodicTasks>(temps_.AllocateStack(), body.frame);
+    body.emit<Branch>(succ);
+  }
 }
 
 void HIRBuilder::insertRunPeriodicActivitesForLoop(
     CFG& cfg,
     BasicBlock* loop_header) {
+  if (getConfig().frame_mode == FrameMode::kLightweight) {
+    return;
+  }
   auto snap = loop_header->entrySnapshot();
   JIT_CHECK(snap != nullptr, "block {} has no entry snapshot", loop_header->id);
   auto fs = snap->frameState();

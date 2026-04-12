@@ -92,6 +92,38 @@ def _append_worker_jitlists(jit_ext, raw_entries: str) -> None:
             seen.add(main_entry)
 
 
+def _enable_worker_jit(
+    worker_autojit: str | None,
+    raw_jitlist: str,
+) -> None:
+    if os.environ.get("PYPERFORMANCE_RUNID"):
+        import platform
+
+        platform.architecture = (
+            lambda executable=None, bits="", linkage="": ("64bit", "ELF")
+        )
+
+    jit = _worker_jit_api()
+    if jit is None:
+        raise RuntimeError("unable to import cinderjit or cinderx.jit")
+
+    jit.enable()
+    if _is_truthy(os.environ.get("CINDERX_ENABLE_SPECIALIZED_OPCODES")):
+        jit.enable_specialized_opcodes()
+
+    if raw_jitlist:
+        # JIT-list entries are compiled on first call when auto-JIT is at
+        # the eager setting. Keep the scope narrow by using the JIT list as
+        # the filter rather than broad worker-wide auto-JIT.
+        jit.compile_after_n_calls(0)
+        _append_worker_jitlists(jit, raw_jitlist)
+    elif worker_autojit not in (None, ""):
+        try:
+            jit.compile_after_n_calls(int(worker_autojit))
+        except Exception:
+            pass
+
+
 if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
     if os.environ.get("PYPERFORMANCE_RUNID"):
         # pyperf metadata collection can trip over os._Environ methods after
@@ -100,41 +132,22 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
 
     worker_autojit = os.environ.get("CINDERX_WORKER_PYTHONJITAUTO")
     raw_jitlist = os.environ.get("CINDERX_JITLIST_ENTRIES", "")
+    defer_worker_jit = _is_truthy(os.environ.get("CINDERX_DEFER_WORKER_JIT"))
 
     try:
-        # The driver process keeps itself interpreted with PYTHONJITDISABLE=1
-        # for the auto-JIT gate. Worker processes must not inherit that
-        # disable once we've explicitly asked them to enable JIT.
-        if os.environ.get("PYTHONJITDISABLE") not in (None, "") and (
-            worker_autojit not in (None, "") or raw_jitlist
-        ):
-            os.environ.pop("PYTHONJITDISABLE", None)
+        if defer_worker_jit and argv0 not in ("", "-c"):
+            def _deferred_enable(frame, event, arg):
+                if event != "call":
+                    return None
+                back = frame.f_back
+                if back is None or back.f_globals.get("__name__") != "__main__":
+                    return None
+                sys.setprofile(None)
+                _enable_worker_jit(worker_autojit, raw_jitlist)
+                return None
 
-        if os.environ.get("PYPERFORMANCE_RUNID"):
-            import platform
-
-            platform.architecture = (
-                lambda executable=None, bits="", linkage="": ("64bit", "ELF")
-            )
-
-        jit = _worker_jit_api()
-        if jit is None:
-            raise RuntimeError("unable to import cinderjit or cinderx.jit")
-
-        jit.enable()
-        if _is_truthy(os.environ.get("CINDERX_ENABLE_SPECIALIZED_OPCODES")):
-            jit.enable_specialized_opcodes()
-
-        if raw_jitlist:
-            # JIT-list entries are compiled on first call when auto-JIT is at
-            # the eager setting. Keep the scope narrow by using the JIT list as
-            # the filter rather than broad worker-wide auto-JIT.
-            jit.compile_after_n_calls(0)
-            _append_worker_jitlists(jit, raw_jitlist)
-        elif worker_autojit not in (None, ""):
-            try:
-                jit.compile_after_n_calls(int(worker_autojit))
-            except Exception:
-                pass
+            sys.setprofile(_deferred_enable)
+        else:
+            _enable_worker_jit(worker_autojit, raw_jitlist)
     except Exception:
         pass

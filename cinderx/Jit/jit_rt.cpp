@@ -1175,7 +1175,11 @@ static bool handle_periodic_activities_on_call(
   _Py_qsbr_quiescent_state(
       (reinterpret_cast<_PyThreadStateImpl*>(tstate))->qsbr);
 #endif
-  return res != nullptr && !PyFunction_Check(callable) &&
+  auto is_python_frame_callable = [](PyObject* obj) {
+    return PyFunction_Check(obj) ||
+        (PyMethod_Check(obj) && PyFunction_Check(PyMethod_GET_FUNCTION(obj)));
+  };
+  return res != nullptr && !is_python_frame_callable(callable) &&
       is_eval_breaker_set(tstate) && _Py_HandlePending(tstate) != 0;
 }
 

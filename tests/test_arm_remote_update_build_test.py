@@ -77,6 +77,10 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
             'env PYTHONJITDISABLE=1 CINDERX_WORKER_PYTHONJITAUTO="$AUTOJIT_GATE"',
             text,
         )
+        self.assertIn(
+            'CINDERX_DEFER_WORKER_JIT=1',
+            text,
+        )
 
 
 if __name__ == "__main__":

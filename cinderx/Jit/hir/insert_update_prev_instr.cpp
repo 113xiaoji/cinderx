@@ -165,6 +165,9 @@ void InsertUpdatePrevInstr::Run([[maybe_unused]] Function& func) {
 
           inited_once = true;
         }
+        if (instr.IsRunPeriodicTasks() || instr.IsDeopt()) {
+          update_one();
+        }
       } else if (hasArbitraryExecution(instr)) {
         update_one();
       }
