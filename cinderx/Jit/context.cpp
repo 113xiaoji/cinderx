@@ -445,16 +445,17 @@ void Context::finalizeMultiThreadedCompile() {
 
 void Context::finalizeFunc(
     BorrowedRef<PyFunctionObject> func,
-    const CompiledFunction& /* compiled */) {
+    const CompiledFunction& compiled) {
   ThreadedCompileSerialize guard;
   addCompiledFunc(func);
+  compiled_func_tiers_[func] = compiled.tier();
 
   // In case the function had previously been deopted.
   removeDeoptedFunc(func);
 
   auto* versions = lookupCompiledVersions(CompilationKey{func});
   JIT_CHECK(versions != nullptr, "Expected compiled tiers for {}", funcFullname(func));
-  CompiledFunction* active = versions->active();
+  CompiledFunction* active = versions->lookup(compiled.tier());
   JIT_CHECK(active != nullptr, "Expected active compiled tier for {}", funcFullname(func));
 
   setVectorcall(func, active->vectorcallEntry());
@@ -540,6 +541,7 @@ void jitgen_data_free(PyGenObject* gen) {
 
 void Context::forgetCode(BorrowedRef<PyFunctionObject> func) {
   compiled_codes_.erase(CompilationKey{func});
+  compiled_func_tiers_.erase(func);
 }
 
 bool Context::didCompile(BorrowedRef<PyFunctionObject> func) {
@@ -548,7 +550,17 @@ bool Context::didCompile(BorrowedRef<PyFunctionObject> func) {
 }
 
 CompiledFunction* Context::lookupFunc(BorrowedRef<PyFunctionObject> func) {
-  return lookupCode(func->func_code, func->func_builtins, func->func_globals);
+  ThreadedCompileSerialize guard;
+  auto* versions = lookupCompiledVersions(CompilationKey{func});
+  if (versions == nullptr) {
+    return nullptr;
+  }
+
+  auto it = compiled_func_tiers_.find(func);
+  if (it != compiled_func_tiers_.end()) {
+    return versions->lookup(it->second);
+  }
+  return versions->active();
 }
 
 CompiledFunction* Context::lookupFunc(
@@ -571,9 +583,18 @@ FunctionTierState Context::lookupFuncTier(BorrowedRef<PyFunctionObject> func) {
   if (!compiled_funcs_.contains(func)) {
     return FunctionTierState::kInterp;
   }
-  auto* versions = lookupCompiledVersions(CompilationKey{func});
-  return versions == nullptr ? FunctionTierState::kInterp
-                             : versions->activeTier();
+  auto it = compiled_func_tiers_.find(func);
+  JIT_CHECK(
+      it != compiled_func_tiers_.end(),
+      "Expected active compiled tier for {}",
+      funcFullname(func));
+  switch (it->second) {
+    case CompileTier::kBaseline:
+      return FunctionTierState::kBaseline;
+    case CompileTier::kOptimized:
+      return FunctionTierState::kOptimized;
+  }
+  JIT_ABORT("Unknown compile tier {}", tierName(it->second));
 }
 
 bool Context::hasOptimizedTier(BorrowedRef<PyFunctionObject> func) {
@@ -614,10 +635,12 @@ void Context::clearCache() {
     orphaned_compiled_codes_.emplace_back(std::move(entry.second));
   }
   compiled_codes_.clear();
+  compiled_func_tiers_.clear();
 }
 
 void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
   compiled_funcs_.erase(func);
+  compiled_func_tiers_.erase(func);
   deopted_funcs_.erase(func);
 
   // This doesn't modify compiled_codes_, so if this is a nested function it can
@@ -656,6 +679,7 @@ bool Context::addCompiledFunc(BorrowedRef<PyFunctionObject> func) {
 }
 
 bool Context::removeCompiledFunc(BorrowedRef<PyFunctionObject> func) {
+  compiled_func_tiers_.erase(func);
   return compiled_funcs_.erase(func) == 1;
 }
 

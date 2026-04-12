@@ -67,3 +67,44 @@ class TieringApiTests(unittest.TestCase):
             [line.strip() for line in result.stdout.splitlines() if line.strip()],
             ["interp", "interp", "baseline"],
         )
+
+    def test_low_threshold_prefers_baseline_over_cached_optimized_tier(self) -> None:
+        script = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+
+            def make_helper():
+                def helper(x):
+                    return x + 1
+                return helper
+
+            jit.compile_after_n_calls(1)
+            optimized = make_helper()
+            optimized(7)
+            optimized(7)
+            print(jit.get_function_tier(optimized))
+
+            jit.baseline_compile_after_n_calls(1)
+            jit.compile_after_n_calls(1000000)
+            baseline = make_helper()
+            print(jit.get_function_tier(baseline))
+            baseline(7)
+            print(jit.get_function_tier(baseline))
+            baseline(7)
+            print(jit.get_function_tier(baseline))
+            print(jit.get_function_tier(optimized))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-S", "-u", "-c", script],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [line.strip() for line in result.stdout.splitlines() if line.strip()],
+            ["optimized", "interp", "interp", "baseline", "optimized"],
+        )

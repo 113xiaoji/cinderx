@@ -898,6 +898,14 @@ bool reoptFunc(BorrowedRef<PyFunctionObject> func) {
     return false;
   }
 
+  bool was_deopted = jitCtx()->deoptedFuncs().contains(func);
+
+  if (!was_deopted &&
+      (getConfig().baseline_compile_after_n_calls.has_value() ||
+       getConfig().compile_after_n_calls.has_value())) {
+    return false;
+  }
+
   // Might be a nested function that was never explicitly deopted, so ignore the
   // result of this.
   jitCtx()->removeDeoptedFunc(func);
@@ -4535,16 +4543,6 @@ Result compilePreloaderImplForTier(
         jit_ctx->finalizeFunc(func, *compiled);
       }
       return Result::OK;
-    }
-
-    if (tier == CompileTier::kBaseline) {
-      if (compiled = jit_ctx->lookupCode(code, builtins, globals);
-          compiled != nullptr) {
-        if (func != nullptr) {
-          jit_ctx->finalizeFunc(func, *compiled);
-        }
-        return Result::OK;
-      }
     }
 
     if (jit_ctx->hasCompletedCompile(key)) {

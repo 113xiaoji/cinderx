@@ -615,6 +615,7 @@ class Context : public IJitContext {
 
   /* Set of which functions have JIT-compiled entrypoints. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> compiled_funcs_;
+  UnorderedMap<BorrowedRef<PyFunctionObject>, CompileTier> compiled_func_tiers_;
 
   /* Set of which functions were JIT-compiled but have since been deopted. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> deopted_funcs_;
