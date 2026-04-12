@@ -270,6 +270,37 @@ entrypoint:
     - `scripts/push_to_arm.ps1` still appears to upload a stale helper payload in this environment
     - this is now treated as a deployment/tooling issue, not as a blocker on the `3.14` superinstruction producer/runtime path itself
 
+- 2026-04-12 phase 1.5 final closure: unique helper upload + full fresh 3.14 shortlist evidence
+  - local final regression:
+    - command:
+      - `$env:PYTHONPATH='.'; uv run --python 3.12 --no-project --with pytest python -m pytest tests/test_interp_superinstruction_workloads.py tests/test_cinder_compiler_superinstructions.py tests/test_bench_compare_modes_workloads.py tests/test_interp_superinstruction_pilot_contract.py tests/test_remote_entrypoint_contract.py -q`
+    - result:
+      - `35 passed in 0.55s`
+  - tooling fix:
+    - `scripts/push_to_arm.ps1` now uploads a unique timestamped remote helper name instead of reusing a fixed `remote_update_build_test.sh` path
+    - motivation:
+      - previous runs proved that a fixed helper filename could leave stale payloads in `/root/work/incoming`
+  - fresh unified remote run:
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\work\code\cinderx4 -ArmHost 124.70.162.35 -UpstreamRemote localorigin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/interpreter-optimization-design -RemoteWorkDir /root/work/cinderx-phase15-producer5 -RemoteDriverVenv /root/venv-cinderx314-pilot -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd 'OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot_phase15_5 bash scripts/arm/interp_superinstruction_pilot.sh'`
+    - result:
+      - unified entrypoint succeeded end to end with the current helper payload
+      - fresh output root:
+        - `/root/work/arm-sync/interp_superinstruction_pilot_phase15_5`
+  - fresh emitted evidence:
+    - `load_fast_pair_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST']`
+    - `store_fast_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_FAST__LOAD_FAST', 'STORE_FAST__LOAD_FAST']`
+    - `load_const_load_fast_loop.cinderx.cinder.json`
+      - `producer == 'cinder'`
+      - `emitted_superinstructions == ['LOAD_CONST__LOAD_FAST']`
+  - closure statement:
+    - `3.14` runtime producer evidence now covers the full Phase 1 shortlist with fresh artifacts from a clean remote workdir
+    - `3.15` remains at static wiring + contract level
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
