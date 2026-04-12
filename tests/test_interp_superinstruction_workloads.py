@@ -20,6 +20,35 @@ def test_workload_specs_are_the_single_source_of_truth() -> None:
         "store_fast_load_fast_loop": "STORE_FAST->LOAD_FAST",
         "load_const_load_fast_loop": "LOAD_CONST->LOAD_FAST",
     }
+    assert [spec.entry_name for spec in workloads.WORKLOAD_SPECS] == [
+        "load_fast_pair_loop",
+        "store_fast_load_fast_loop",
+        "load_const_load_fast_loop",
+    ]
+    assert [spec.source.startswith(f"def {spec.entry_name}(") for spec in workloads.WORKLOAD_SPECS] == [
+        True,
+        True,
+        True,
+    ]
+    assert workloads.get_workload_names() == (
+        "load_fast_pair_loop",
+        "store_fast_load_fast_loop",
+        "load_const_load_fast_loop",
+    )
+
+
+def test_get_workload_spec_returns_the_matching_spec() -> None:
+    spec = workloads.get_workload_spec("store_fast_load_fast_loop")
+    assert spec.name == "store_fast_load_fast_loop"
+    assert spec.entry_name == "store_fast_load_fast_loop"
+    assert spec.source.startswith("def store_fast_load_fast_loop(")
+
+
+def test_build_default_workload_executes_source() -> None:
+    spec = workloads.get_workload_spec("load_const_load_fast_loop")
+    fn = workloads.build_default_workload(spec)
+    assert isinstance(fn(8), int)
+    assert fn(8) == fn(8)
 
 
 def test_load_fast_pair_loop_runs_and_contains_adjacent_load_fast_in_loop() -> None:
