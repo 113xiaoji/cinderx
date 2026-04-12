@@ -27,6 +27,18 @@ class FakeVersionInfo(tuple):
     serial = property(lambda self: self[4])
 
 
+def normalize_inline_cache_entries(entries: object) -> dict[str, int]:
+    if isinstance(entries, dict):
+        return {
+            str(name): int(value)
+            for name, value in entries.items()
+        }
+    return {
+        opcode.opname[index]: int(value)
+        for index, value in enumerate(entries)
+    }
+
+
 def get_custom_opcode_names() -> tuple[str, ...]:
     matches: list[str] = []
     current_section: str | None = None
@@ -66,10 +78,9 @@ def compiler_import_context():
             del sys.modules[name]
 
     sys.version_info = FakeVersionInfo((3, 15, 0, "final", 0))
-    opcode._inline_cache_entries = {
-        opcode.opname[index]: value
-        for index, value in enumerate(original_inline_cache_entries)
-    }
+    opcode._inline_cache_entries = normalize_inline_cache_entries(
+        original_inline_cache_entries
+    )
 
     module = types.ModuleType("cinderx.opcode")
 
@@ -108,17 +119,17 @@ def compiler_import_context():
             sys.modules["cinderx.opcode"] = original_cinderx_opcode
 
 
-def compile_function_instructions(source: str, func_name: str) -> list[str]:
+def compile_function_instructions(source: str, func_name: str) -> list[tuple[int, str]]:
     with compiler_import_context() as (compiler, pycodegen, pyassem):
         class RecordingFlowGraph(pyassem.PyFlowGraph315):
-            captured: dict[str, list[str]] = {}
+            captured: dict[str, list[tuple[int, str]]] = {}
 
             def insert_superinstructions(self) -> None:
                 super().insert_superinstructions()
                 RecordingFlowGraph.captured[self.name] = [
-                    instr.opname
+                    (index, instr.opname)
                     for block in self.ordered_blocks
-                    for instr in block.insts
+                    for index, instr in enumerate(block.insts)
                 ]
 
         class RecordingGenerator(pycodegen.CinderCodeGenerator315):
@@ -129,7 +140,7 @@ def compile_function_instructions(source: str, func_name: str) -> list[str]:
 
 
 def test_emits_double_underscore_load_fast_pair() -> None:
-    names = compile_function_instructions(
+    instructions = compile_function_instructions(
         """
 def load_fast_pair_loop(n):
     total = 0
@@ -141,13 +152,14 @@ def load_fast_pair_loop(n):
 """,
         "load_fast_pair_loop",
     )
+    names = [name for _, name in instructions]
 
     assert "LOAD_FAST__LOAD_FAST" in names
     assert "LOAD_FAST_LOAD_FAST" not in names
 
 
 def test_emits_double_underscore_store_fast_load_fast_pair() -> None:
-    names = compile_function_instructions(
+    instructions = compile_function_instructions(
         """
 def store_fast_load_fast_loop(n):
     total = 0
@@ -159,13 +171,14 @@ def store_fast_load_fast_loop(n):
 """,
         "store_fast_load_fast_loop",
     )
+    names = [name for _, name in instructions]
 
     assert "STORE_FAST__LOAD_FAST" in names
     assert "STORE_FAST_LOAD_FAST" not in names
 
 
 def test_emits_load_const_load_fast_pair() -> None:
-    names = compile_function_instructions(
+    instructions = compile_function_instructions(
         """
 def load_const_load_fast_loop(n):
     total = 0
@@ -175,5 +188,24 @@ def load_const_load_fast_loop(n):
 """,
         "load_const_load_fast_loop",
     )
+    names = [name for _, name in instructions]
+    fused_indices = [
+        index for index, name in enumerate(names) if name == "LOAD_CONST__LOAD_FAST"
+    ]
 
-    assert "LOAD_CONST__LOAD_FAST" in names
+    assert names.count("LOAD_CONST__LOAD_FAST") == 1
+    assert not any(
+        first == "LOAD_CONST" and second == "LOAD_FAST"
+        for first, second in zip(names, names[1:])
+    )
+    assert len(fused_indices) == 1
+    fused_index = fused_indices[0]
+    assert names[fused_index - 2 : fused_index + 5] == [
+        "STORE_FAST",
+        "LOAD_FAST",
+        "LOAD_CONST__LOAD_FAST",
+        "NOP",
+        "BINARY_OP",
+        "BINARY_OP",
+        "STORE_FAST",
+    ]
