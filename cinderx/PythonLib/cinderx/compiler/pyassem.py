@@ -2927,7 +2927,7 @@ class PyFlowGraph314(PyFlowGraph312):
                     self.kill_local(instr_flags, refs, ioparg)
                     refs.append(Ref(i, ioparg))
 
-                elif opcode == "LOAD_FAST_LOAD_FAST":
+                elif opcode == "LOAD_FAST__LOAD_FAST":
                     # Extract the two locals from the combined oparg
                     local1 = ioparg >> 4
                     local2 = ioparg & 0xF
@@ -2938,7 +2938,7 @@ class PyFlowGraph314(PyFlowGraph312):
                     r = refs.pop()
                     self.store_local(instr_flags, refs, ioparg, r)
 
-                elif opcode == "STORE_FAST_LOAD_FAST":
+                elif opcode == "STORE_FAST__LOAD_FAST":
                     # STORE_FAST
                     r = refs.pop()
                     local1 = ioparg >> 4
@@ -2946,6 +2946,10 @@ class PyFlowGraph314(PyFlowGraph312):
                     self.store_local(instr_flags, refs, local1, r)
                     # LOAD_FAST
                     refs.append(Ref(i, local2))
+
+                elif opcode == "LOAD_CONST__LOAD_FAST":
+                    refs.append(Ref(i, NOT_LOCAL))
+                    refs.append(Ref(i, ioparg & 0xF))
 
                 elif opcode == "STORE_FAST_STORE_FAST":
                     # STORE_FAST
@@ -3071,7 +3075,7 @@ class PyFlowGraph314(PyFlowGraph312):
                 if i not in instr_flags:
                     if instr.opname == "LOAD_FAST":
                         instr.opname = "LOAD_FAST_BORROW"
-                    elif instr.opname == "LOAD_FAST_LOAD_FAST":
+                    elif instr.opname == "LOAD_FAST__LOAD_FAST":
                         instr.opname = "LOAD_FAST_BORROW_LOAD_FAST_BORROW"
 
     def get_generator_prefix(self) -> list[Instruction]:
@@ -3180,12 +3184,17 @@ class PyFlowGraph314(PyFlowGraph312):
                 if instr.opname == "LOAD_FAST":
                     if next_instr.opname == "LOAD_FAST":
                         self.make_super_instruction(
-                            instr, next_instr, "LOAD_FAST_LOAD_FAST"
+                            instr, next_instr, "LOAD_FAST__LOAD_FAST"
+                        )
+                elif instr.opname == "LOAD_CONST":
+                    if next_instr.opname == "LOAD_FAST":
+                        self.make_super_instruction(
+                            instr, next_instr, "LOAD_CONST__LOAD_FAST"
                         )
                 elif instr.opname == "STORE_FAST":
                     if next_instr.opname == "LOAD_FAST":
                         self.make_super_instruction(
-                            instr, next_instr, "STORE_FAST_LOAD_FAST"
+                            instr, next_instr, "STORE_FAST__LOAD_FAST"
                         )
                     elif next_instr.opname == "STORE_FAST":
                         self.make_super_instruction(
