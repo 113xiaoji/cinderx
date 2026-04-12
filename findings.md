@@ -6,6 +6,115 @@ entrypoint:
 
 `scripts/push_to_arm.ps1` -> `scripts/arm/remote_update_build_test.sh`
 
+### 2026-04-12 Phase 1 superinstruction pilot driver evidence
+
+- Phase 1 pilot shortlist:
+  - `LOAD_FAST__LOAD_FAST`
+  - `STORE_FAST__LOAD_FAST`
+  - `LOAD_CONST__LOAD_FAST`
+- Pilot workloads:
+  - `load_fast_pair_loop`
+  - `store_fast_load_fast_loop`
+  - `load_const_load_fast_loop`
+- Pilot artifact root:
+  - `/root/work/arm-sync/interp_superinstruction_pilot`
+- Local contract and regression verification:
+  - command:
+    - `$env:PYTHONPATH='.'; uv run --python 3.12 --no-project --with pytest python -m pytest tests/test_interp_superinstruction_pilot_contract.py tests/test_interpreter_superinstruction_contract.py tests/test_bench_compare_modes_workloads.py tests/test_interp_superinstruction_workloads.py tests/test_interpreter_superinstruction_candidates.py -q`
+  - result:
+    - `17 passed in 0.18s`
+  - scope:
+    - `tests/test_interp_superinstruction_pilot_contract.py` now locks the pilot shell driver to the 3 Phase 1 workloads and to `bench_compare_modes.py`
+    - `scripts/arm/interp_superinstruction_pilot.sh` emits:
+      - `${workload}.cpython.json`
+      - `${workload}.cinderx.json`
+    - default output directory:
+      - `/root/work/arm-sync/interp_superinstruction_pilot`
+
+- Unified ARM remote validation attempts:
+  - worktree / validation branch:
+    - `codex/phase1-pilot-remote-verify`
+    - commit used for remote tries: `45690d628686f35728dbb040ae2553fbfeb204f4`
+  - attempt 1:
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\Users\zhouyongzhe\.config\superpowers\worktrees\cinderx4\codex\phase1-pilot-remote-verify -WorkBranch codex/phase1-pilot-remote-verify -ArmHost 124.70.162.35 -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd "OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh; find /root/work/arm-sync/interp_superinstruction_pilot -maxdepth 1 -type f | sort"`
+    - result:
+      - blocked in `sync_upstream.ps1` at `git fetch origin`
+      - failure:
+        - `fatal: unable to access 'https://github.com/113xiaoji/cinderx.git/': Failed to connect to github.com port 443`
+      - assessment:
+        - environment/network blocker on Windows host, not a pilot-script code failure
+  - attempt 2:
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\Users\zhouyongzhe\.config\superpowers\worktrees\cinderx4\codex\phase1-pilot-remote-verify -UpstreamRemote localorigin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/phase1-pilot-remote-verify -ArmHost 124.70.162.35 -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd "OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh; find /root/work/arm-sync/interp_superinstruction_pilot -maxdepth 1 -type f | sort"`
+    - result:
+      - unified entrypoint completed source sync and ARM build
+      - remote helper then failed before `EXTRA_VERIFY_CMD`
+      - failure:
+        - `/root/work/incoming/remote_update_build_test.sh: line 96: ... Segmentation fault (core dumped) PYTHONJIT=0 python -m pip install -q -U pip`
+      - assessment:
+        - remote environment blocker in existing driver venv `/root/venv-cinderx314`
+        - pilot driver itself did not run, so no JSON artifacts were produced under `/root/work/arm-sync/interp_superinstruction_pilot`
+  - follow-up diagnosis:
+    - direct ARM command:
+      - `ssh root@124.70.162.35 "set -e; rm -rf /root/venv-cinderx314-pilot; /opt/python-3.14/bin/python3.14 -m venv /root/venv-cinderx314-pilot; . /root/venv-cinderx314-pilot/bin/activate; PYTHONJIT=0 python -m pip install -q -U pip; python -V; python -m pip --version"`
+    - result:
+      - `Python 3.14.3`
+      - `pip 26.0.1 ...`
+    - assessment:
+      - fresh venv bootstrap succeeds, which points to old-driver-venv state rather than the pilot code path
+  - attempt 3:
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\Users\zhouyongzhe\.config\superpowers\worktrees\cinderx4\codex\phase1-pilot-remote-verify -UpstreamRemote localorigin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/phase1-pilot-remote-verify -ArmHost 124.70.162.35 -RemoteDriverVenv /root/venv-cinderx314-pilot -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd "OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh; find /root/work/arm-sync/interp_superinstruction_pilot -maxdepth 1 -type f | sort"`
+    - result:
+      - blocked during archive upload before remote execution
+      - failure:
+        - `kex_exchange_identification: read: Unknown error`
+        - `scp: Connection closed`
+      - assessment:
+        - transient SSH / network blocker during unified entrypoint upload
+  - attempt 4:
+    - command:
+      - `powershell -ExecutionPolicy Bypass -File scripts/push_to_arm.ps1 -RepoPath C:\Users\zhouyongzhe\.config\superpowers\worktrees\cinderx4\codex\phase1-pilot-remote-verify -UpstreamRemote localorigin -UpstreamBranch bench-cur-7c361dce -WorkBranch codex/phase1-pilot-remote-verify -ArmHost 124.70.162.35 -RemoteDriverVenv /root/venv-cinderx314-pilot -SkipPyperformance -SkipArmRuntimeValidation -ExtraVerifyCmd "OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh && find /root/work/arm-sync/interp_superinstruction_pilot -maxdepth 1 -type f | sort"`
+    - result:
+      - repeated 3 times with bounded retry
+      - each run got past `sync_upstream.ps1`, but upload still flapped on SSH/SCP before remote execution
+      - representative failures:
+        - `Connection closed by 124.70.162.35 port 22`
+        - `kex_exchange_identification: read: Unknown error`
+        - `scp: Connection closed`
+      - assessment:
+        - remote infrastructure fluctuation, not a pilot-script code blocker
+
+  - remote helper execution using the uploaded unified-entrypoint payload:
+    - command:
+      - `ssh root@124.70.162.35 "chmod +x /root/work/incoming/remote_update_build_test.sh && INCOMING_DIR=/root/work/incoming WORKDIR=/root/work/cinderx-main PYTHON=/opt/python-3.14/bin/python3.14 DRIVER_VENV=/root/venv-cinderx314-pilot BENCH=richards AUTOJIT=50 PARALLEL=1 SKIP_PYPERF=1 SKIP_ARM_RUNTIME_VALIDATION=1 RECREATE_PYPERF_VENV=0 EXTRA_TEST_CMD= EXTRA_VERIFY_CMD='OUT_DIR=/root/work/arm-sync/interp_superinstruction_pilot bash scripts/arm/interp_superinstruction_pilot.sh && find /root/work/arm-sync/interp_superinstruction_pilot -maxdepth 1 -type f | sort' /root/work/incoming/remote_update_build_test.sh"`
+    - result:
+      - `remote_update_build_test.sh` completed successfully with the same payload that `scripts/push_to_arm.ps1` had already uploaded
+      - pilot driver executed on ARM with the new driver venv `/root/venv-cinderx314-pilot`
+      - artifact list:
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_const_load_fast_loop.cinderx.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_const_load_fast_loop.cpython.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_fast_pair_loop.cinderx.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/load_fast_pair_loop.cpython.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/store_fast_load_fast_loop.cinderx.json`
+        - `/root/work/arm-sync/interp_superinstruction_pilot/store_fast_load_fast_loop.cpython.json`
+      - JSON contract spot-check:
+        - `load_const_load_fast_loop.cinderx.json -> cinderx / interp / load_const_load_fast_loop`
+        - `load_const_load_fast_loop.cpython.json -> cpython / interp / load_const_load_fast_loop`
+        - `load_fast_pair_loop.cinderx.json -> cinderx / interp / load_fast_pair_loop`
+        - `load_fast_pair_loop.cpython.json -> cpython / interp / load_fast_pair_loop`
+        - `store_fast_load_fast_loop.cinderx.json -> cinderx / interp / store_fast_load_fast_loop`
+        - `store_fast_load_fast_loop.cpython.json -> cpython / interp / store_fast_load_fast_loop`
+
+- Overall status for this round:
+  - local TDD + contract coverage: complete
+  - unified remote entrypoint exercised multiple times: yes
+  - end-to-end pilot artifact generation from the uploaded unified-entrypoint payload: completed
+  - residual risk:
+    - Windows-to-ARM SSH/SCP transport via `scripts/push_to_arm.ps1` is still flaky in this environment
+    - this is an infrastructure risk, not a pilot-script contract or artifact-generation code risk
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
