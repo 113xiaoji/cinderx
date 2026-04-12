@@ -4395,11 +4395,6 @@ std::vector<BorrowedRef<PyFunctionObject>> preloadFuncAndDeps(
             targets.push_back(target);
           }
         }
-        JIT_LOG(
-            "collectProfiledMWVFunctionTargets owner={} mwv_sites={} targets={}",
-            funcFullname(owner),
-            mwv_sites,
-            targets.size());
         return targets;
       };
 
