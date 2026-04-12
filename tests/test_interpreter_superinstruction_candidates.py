@@ -21,7 +21,7 @@ def test_phase1_candidates_map_to_expected_source_pairs_and_workloads() -> None:
         (candidate.source_pair, candidate.workloads)
         for candidate in candidates.PHASE1_CANDIDATES
     ] == [
-        ("LOAD_FAST->LOAD_FAST", ("load_fast_pair_loop",)),
-        ("STORE_FAST->LOAD_FAST", ("store_fast_load_fast_loop",)),
-        ("LOAD_CONST->LOAD_FAST", ("load_const_load_fast_loop",)),
+        (("LOAD_FAST", "LOAD_FAST"), ("load_fast_pair_loop",)),
+        (("STORE_FAST", "LOAD_FAST"), ("store_fast_load_fast_loop",)),
+        (("LOAD_CONST", "LOAD_FAST"), ("load_const_load_fast_loop",)),
     ]
