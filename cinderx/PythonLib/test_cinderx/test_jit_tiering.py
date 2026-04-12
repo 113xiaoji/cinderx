@@ -57,7 +57,7 @@ class TieringApiTests(unittest.TestCase):
             """
         )
         result = subprocess.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-S", "-u", "-c", script],
             capture_output=True,
             check=False,
             text=True,
