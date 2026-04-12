@@ -82,6 +82,39 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
             text,
         )
 
+    def test_pyperf_cfg_rewrite_passes_path_before_heredoc(self) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'python - "$PYVENV_PATH/pyvenv.cfg" <<\'PY\'',
+            text,
+        )
+        self.assertNotIn(
+            'python - <<\'PY\' "$PYVENV_PATH/pyvenv.cfg"',
+            text,
+        )
+
+    def test_autojit_log_is_written_to_helper_artifact_dir(self) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'LOG="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.log"',
+            text,
+        )
+        self.assertNotIn(
+            'LOG="/tmp/jit_${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.log"',
+            text,
+        )
+
+    def test_compile_summary_heredoc_passes_args_before_redirect(self) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'python - "$COMPILE_SUMMARY_JSON" "$BENCH" "$AUTOJIT_GATE" "$AUTOJIT_USE_JITLIST_FILTER" <<\'PY\' \\',
+            text,
+        )
+        self.assertNotIn(
+            'python - <<\'PY\' "$COMPILE_SUMMARY_JSON" "$BENCH" "$AUTOJIT_GATE" "$AUTOJIT_USE_JITLIST_FILTER" \\',
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

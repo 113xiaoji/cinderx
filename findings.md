@@ -4994,3 +4994,52 @@ Conclusion:
   - interpretation:
     - the decorator fix unblocked unittest discovery, but the baseline threshold still does not flip the function into `baseline` on the second call
     - `force_compile()` still promotes to `optimized`
+
+### Validation extension: `go` gate helper hardening (`2026-04-12`)
+
+- Local helper guardrails:
+  - `.venv\Scripts\python.exe -m unittest tests.test_arm_remote_update_build_test -v`
+  - result:
+    - `Ran 9 tests ... OK`
+  - added assertions:
+    - `pyvenv.cfg` rewrite passes the target path before the heredoc redirect
+    - autojit JIT logs are written under `/root/work/arm-sync`
+    - compile-summary heredoc passes argv before the redirect
+
+- Remote helper mismatch diagnosis:
+  - the previously observed
+    - `/tmp/jit_go_autojit50_...log: Permission denied`
+  - did not come from the checked-in helper body itself
+  - remote `/root/work/incoming/remote_update_build_test.sh` had drifted/corrupted contents:
+    - local helper ends at line `404`
+    - remote helper had an extra stray line:
+      - `"$LOG" || true`
+    - that line was being executed as a command at remote line `405`
+  - after re-uploading a clean helper, the remote helper SHA256 matched the local worktree copy
+
+- Clean rerun using the re-uploaded helper plus a fresh `git archive --prefix=cinderx-src/` tar:
+  - command shape:
+    - `WORKDIR=/root/work/cinderx-main-goverify-20260412b BENCH=go PYPERF_VENV_BENCHMARKS=go AUTOJIT=50 RECREATE_PYPERF_VENV=1 /root/work/incoming/remote_update_build_test.sh`
+  - result:
+    - source extract / rsync: `PASS`
+    - no-isolation wheel build: `PASS`
+    - run advanced past the earlier helper/log-file failure
+    - the current stop moved earlier in the standard gate to ARM runtime failures
+
+- Current standard-entry blocker for `go`:
+  - the full remote entry now fails in `cinderx/PythonLib/test_cinderx/test_arm_runtime.py` before the `go` pyperformance gate starts
+  - observed failing tests:
+    - `test_phase0_loop_osr_exports_entries`
+    - `test_phase0_loop_osr_test_entry_executes_loop`
+    - `test_phase0_osr_test_entry_preserves_live_local_refcounts`
+    - `test_phase1_once_call_hot_loop_enters_jit_same_activation`
+    - `test_array_double_store_lowers_to_store_array_item`
+    - `test_list_annotation_enables_exact_slice_and_item_specialization`
+  - failing run summary:
+    - `Ran 90 tests in 64.502s`
+    - `FAILED (failures=5, errors=1)`
+
+- Interpretation:
+  - the original `go` helper stop was a helper-sync/corruption problem, not a trusted benchmark failure
+  - with a clean helper, the unified remote entry is currently blocked by pre-existing ARM runtime red tests on this branch
+  - until those runtime failures are addressed, `go` does not yet have a trustworthy full-entry pyperformance result for this branch state
