@@ -5191,8 +5191,137 @@ Conclusion:
         - `0.25092492700059665 s`
       - compile summary:
         - `/root/work/arm-sync/go_autojit50_20260412_201519_compile_summary.json`
-        - `main_compile_count = 29`
-        - `total_compile_count = 293`
-        - `other_compile_count = 264`
+      - `main_compile_count = 29`
+      - `total_compile_count = 293`
+      - `other_compile_count = 264`
       - log:
         - `/root/work/arm-sync/go_autojit50_20260412_201519.log`
+
+### pyperformance matrix follow-up (`2026-04-14`)
+
+- Matrix benchmark set:
+  - `go,richards,richards_super,deltablue,raytrace,nqueens,nbody,generators,coroutines,comprehensions,float,coverage,unpack_sequence`
+
+- Current branch full autojit50 subset:
+  - workdir:
+    - `/root/work/cinderx-matrix-current-20260414`
+  - artifact:
+    - `/root/work/arm-sync/matrix_current_autojit50_20260414.json`
+  - medians:
+    - `comprehensions`: `0.0031107179999025902`
+    - `coroutines`: `0.04872727899999063`
+    - `coverage`: `0.2578226719999748`
+    - `deltablue`: `0.08850535499999523`
+    - `float`: `0.16173351800000546`
+    - `generators`: `0.09128740199997765`
+    - `go`: `0.17896726999993007`
+    - `nbody`: `0.24919825500001025`
+    - `nqueens`: `0.7499629379999533`
+    - `raytrace`: `0.5584601119999775`
+    - `richards`: `0.12934955699995498`
+    - `richards_super`: `0.14198939400000654`
+    - `unpack_sequence`: `0.004028196932500236`
+
+- Current branch nojit subset:
+  - artifact:
+    - `/root/work/arm-sync/matrix_current_nojit_20260414.json`
+  - compare artifact:
+    - `/root/work/arm-sync/matrix_current_autojit50_vs_nojit_20260414.json`
+  - medians:
+    - `comprehensions`: `4.068299995196867e-05`
+    - `coroutines`: `0.028202811000028305`
+    - `coverage`: `0.1026464849999229`
+    - `deltablue`: `0.004146262999938699`
+    - `float`: `0.09163995600010821`
+    - `generators`: `0.032834447000141154`
+    - `go`: `0.12689405599985548`
+    - `nbody`: `0.1406540689999929`
+    - `nqueens`: `0.11924599999997554`
+    - `raytrace`: `0.3550441099998807`
+    - `richards`: `0.0523736560000998`
+    - `richards_super`: `0.059053704999996626`
+    - `unpack_sequence`: `1.0350749960252869e-07`
+  - autojit50 vs nojit deltas:
+    - all 13 benchmarks were slower under `autojit50`
+    - notable deltas:
+      - `go`: `+41.04%`
+      - `richards`: `+146.97%`
+      - `richards_super`: `+140.44%`
+      - `raytrace`: `+57.29%`
+      - `nbody`: `+77.17%`
+      - `nqueens`: `+528.92%`
+    - interpretation:
+      - under `pyperformance --debug-single-value`, current autojit still pays
+        cold-start / compile overhead and does not show a broad throughput win
+
+- Current branch jitlist subset:
+  - artifact:
+    - `/root/work/arm-sync/matrix_current_jitlist_20260414.json`
+  - compare artifacts:
+    - `/root/work/arm-sync/matrix_current_jitlist_vs_nojit_20260414.json`
+    - `/root/work/arm-sync/matrix_current_autojit50_vs_jitlist_20260414.json`
+  - medians:
+    - `comprehensions`: `0.008151051999902847`
+    - `coroutines`: `0.04944889100011096`
+    - `coverage`: `0.24224125899991122`
+    - `deltablue`: `0.08446895799988852`
+    - `float`: `0.10249689499983106`
+    - `generators`: `0.06769229499991525`
+    - `go`: `0.24799945399990975`
+    - `nbody`: `0.19815563999986807`
+    - `nqueens`: `0.15905224099992665`
+    - `raytrace`: `0.5173011560000305`
+    - `richards`: `0.08179413400011981`
+    - `richards_super`: `0.09469516000012845`
+    - `unpack_sequence`: `7.815499941443705e-08`
+  - jitlist vs nojit deltas:
+    - slower on 12 / 13 benchmarks
+    - only `unpack_sequence` was faster: `-24.49%`
+    - notable slowdowns:
+      - `go`: `+95.44%`
+      - `richards`: `+56.17%`
+      - `richards_super`: `+60.35%`
+      - `raytrace`: `+45.70%`
+  - autojit50 vs jitlist:
+    - `autojit50` beats `jitlist` on:
+      - `comprehensions`: `-61.84%`
+      - `go`: `-27.84%`
+      - `coroutines`: `-1.46%`
+    - but is slower on most other matrix entries
+
+- Baseline A/B status (`2416a3d2132eb38cf0b3b8fc677ddda1a5786aad`):
+  - workdir:
+    - `/root/work/cinderx-matrix-base-20260414`
+  - rationale:
+    - this is the clean branch baseline that current work was originally rebased
+      onto
+  - result:
+    - the baseline passed the ARM runtime suite under the current helper
+    - but the same autojit50 subset benchmarking path was not stable enough to
+      produce a usable summary
+  - observed failures:
+    - large subset attempt:
+      - repeated worker exits `-11` on `go`, `nbody`, `nqueens`, `raytrace`,
+        `richards`, `richards_super`, `unpack_sequence`
+    - reduced “stable” subset attempt:
+      - still failed for `comprehensions`, `coroutines`, `coverage`,
+        `deltablue`, `float`, `generators`
+    - outcome:
+      - no baseline matrix summary JSON was produced
+  - interpretation:
+    - current branch shows a clear matrix-level stability improvement over the
+      chosen baseline
+    - but a direct current-vs-baseline autojit performance delta cannot be
+      computed from this baseline because the baseline does not stay up long
+      enough under the same benchmark harness
+
+- Overall assessment:
+  - stability:
+    - current branch is materially better; it can complete the 13-benchmark
+      matrix where the selected baseline cannot
+  - cold pyperformance performance:
+    - no broad speedup signal yet
+    - both `jitlist` and `autojit50` are generally slower than `nojit` under
+      `--debug-single-value`
+    - the likely reason is that compilation / startup overhead still dominates
+      in this measurement mode
