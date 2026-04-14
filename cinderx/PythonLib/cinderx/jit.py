@@ -3,7 +3,7 @@
 # pyre-strict
 
 from contextlib import contextmanager
-from typing import Any, AsyncGenerator, Callable, Coroutine, Generator, TypeVar
+from typing import Any, AsyncGenerator, Callable, Coroutine, Generator, Mapping, TypeVar
 from warnings import catch_warnings, simplefilter, warn
 
 
@@ -43,6 +43,7 @@ try:
         get_compiled_stack_size,
         get_function_compilation_time,
         get_function_compile_profile_stats,
+        get_live_function_compile_profile_stats,
         get_function_hir_opcode_counts,
         get_inlined_functions_stats,
         get_jit_list,
@@ -169,6 +170,11 @@ except ImportError:
     def get_function_compile_profile_stats(func: FuncAny) -> dict[str, int] | None:
         return None
 
+    def get_live_function_compile_profile_stats(
+        func: FuncAny,
+    ) -> dict[str, int] | None:
+        return None
+
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:
         return {}
 
@@ -248,3 +254,22 @@ def pause(deopt_all: bool = False) -> Generator[None, None, None]:
             with catch_warnings():
                 simplefilter("ignore")
                 enable()
+
+
+def recompile_if_profile_mature(
+    func: FuncAny,
+    compiled_stats: Mapping[str, int] | None = None,
+) -> bool:
+    compiled = (
+        dict(compiled_stats)
+        if compiled_stats is not None
+        else get_function_compile_profile_stats(func)
+    )
+    live = get_live_function_compile_profile_stats(func)
+    if compiled is None or live is None:
+        return False
+    if live.get("mwv_sites", 0) <= compiled.get("mwv_sites", 0):
+        return False
+    if is_jit_compiled(func) and not force_uncompile(func):
+        return False
+    return force_compile(func)

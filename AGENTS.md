@@ -153,6 +153,17 @@
         - current recommendation:
           - build the next timing/recompile work on top of this metadata rather
             than another threshold-only delay heuristic
+      - explicit recompile-after-maturation prototype:
+        - new live-stats accessor:
+          - `jit.get_live_function_compile_profile_stats(func)`
+        - new Python helper:
+          - `jit.recompile_if_profile_mature(func, compiled_stats=None)`
+        - helper on `/root/venv-cinderx314-reprofile2`:
+          - `Ran 102 tests in 66.892s`
+          - `OK`
+        - current recommendation:
+          - keep the next step focused on turning this explicit prototype into
+            a safe automatic policy
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

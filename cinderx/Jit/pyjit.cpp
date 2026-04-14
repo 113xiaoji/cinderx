@@ -2507,6 +2507,53 @@ PyObject* get_function_compile_profile_stats(PyObject* /* self */, PyObject* arg
   return dict.release();
 }
 
+PyObject* get_live_function_compile_profile_stats(
+    PyObject* /* self */,
+    PyObject* arg) {
+  if (jitCtx() == nullptr || !PyFunction_Check(arg)) {
+    Py_RETURN_NONE;
+  }
+  BorrowedRef<PyFunctionObject> func{arg};
+  BorrowedRef<PyCodeObject> code{func->func_code};
+
+  CompileProfileStats stats;
+  stats.calls_at_compile = countCalls(code);
+  stats.bytecode_hash = hashBytecode(code);
+  HotLoopOpcodeCounts opcode_counts = analyzeFunctionOpcodeCounts(code);
+  stats.call_ops = opcode_counts.call_ops;
+  stats.attr_ops = opcode_counts.attr_ops;
+  MethodLoadSpecializationStats method_stats =
+      analyzeMethodLoadSpecialization(code);
+  stats.method_load_sites = method_stats.method_load_sites;
+  stats.mwv_sites = method_stats.mwv_sites;
+
+  Ref<> dict = Ref<>::steal(PyDict_New());
+  if (dict == nullptr) {
+    return nullptr;
+  }
+
+  auto set_long = [&](const char* name, long long value) -> int {
+    Ref<> value_obj = Ref<>::steal(PyLong_FromLongLong(value));
+    return value_obj != nullptr ? PyDict_SetItemString(dict, name, value_obj) : -1;
+  };
+  auto set_ulong = [&](const char* name, unsigned long long value) -> int {
+    Ref<> value_obj = Ref<>::steal(PyLong_FromUnsignedLongLong(value));
+    return value_obj != nullptr ? PyDict_SetItemString(dict, name, value_obj) : -1;
+  };
+
+  if (
+      set_ulong("calls_at_compile", stats.calls_at_compile) < 0 ||
+      set_ulong("bytecode_hash", stats.bytecode_hash) < 0 ||
+      set_long("call_ops", stats.call_ops) < 0 ||
+      set_long("attr_ops", stats.attr_ops) < 0 ||
+      set_long("method_load_sites", stats.method_load_sites) < 0 ||
+      set_long("mwv_sites", stats.mwv_sites) < 0) {
+    return nullptr;
+  }
+
+  return dict.release();
+}
+
 PyObject* mlock_profiler_dependencies(PyObject* /* self */, PyObject*) {
   if (jitCtx() == nullptr) {
     Py_RETURN_NONE;
@@ -3600,6 +3647,12 @@ PyMethodDef jit_methods[] = {
      PyDoc_STR(
          "Return compile-time bytecode maturity/profile stats for the "
          "JIT-compiled version of this function.")},
+    {"get_live_function_compile_profile_stats",
+     get_live_function_compile_profile_stats,
+     METH_O,
+     PyDoc_STR(
+         "Return current bytecode maturity/profile stats for this function's "
+         "current code object.")},
     {"mlock_profiler_dependencies",
      mlock_profiler_dependencies,
      METH_NOARGS,

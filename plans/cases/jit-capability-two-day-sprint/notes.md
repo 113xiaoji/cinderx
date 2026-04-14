@@ -531,6 +531,31 @@
     design
   - it gives us evidence without perturbing current runtime policy
 
+## 2026-04-15 explicit recompile prototype
+
+- Added:
+  - `get_live_function_compile_profile_stats(func)`
+  - Python helper `jit.recompile_if_profile_mature(func, compiled_stats=None)`
+- The helper is intentionally explicit:
+  - it does not auto-trigger during normal execution
+  - it uses a prior compile-profile snapshot as the baseline
+  - it only recompiles when live `mwv_sites` exceeds the older compiled value
+- ARM validation:
+  - helper on `/root/venv-cinderx314-reprofile2` with the unrelated local
+    `go_like_collection_method_chain_inlines_find_after_helper_inline` red test
+    skipped:
+    - `Ran 102 tests in 66.892s`
+    - `OK`
+- The new regression test proves a narrow but important closed loop:
+  - shallow compile: `mwv_sites = 0`
+  - deep interpreter warmup: live `mwv_sites >= 1`
+  - explicit recompile helper returns `True`
+  - recompiled profile records the higher `mwv_sites`
+- Conclusion:
+  - this is the right next stepping stone
+  - it proves the maturity-aware recompile idea works in principle before we
+    consider any automatic policy
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

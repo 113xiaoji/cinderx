@@ -5564,3 +5564,38 @@ Conclusion:
   - it does not try to solve compile timing yet
   - but it gives the next recompile-after-maturation design a concrete data
     surface instead of relying on heuristics alone
+
+## 2026-04-15 explicit recompile-after-maturation prototype
+
+- Added a second observability/driver layer on top of compile-profile metadata:
+  - new C API:
+    - `get_live_function_compile_profile_stats(func)`
+  - new Python helper:
+    - `jit.recompile_if_profile_mature(func, compiled_stats=None)`
+- Intended usage:
+  - compile once in a shallow profile state
+  - retain the earlier compile-profile snapshot
+  - later, after deeper interpreter specialization matures the code object,
+    compare live stats to the old snapshot
+  - if `mwv_sites` has increased, explicitly `force_uncompile()` +
+    `force_compile()`
+- New regression guard:
+  - `test_recompile_if_profile_mature_updates_compile_profile`
+- ARM validation:
+  - helper on `/root/venv-cinderx314-reprofile2` with the existing unrelated
+    local `go_like_collection_method_chain_inlines_find_after_helper_inline`
+    red test skipped:
+    - `Ran 102 tests in 66.892s`
+    - `OK`
+  - the new prototype test verifies:
+    - initial compile profile has `mwv_sites = 0`
+    - later live profile has `mwv_sites >= 1`
+    - `recompile_if_profile_mature(...) == True`
+    - post-recompile compile profile has `mwv_sites >= 1`
+    - the function still runs correctly
+- Updated interpretation:
+  - this is the first end-to-end proof that a maturity-aware recompile path is
+    viable in a narrow explicit form
+  - it still does not change default runtime policy
+  - but it gives us a concrete stepping stone toward automatic
+    recompile-after-profile-maturation
