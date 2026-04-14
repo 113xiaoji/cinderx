@@ -5785,6 +5785,73 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreaterEqual(int(lines[-2]), 2, proc.stdout)
             self.assertEqual(int(lines[-1]), 55, proc.stdout)
 
+    def test_recursive_coroutine_hir_inliner_force_compile_does_not_crash(
+        self,
+    ) -> None:
+        # Regression guard:
+        # HIR inliner compilation of recursive coroutines should not crash when
+        # Send type inference encounters an empty assign chain. The fallback
+        # behavior should stay conservative and still produce a working compile.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            async def fibonacci(n: int) -> int:
+                if n <= 1:
+                    return n
+                return await fibonacci(n - 1) + await fibonacci(n - 2)
+
+            @jit.jit_suppress
+            def run(n: int) -> int:
+                coro = fibonacci(n)
+                while True:
+                    try:
+                        coro.send(None)
+                    except StopIteration as e:
+                        return e.value
+
+            expected = run(10)
+            print(expected)
+            print(jit.force_compile(fibonacci))
+            print(jit.is_jit_compiled(fibonacci))
+            counts = cinderjit.get_function_hir_opcode_counts(fibonacci)
+            print(counts.get("Send", 0))
+            print(run(10))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/recursive_coroutine_hir_inliner_force_compile.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 5, proc.stdout)
+            self.assertEqual(int(lines[-5]), 55, proc.stdout)
+            self.assertEqual(lines[-4], "True", proc.stdout)
+            self.assertEqual(lines[-3], "True", proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 2, proc.stdout)
+            self.assertEqual(int(lines[-1]), 55, proc.stdout)
+
     def test_deepcopy_keyerror_helpers_avoid_unhandledexception_deopts(self) -> None:
         # Regression guard:
         # stdlib deepcopy helpers rely on expected KeyError misses inside

@@ -98,6 +98,18 @@
           compiled hotspots
         - best next generalized direction is to improve object-heavy
           exact/self/attr-derived call chains, not to add more scheduling gates
+  - 2026-04-14 passnull follow-up:
+      - local `pass.cpp` null-guard is under validation as an independent
+        correctness fix for HIR inliner benchmark-path crashes
+      - new ARM regression test:
+        - `test_recursive_coroutine_hir_inliner_force_compile_does_not_crash`
+      - isolated helper validation with the still-WIP collection-derived test
+        skipped:
+        - `Ran 98 tests in 64.585s`
+        - `OK`
+      - direct benchmark-source probes in the same installed venv:
+        - `bm_go.versus_cpu()`: 3/3 successful runs
+        - `bm_fannkuch.fannkuch(DEFAULT_ARG)`: 3/3 successful runs
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

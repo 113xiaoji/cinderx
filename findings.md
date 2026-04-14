@@ -5322,3 +5322,59 @@ Conclusion:
   - revisit the issue60-style profile-driven / attr-derived method-call
     fast-path work, because `Square.find` remains a strongly leverageful
     compiled hotspot
+
+## 2026-04-14 HIR inliner Send null-operand crash guard
+
+- New local correctness fix under validation:
+  - [pass.cpp](C:/work/code/cinderx1/cinderx/cinderx/Jit/hir/pass.cpp)
+    - `chaseAssignOperand()` now treats `nullptr` as a conservative stop:
+      - from: `while (value->instr()->IsAssign())`
+      - to: `while (value != nullptr && value->instr()->IsAssign())`
+- Reasoning:
+  - `sendResultType()` and sibling paths already treat `nullptr` as
+    \"unknown / no stronger type\" and fall back conservatively via
+    `std::nullopt` or `TBottom`.
+  - The guard prevents a benchmark-path crash in `reflowTypes()` without
+    introducing a more aggressive type claim.
+- New ARM regression test:
+  - `test_recursive_coroutine_hir_inliner_force_compile_does_not_crash`
+  - shape:
+    - recursive coroutine
+    - `jit.enable_hir_inliner()`
+    - `jit.force_compile(fibonacci)`
+  - result on ARM:
+    - passes
+- Unified remote helper verification on isolated paths:
+  - workdir: `/root/work/cinderx-passnull`
+  - driver venv: `/root/venv-cinderx314-passnull`
+  - command mode:
+    - `SKIP_PYPERF=1`
+    - `BUILD_NO_ISOLATION=1`
+    - `ARM_RUNTIME_SKIP_TESTS=collection_derived_monomorphic_method_load_restores_inlining`
+  - result:
+    - `Ran 98 tests in 64.585s`
+    - `OK`
+- Important scope note:
+  - the helper run above skips the still-WIP
+    `test_collection_derived_monomorphic_method_load_restores_inlining`
+    check so that the `Send` crash fix can be evaluated independently.
+- Benchmark-path confirmation, using real benchmark source files with:
+  - `jit.enable()`
+  - `jit.enable_hir_inliner()`
+  - `jit.enable_specialized_opcodes()`
+  - `jit.compile_after_n_calls(10)`
+- `bm_go` source file probe on ARM:
+  - run 1: `result=5`, `dt=0.346818`
+  - run 2: `result=5`, `dt=0.205424`
+  - run 3: `result=5`, `dt=0.205849`
+  - no crash
+- `bm_fannkuch` source file probe on ARM:
+  - run 1: `result=30`, `dt=0.684934`
+  - run 2: `result=30`, `dt=0.683069`
+  - run 3: `result=30`, `dt=0.685655`
+  - no crash
+- Current interpretation:
+  - this null-guard is a credible correctness fix for the HIR inliner
+    benchmark-path crash.
+  - it should be landed independently of the still-experimental
+    collection-derived MWV/inlining line.

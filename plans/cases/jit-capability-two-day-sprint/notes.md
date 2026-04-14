@@ -381,6 +381,35 @@
   - especially issue60-style profile-driven method-call fast paths that make
     hot calls easier for the inliner to see
 
+## 2026-04-14 passnull validation
+
+- The current local fix under test is a one-line null guard in
+  [pass.cpp](C:/work/code/cinderx1/cinderx/cinderx/Jit/hir/pass.cpp):
+  - `while (value != nullptr && value->instr()->IsAssign())`
+- Added a smaller regression guard in
+  [test_arm_runtime.py](C:/work/code/cinderx1/cinderx/cinderx/PythonLib/test_cinderx/test_arm_runtime.py):
+  - `test_recursive_coroutine_hir_inliner_force_compile_does_not_crash`
+- Clean isolated ARM helper validation:
+  - workdir: `/root/work/cinderx-passnull`
+  - venv: `/root/venv-cinderx314-passnull`
+  - helper flags:
+    - `SKIP_PYPERF=1`
+    - `BUILD_NO_ISOLATION=1`
+    - `ARM_RUNTIME_SKIP_TESTS=collection_derived_monomorphic_method_load_restores_inlining`
+  - result:
+    - `Ran 98 tests in 64.585s`
+    - `OK`
+- Real benchmark-source probes with HIR inliner enabled:
+  - `bm_go.versus_cpu()`:
+    - 3/3 runs returned `5`
+    - no crash
+  - `bm_fannkuch.fannkuch(DEFAULT_ARG)`:
+    - 3/3 runs returned `30`
+    - no crash
+- Current conclusion:
+  - the `Send` null-guard should be treated as an independent correctness fix
+    and can be landed without waiting for the collection-derived MWV work.
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

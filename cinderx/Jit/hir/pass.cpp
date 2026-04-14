@@ -246,7 +246,7 @@ std::optional<Type> sendResultType(const Send& send) {
 } // namespace
 
 Register* chaseAssignOperand(Register* value) {
-  while (value->instr()->IsAssign()) {
+  while (value != nullptr && value->instr()->IsAssign()) {
     value = value->instr()->GetOperand(0);
   }
   return value;
