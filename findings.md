@@ -5675,6 +5675,53 @@ Conclusion:
     - this is strong enough to promote `deltablue -> AUTOJIT_GATE=20` into the
       helper defaults
 
+### Fresh standard-entry follow-up after helper tuning (`2026-04-14`)
+
+- Environment:
+  - ARM `/` space was no longer blocked (`~30G` free), so fresh helper rebuilds
+    became possible again.
+
+- Fresh `richards` standard entry:
+  - workdir:
+    - `/root/work/cinderx-richards-fresh-20260414`
+  - artifacts:
+    - `/root/work/arm-sync/richards_jitlist_20260414_215209.json`
+      - `0.08065359899774194 s`
+    - `/root/work/arm-sync/richards_autojit50_20260414_215209.json`
+      - `0.14841181099473033 s`
+    - `/root/work/arm-sync/richards_autojit50_20260414_215209_proof.json`
+      - `0.1473134330008179 s`
+    - `/root/work/arm-sync/richards_autojit50_20260414_215209_compile_summary.json`
+      - `main_compile_count = 11`
+      - `total_compile_count = 167`
+      - `other_compile_count = 156`
+  - interpretation:
+    - the richards helper path now has a fresh, end-to-end artifact on the
+      current branch after the eager worker-JIT change
+    - the earlier same-workdir A/B win is now backed by a fresh standard-entry
+      run on the same branch state
+
+- Fresh `raytrace` standard entry:
+  - workdir:
+    - `/root/work/cinderx-raytrace-fresh-20260414`
+  - artifacts:
+    - `/root/work/arm-sync/raytrace_jitlist_20260414_220344.json`
+      - `1.2472712250018958 s`
+    - `/root/work/arm-sync/raytrace_autojit100_20260414_220344.json`
+      - `1.4420991939987289 s`
+    - `/root/work/arm-sync/raytrace_autojit100_20260414_220344_proof.json`
+      - `1.477906587999314 s`
+    - `/root/work/arm-sync/raytrace_autojit100_20260414_220344_compile_summary.json`
+      - `main_compile_count = 19`
+      - `total_compile_count = 150`
+      - `other_compile_count = 131`
+  - interpretation:
+    - the raytrace helper path also now has a fresh standard-entry artifact on
+      the current branch
+    - this fresh result should be read together with the same-workdir
+      `gate=50` vs `gate=100` A/B above; the helper default is justified by the
+      direct gate comparison, not by autojit beating jitlist in this cold run
+
 ### `richards_super` helper-policy check (`2026-04-14`)
 
 - Benchmark code inspection:
