@@ -5587,6 +5587,94 @@ Conclusion:
     - the remaining blocker for a fresh full-entry artifact is ARM disk space,
       not a correctness or performance regression in the new default
 
+### Follow-up screens after the richards eager-worker win (`2026-04-14`)
+
+- `richards_super` shape check in the same helper-built workdir:
+  - workdir:
+    - `/root/work/cinderx-richards-ab-20260414`
+  - broad autojit filter (`__main__:*`) vs richards-focused filter:
+    - `/tmp/richards_super_broad_20260414_214421.json`
+      - `0.14107353999861516 s`
+    - `/tmp/richards_super_focused_20260414_214421.json`
+      - `0.1720498700015014 s`
+  - interpretation:
+    - `richards_super` does not want the `richards` focused autojit filter
+    - keeping the broad `__main__:*` filter is about `-18.00%` faster than the
+      tried focused set
+
+- `richards_super` eager vs deferred worker JIT:
+  - artifacts:
+    - `/tmp/richards_super_defer0_20260414_214443.json`
+      - `0.1451618610008154 s`
+    - `/tmp/richards_super_defer1_20260414_214443.json`
+      - `0.3856566920003388 s`
+  - interpretation:
+    - `richards_super` also strongly benefits from eager worker JIT
+    - `defer=0` vs `defer=1`: about `-62.36%`
+    - this is a collateral win from the same helper default change landed for
+      richards
+
+- `richards_super` gate sensitivity under the broad filter:
+  - artifacts:
+    - `/tmp/richards_super_gate20_20260414_214510.json`
+      - `0.14049847300339025 s`
+    - `/tmp/richards_super_gate50_20260414_214510.json`
+      - `0.14139334599894937 s`
+    - `/tmp/richards_super_gate100_20260414_214510.json`
+      - `0.14765280099527445 s`
+  - interpretation:
+    - there is no strong enough signal to justify a benchmark-specific
+      `AUTOJIT_GATE` for `richards_super`
+    - `20` is only marginally better than `50` (`~ -0.63%`)
+
+- `raytrace` gate sensitivity under the broad filter:
+  - artifacts:
+    - `/tmp/raytrace_gate20_20260414_214655.json`
+      - `0.5938059979962418 s`
+    - `/tmp/raytrace_gate50_20260414_214655.json`
+      - `0.5689037319971249 s`
+    - `/tmp/raytrace_gate100_20260414_214655.json`
+      - `0.5678394670030684 s`
+  - interpretation:
+    - the already-landed `raytrace -> AUTOJIT_GATE=100` helper default remains
+      reasonable
+    - the difference between `50` and `100` is tiny (`~ -0.19%`), but both are
+      clearly better than `20`
+  - follow-up interleaved-style repeat:
+    - `/tmp/raytrace_a1_20260414_214946.json`
+      - gate `50`: `1.420425903997966 s`
+    - `/tmp/raytrace_b1_20260414_214946.json`
+      - gate `100`: `1.3626203820022056 s`
+    - `/tmp/raytrace_a2_20260414_214946.json`
+      - gate `50`: `1.331903272002819 s`
+    - `/tmp/raytrace_b2_20260414_214946.json`
+      - gate `100`: `1.295235479999974 s`
+  - repeated interpretation:
+    - in the follow-up pairwise rerun, `100` stayed ahead of `50` twice
+    - this is still a modest helper-level win, but it is directionally
+      consistent rather than a one-shot tie
+
+- `deltablue` gate sensitivity under the broad filter:
+  - first pass artifacts:
+    - `/tmp/deltablue_gate20_20260414_214737.json`
+      - `0.08895667400065577 s`
+    - `/tmp/deltablue_gate50_20260414_214737.json`
+      - `0.0911216480017174 s`
+    - `/tmp/deltablue_gate100_20260414_214737.json`
+      - `0.08987132900074357 s`
+  - repeat check:
+    - `/tmp/deltablue_recheck_gate20_20260414_214804.json`
+      - `0.08866941300220788 s`
+    - `/tmp/deltablue_recheck_gate50_20260414_214804.json`
+      - `0.10142816900042817 s`
+  - interpretation:
+    - unlike `richards_super`, `deltablue` shows a repeatable preference for an
+      earlier worker autojit gate
+    - `20` beats `50` by about `-2.38%` on the first pass and about `-12.58%`
+      on the recheck
+    - this is strong enough to promote `deltablue -> AUTOJIT_GATE=20` into the
+      helper defaults
+
 ### `richards_super` helper-policy check (`2026-04-14`)
 
 - Benchmark code inspection:
