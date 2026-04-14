@@ -443,6 +443,27 @@
   - the final optimized HIR does not need to retain a `VectorCall`, because a
     successful inline can consume that intermediate call shape
 
+## 2026-04-14 trailing positional default inlining
+
+- Added a narrow inliner extension in
+  [inliner.cpp](C:/work/code/cinderx1/cinderx/cinderx/Jit/hir/inliner.cpp):
+  - calls may inline when they omit only trailing positional defaults
+  - the inliner now materializes missing defaults as `LoadConst` during the
+    `LoadArg` rewrite stage
+- Added regression test:
+  - `test_collection_derived_defaulted_method_arg_restores_inlining`
+- ARM results:
+  - targeted test: `OK`
+  - full helper on `/root/venv-cinderx314-defaultarg`:
+    - `Ran 100 tests in 135.224s`
+    - `OK`
+- Follow-up reality check on real `bm_go`:
+  - this patch does not change the current `Board.useful` inlining count
+  - warmup disassembly still shows the hot `neighbour.find()` site as plain
+    `LOAD_ATTR (find + NULL|self)` rather than MWV
+  - so the next real `bm_go` blocker remains upstream of the new default-arg
+    inliner capability
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

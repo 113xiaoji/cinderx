@@ -2286,6 +2286,239 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(int(lines[-1]), 36, proc.stdout)
 
+    def test_collection_derived_defaulted_method_arg_restores_inlining(
+        self,
+    ) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        # Regression guard:
+        # collection-derived receivers should still be inlineable when the call
+        # relies on a trailing positional default, matching bm_go's
+        # neighbour.find() shape.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Square:
+                def __init__(self, value, ref=None):
+                    self.value = value
+                    self.ref = ref
+
+                def find(self, update=1):
+                    if self.ref is None:
+                        return self.value + update
+                    return self.ref.find(update) + self.value + update
+
+            class Board:
+                def __init__(self):
+                    root = Square(1, None)
+                    mid = Square(2, root)
+                    self.squares = [Square(3, mid) for _ in range(4)]
+
+                def useful(self):
+                    total = 0
+                    for sq in self.squares:
+                        total += sq.find()
+                    return total
+
+            board = Board()
+            for _ in range(20000):
+                board.useful()
+
+            if jit.is_jit_compiled(Board.useful):
+                assert jit.force_uncompile(Board.useful)
+                assert not jit.is_jit_compiled(Board.useful)
+
+            assert jit.force_compile(Board.useful)
+            counts = cinderjit.get_function_hir_opcode_counts(Board.useful)
+            stats = jit.get_inlined_functions_stats(Board.useful)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("VectorCall", 0))
+            print(stats.get("num_inlined_functions", 0))
+            print(board.useful())
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/collection_derived_defaulted_method_arg.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 4, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 36, proc.stdout)
+
+    def test_go_like_collection_method_chain_inlines_find_after_helper_inline(
+        self,
+    ) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 specialized method loads")
+
+        # Regression guard:
+        # In a go-like object-heavy helper chain, Board.useful() already inlines
+        # useful_fast(), but the collection-derived neighbour.find() call still
+        # does not become inliner-visible on current code. We want this shape to
+        # inline both helper layers under the explicit compile path.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            EMPTY = 0
+            TIMESTAMP = 0
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Square:
+                def __init__(self, pos, color=EMPTY, reference=None):
+                    self.pos = pos
+                    self.color = color
+                    self.reference = self if reference is None else reference
+                    self.used = False
+                    self.neighbours = []
+                    self.timestamp = 0
+                    self.temp_ledges = 0
+                    self.ledges = 1
+
+                def find(self, update=False):
+                    reference = self.reference
+                    if reference.pos != self.pos:
+                        reference = reference.find(update)
+                        if update:
+                            self.reference = reference
+                    return reference
+
+                def remove(self, reference, update=True):
+                    self.timestamp += 1
+                    return None
+
+            class Zobrist:
+                def __init__(self):
+                    self.hash = 0
+
+                def update(self, square, color):
+                    self.hash += 1
+
+                def dupe(self):
+                    return False
+
+            class Board:
+                def __init__(self):
+                    root = Square(1, EMPTY, None)
+                    mid = Square(2, 1, root)
+                    carrier = Square(3, 1, root)
+                    carrier.neighbours = [mid, root]
+                    self.squares = [carrier]
+                    self.zobrist = Zobrist()
+                    self.color = 1
+
+                def useful_fast(self, square):
+                    if not square.used:
+                        for neighbour in square.neighbours:
+                            if neighbour.color == EMPTY:
+                                return True
+                    return False
+
+                def useful(self, pos):
+                    global TIMESTAMP
+                    TIMESTAMP += 1
+                    square = self.squares[pos]
+                    if self.useful_fast(square):
+                        return True
+                    old_hash = self.zobrist.hash
+                    self.zobrist.update(square, self.color)
+                    empties = opps = weak_opps = neighs = weak_neighs = 0
+                    for neighbour in square.neighbours:
+                        neighcolor = neighbour.color
+                        if neighcolor == EMPTY:
+                            empties += 1
+                            continue
+                        neighbour_ref = neighbour.find()
+                        if neighbour_ref.timestamp != TIMESTAMP:
+                            if neighcolor == self.color:
+                                neighs += 1
+                            else:
+                                opps += 1
+                            neighbour_ref.timestamp = TIMESTAMP
+                            neighbour_ref.temp_ledges = neighbour_ref.ledges
+                        neighbour_ref.temp_ledges -= 1
+                        if neighbour_ref.temp_ledges == 0:
+                            if neighcolor == self.color:
+                                weak_neighs += 1
+                            else:
+                                weak_opps += 1
+                                neighbour_ref.remove(neighbour_ref, update=False)
+                    dupe = self.zobrist.dupe()
+                    self.zobrist.hash = old_hash
+                    strong_neighs = neighs - weak_neighs
+                    strong_opps = opps - weak_opps
+                    return (not dupe) and (
+                        empties
+                        or weak_opps
+                        or (strong_neighs and (strong_opps or weak_neighs))
+                    )
+
+            board = Board()
+            for _ in range(20000):
+                board.useful(0)
+
+            if jit.is_jit_compiled(Board.useful):
+                assert jit.force_uncompile(Board.useful)
+
+            assert jit.force_compile(Board.useful)
+            counts = cinderjit.get_function_hir_opcode_counts(Board.useful)
+            stats = jit.get_inlined_functions_stats(Board.useful)
+            print(counts.get("CallMethod", 0))
+            print(stats.get("num_inlined_functions", 0))
+            print(board.useful(0))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/go_like_collection_method_chain.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 2, proc.stdout)
+            self.assertEqual(lines[-1], "True", proc.stdout)
+
     def test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts(
         self,
     ) -> None:

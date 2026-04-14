@@ -89,6 +89,17 @@ size_t codeCost(BorrowedRef<PyCodeObject> code) {
   return num_opcodes;
 }
 
+std::size_t numPositionalDefaults(BorrowedRef<PyFunctionObject> func) {
+  BorrowedRef<> defaults{func->func_defaults};
+  if (defaults == nullptr) {
+    return 0;
+  }
+  if (!PyTuple_CheckExact(defaults)) {
+    return 0;
+  }
+  return static_cast<std::size_t>(PyTuple_GET_SIZE(defaults));
+}
+
 // Most of these checks are only temporary and do not in perpetuity prohibit
 // inlining.
 bool canInline(Function& caller, AbstractCall* call_instr) {
@@ -136,7 +147,11 @@ bool canInline(Function& caller, AbstractCall* call_instr) {
     return fail(InlineFailureType::kHasVarkwargs);
   }
   JIT_DCHECK(code->co_argcount >= 0, "argcount must be positive");
-  if (call_instr->nargs != static_cast<size_t>(code->co_argcount)) {
+  std::size_t argcount = static_cast<std::size_t>(code->co_argcount);
+  std::size_t num_defaults = numPositionalDefaults(func);
+  std::size_t min_args =
+      argcount >= num_defaults ? argcount - num_defaults : 0;
+  if (call_instr->nargs < min_args || call_instr->nargs > argcount) {
     return fail(InlineFailureType::kCalledWithMismatchedArgs);
   }
   if (code->co_flags & kCoFlagsAnyGenerator) {
@@ -271,14 +286,40 @@ void inlineFunctionCall(Function& caller, AbstractCall* call_instr) {
   tail->push_front(EndInlinedFunction::create(begin_inlined_function));
 
   // Transform LoadArg into Assign
+  BorrowedRef<> defaults_obj{callee->func_defaults};
+  BorrowedRef<PyTupleObject> defaults =
+      (defaults_obj != nullptr && PyTuple_CheckExact(defaults_obj))
+      ? BorrowedRef<PyTupleObject>{
+            reinterpret_cast<PyTupleObject*>(defaults_obj.get())}
+      : nullptr;
+  std::size_t num_defaults =
+      defaults != nullptr ? static_cast<std::size_t>(PyTuple_GET_SIZE(defaults)) : 0;
+  std::size_t argcount = static_cast<std::size_t>(callee_code->co_argcount);
+  std::size_t first_default = argcount >= num_defaults ? argcount - num_defaults : 0;
   for (auto it = result.entry->begin(); it != result.entry->end();) {
     auto& instr = *it;
     ++it;
 
     if (instr.IsLoadArg()) {
       auto load_arg = static_cast<LoadArg*>(&instr);
-      auto assign =
-          Assign::create(instr.output(), call_instr->arg(load_arg->arg_idx()));
+      Register* src = nullptr;
+      std::size_t arg_idx = static_cast<std::size_t>(load_arg->arg_idx());
+      if (arg_idx < call_instr->nargs) {
+        src = call_instr->arg(arg_idx);
+      } else {
+        JIT_CHECK(
+            defaults != nullptr && arg_idx < argcount && arg_idx >= first_default,
+            "missing positional default for inlined arg {}", arg_idx);
+        std::size_t default_idx = arg_idx - first_default;
+        BorrowedRef<> default_value{PyTuple_GET_ITEM(defaults.get(), default_idx)};
+        Register* default_reg = caller.env.AllocateRegister();
+        auto* load =
+            LoadConst::create(default_reg, Type::fromObject(caller.env.addReference(default_value)));
+        load->copyBytecodeOffset(instr);
+        result.entry->insert(load, result.entry->iterator_to(instr));
+        src = default_reg;
+      }
+      auto assign = Assign::create(instr.output(), src);
       instr.ReplaceWith(*assign);
       delete &instr;
     }

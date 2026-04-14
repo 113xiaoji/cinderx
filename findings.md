@@ -5414,3 +5414,39 @@ Conclusion:
     `num_inlined_functions >= 1`, not necessarily `VectorCall >= 1`, because
     successful inlining can consume the intermediate VectorCall from the final
     HIR.
+
+## 2026-04-14 inline omitted positional defaults
+
+- New HIR inliner capability:
+  - allow inlining when a call omits only **trailing positional defaults**
+  - implementation in
+    [inliner.cpp](C:/work/code/cinderx1/cinderx/cinderx/Jit/hir/inliner.cpp)
+  - omitted defaulted args are materialized as `LoadConst` values during
+    `LoadArg` rewriting inside `inlineFunctionCall()`
+- New ARM regression test:
+  - `test_collection_derived_defaulted_method_arg_restores_inlining`
+- Unified ARM helper verification:
+  - isolated install:
+    - `/root/venv-cinderx314-defaultarg`
+  - result:
+    - `Ran 100 tests in 135.224s`
+    - `OK`
+- Targeted meaning:
+  - collection-derived receiver
+  - omitted trailing positional default
+  - HIR inliner now restores at least one inline on the explicit force-compile
+    path
+- Important boundary:
+  - this new capability does **not** yet move real `bm_go` regular auto-JIT
+    behavior
+  - direct disassembly on ARM shows the hot `neighbour.find()` site in
+    `bm_go.Board.useful` still appears as plain `LOAD_ATTR ... (find + NULL|self)`
+    rather than `LOAD_ATTR_METHOD_WITH_VALUES`
+  - current real `bm_go` result:
+    - `Board.useful` still reports `num_inlined_functions = 1`
+    - `Square.find` is still not the extra missing inline there
+- Updated interpretation:
+  - omitted-default inlining is now a real generalized capability improvement
+  - the next blocker for `bm_go.Board.useful` is earlier in the pipeline:
+    the `neighbour.find()` load site is not getting a recoverable MWV-like
+    specialization signal in the real benchmark path

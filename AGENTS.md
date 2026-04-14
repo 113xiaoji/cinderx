@@ -115,6 +115,18 @@
           could already be compiled during warmup
         - explicit force-compile validation must first uncompile the function
           if warmup already compiled it
+      - 2026-04-14 omitted-default inlining:
+        - HIR inliner now supports omitted trailing positional defaults on the
+          explicit inline path
+        - new ARM regression test:
+          - `test_collection_derived_defaulted_method_arg_restores_inlining`
+        - full helper on `/root/venv-cinderx314-defaultarg`:
+          - `Ran 100 tests in 135.224s`
+          - `OK`
+        - current `bm_go` note:
+          - real `Board.useful` still does not gain an extra inline from this
+            patch, because `neighbour.find()` is not reaching MWV-like
+            specialization in the benchmark path
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
