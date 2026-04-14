@@ -5500,3 +5500,28 @@ Conclusion:
   - this line is technically viable
   - but it is not a net-positive benchmark win in its current form
   - it should remain experimental rather than be landed as-is
+
+## 2026-04-14 non-self method-load maturity delay experiment
+
+- Experimental direction:
+  - delay regular auto-JIT only when a function still has
+    non-self local-receiver method-load sites that have not matured into MWV
+- This was much narrower than the earlier broad method-heavy delay attempt:
+  - it ignored `self.*` call sites like `self.useful_fast(...)`
+  - it only looked at local non-self receiver method loads
+- Outcome:
+  - the new regression guard
+    `test_nonself_method_load_profile_maturity_delays_autojit_compile`
+    still failed
+    - shallow phase was already compiled
+  - existing `test_go_like_collection_method_chain_inlines_find_after_helper_inline`
+    also regressed under this experiment
+  - direct `bm_go.versus_cpu()` got much worse in the experimental venv
+    (around `0.92s` median in the quick 7-sample probe)
+- Updated interpretation:
+  - even the narrower compile-later heuristic is not a good fit in this form
+  - compile timing remains the right *category* of problem
+  - but the solution likely needs:
+    - deeper compile-maturity metadata
+    - and/or an explicit recompile-after-profile-maturation hook
+    - rather than another threshold-only delay rule

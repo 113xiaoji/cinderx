@@ -136,6 +136,13 @@
         - extra inline counts were achievable on `bm_go`
         - but the 7-sample median still regressed slightly
         - keep this line experimental; do not land it as-is
+      - non-self method-load maturity delay trial:
+        - even the narrower delay heuristic failed to hold the shallow phase
+          in interpreted mode
+        - it also regressed the existing go-like chain guard and hurt quick
+          `bm_go` timing badly
+        - current recommendation is to stop pursuing threshold-only delay rules
+          and switch to maturity metadata / recompile design
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

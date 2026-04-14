@@ -492,6 +492,21 @@
   - do not land this patch in its current form
   - keep the focus on compile timing / profile maturation instead
 
+## 2026-04-14 non-self maturity-delay trial
+
+- Tried a narrower timing heuristic:
+  - only delay auto-JIT when the function still has
+    non-self local-receiver method-load sites that have not matured into MWV
+- Result:
+  - the new targeted test still showed shallow compilation too early
+  - the existing go-like chain test regressed
+  - quick `bm_go` timing on the experiment venv became dramatically worse
+- Conclusion:
+  - do not continue with threshold-only delay heuristics
+  - the next viable path should be:
+    - compile-maturity metadata
+    - and/or a deliberate recompile-after-profile-maturation mechanism
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：
