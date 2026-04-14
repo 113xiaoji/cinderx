@@ -110,6 +110,11 @@
       - direct benchmark-source probes in the same installed venv:
         - `bm_go.versus_cpu()`: 3/3 successful runs
         - `bm_fannkuch.fannkuch(DEFAULT_ARG)`: 3/3 successful runs
+      - collection-derived inlining follow-up:
+        - the old test shape was partially invalid because `Board.useful()`
+          could already be compiled during warmup
+        - explicit force-compile validation must first uncompile the function
+          if warmup already compiled it
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

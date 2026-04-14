@@ -410,6 +410,39 @@
   - the `Send` null-guard should be treated as an independent correctness fix
     and can be landed without waiting for the collection-derived MWV work.
 
+## 2026-04-14 collection-derived test-path correction
+
+- The collection-derived red test was re-examined on the stable `passnull`
+  install.
+- Important finding:
+  - `Board.useful()` is already JIT-compiled after the warmup loop even with
+    `compile_after_n_calls(1000000)`
+  - this happens because the loop can still enter JIT through the hot-loop
+    path during warmup
+- That means the old test shape:
+  - warmup
+  - `force_compile(Board.useful)`
+  did not reliably exercise the explicit compile path.
+- Corrected force-compile probe:
+  - warmup
+  - `force_uncompile(Board.useful)` if already compiled
+  - `force_compile(Board.useful)`
+- Observed ARM result on the stable install:
+  - `compiled_before = True`
+  - `compiled_after_uncompile = False`
+  - `compiled_after_compile = True`
+  - `num_inlined_functions = 1`
+  - `result = 36`
+- Immediate implication:
+  - the collection-derived unit test needs to clear warmup state first
+  - otherwise it is not a trustworthy signal for explicit compile-path
+    regressions
+- Additional clarification:
+  - after explicit uncompile/recompile, collection-derived success is visible
+    as `num_inlined_functions >= 1`
+  - the final optimized HIR does not need to retain a `VectorCall`, because a
+    successful inline can consume that intermediate call shape
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

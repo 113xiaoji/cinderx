@@ -5378,3 +5378,39 @@ Conclusion:
     benchmark-path crash.
   - it should be landed independently of the still-experimental
     collection-derived MWV/inlining line.
+
+## 2026-04-14 collection-derived inlining test correction
+
+- `test_collection_derived_monomorphic_method_load_restores_inlining` was
+  producing a misleading red signal.
+- Key finding from isolated ARM probes:
+  - after the `Board.useful()` warmup loop, `jit.is_jit_compiled(Board.useful)`
+    is already `True`
+  - cause:
+    - the loop can enter JIT through the normal hot-loop path during warmup
+- Consequence:
+  - the subsequent `jit.force_compile(Board.useful)` was often idempotent and
+    did **not** exercise the explicit single-function compile path we were
+    trying to validate
+  - that made the test look like a collection-derived preload/inliner failure
+    when it was partly a test harness issue
+- Corrected test shape:
+  - warm up `Board.useful()`
+  - if it is already compiled, call `jit.force_uncompile(Board.useful)`
+  - then call `jit.force_compile(Board.useful)`
+- Isolated ARM confirmation on the stable `passnull` install:
+  - before explicit uncompile:
+    - `compiled_before = True`
+  - after `force_uncompile()`:
+    - `compiled_after_uncompile = False`
+  - after `force_compile()`:
+    - `compiled_after_compile = True`
+    - `num_inlined_functions = 1`
+    - result `36`
+- Updated interpretation:
+  - the collection-derived test must explicitly clear the warmup-compiled state
+    before it can say anything meaningful about the force-compile path.
+  - after that correction, the right success signal is
+    `num_inlined_functions >= 1`, not necessarily `VectorCall >= 1`, because
+    successful inlining can consume the intermediate VectorCall from the final
+    HIR.

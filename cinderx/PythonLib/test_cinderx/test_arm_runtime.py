@@ -2206,9 +2206,11 @@ class ArmRuntimeTests(unittest.TestCase):
 
         # Regression guard:
         # a receiver pulled from a monomorphic object collection should still be
-        # able to recover the profiled method-with-values fast path and expose an
-        # inliner-visible VectorCall. This shape is common in object-heavy loops
-        # such as bm_go's Board.useful().
+        # able to recover an inliner-visible profiled method call shape. The
+        # final HIR may no longer retain a VectorCall once inlining succeeds, so
+        # this guard treats the inlined-function count as the primary signal.
+        # This shape is common in object-heavy loops such as bm_go's
+        # Board.useful().
         code = textwrap.dedent(
             """
             import cinderx.jit as jit
@@ -2245,6 +2247,13 @@ class ArmRuntimeTests(unittest.TestCase):
             for _ in range(20000):
                 board.useful()
 
+            # This loop shape can already enter JIT during warmup via the
+            # regular hot-loop path. Force it back to interpreted mode so this
+            # regression guard exercises the explicit force-compile path.
+            if jit.is_jit_compiled(Board.useful):
+                assert jit.force_uncompile(Board.useful)
+                assert not jit.is_jit_compiled(Board.useful)
+
             assert jit.force_compile(Board.useful)
             counts = cinderjit.get_function_hir_opcode_counts(Board.useful)
             stats = jit.get_inlined_functions_stats(Board.useful)
@@ -2274,7 +2283,6 @@ class ArmRuntimeTests(unittest.TestCase):
             )
             lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
             self.assertGreaterEqual(len(lines), 4, proc.stdout)
-            self.assertGreaterEqual(int(lines[-3]), 1, proc.stdout)
             self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(int(lines[-1]), 36, proc.stdout)
 
