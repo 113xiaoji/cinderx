@@ -5586,3 +5586,72 @@ Conclusion:
       helper-prepared environment and a same-workdir recheck
     - the remaining blocker for a fresh full-entry artifact is ARM disk space,
       not a correctness or performance regression in the new default
+
+### `richards_super` policy probes (`2026-04-14`)
+
+- Context:
+  - reused the same helper-built workdir:
+    - `/root/work/cinderx-richards-ab-20260414`
+  - fixed:
+    - eager worker JIT (`CINDERX_DEFER_WORKER_JIT=0`)
+    - autojit jitlist filter enabled
+  - tested whether `richards`-style focused filter or a different gate improves
+    cold `pyperformance richards_super`
+
+- Broad vs focused autojit filter:
+  - broad:
+    - `/tmp/richards_super_broad_20260414_214548.json`
+    - `0.14278992500476306 s`
+  - focused richards-style list:
+    - `/tmp/richards_super_focused_20260414_214548.json`
+    - `0.17001644899573876 s`
+  - interpretation:
+    - `richards_super` does not benefit from reusing the current focused
+      `richards` autojit filter
+    - broad `__main__:*` stays clearly better here
+
+- Broad autojit gate sweep with `__main__:*`:
+  - `gate=20`:
+    - `/tmp/richards_super_gate_20_20260414_214632.json`
+    - `0.14694069299730472 s`
+  - `gate=50`:
+    - `/tmp/richards_super_gate_50_20260414_214632.json`
+    - `0.1419321770008537 s`
+  - `gate=100`:
+    - `/tmp/richards_super_gate_100_20260414_214632.json`
+    - `0.14488362699921709 s`
+  - `gate=200`:
+    - `/tmp/richards_super_gate_200_20260414_214632.json`
+    - `0.14459959699888714 s`
+  - interpretation:
+    - `50` remains the best tested worker autojit gate for `richards_super`
+    - there is no helper-only win here comparable to `go` or `richards`
+
+### `raytrace` gate sweep recheck (`2026-04-14`)
+
+- Context:
+  - same reused helper-built workdir:
+    - `/root/work/cinderx-richards-ab-20260414`
+  - fixed:
+    - eager worker JIT (`CINDERX_DEFER_WORKER_JIT=0`)
+    - broad autojit filter (`__main__:*`)
+
+- Autojit gate sweep:
+  - `gate=20`:
+    - `/tmp/raytrace_gate_20_20260414_214710.json`
+    - `0.572806889002095 s`
+  - `gate=50`:
+    - `/tmp/raytrace_gate_50_20260414_214710.json`
+    - `0.5584722020066692 s`
+  - `gate=100`:
+    - `/tmp/raytrace_gate_100_20260414_214710.json`
+    - `0.5890795009981957 s`
+  - `gate=200`:
+    - `/tmp/raytrace_gate_200_20260414_214710.json`
+    - `0.5872904040006688 s`
+  - `gate=500`:
+    - `/tmp/raytrace_gate_500_20260414_214710.json`
+    - `0.5864420540019637 s`
+  - interpretation:
+    - `50` is still the best tested autojit gate for `raytrace`
+    - helper-only gate tuning is not opening a new win here
