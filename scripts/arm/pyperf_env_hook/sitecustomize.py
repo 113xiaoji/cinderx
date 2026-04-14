@@ -18,6 +18,7 @@ def _is_truthy(value: str | None) -> bool:
 tokens = _argv_tokens()
 argv = getattr(sys, "argv", [])
 argv0 = argv[0] if argv else ""
+argv0_abspath = os.path.abspath(argv0) if argv0 not in ("", "-c") else argv0
 
 
 def _has_token(name: str) -> bool:
@@ -112,10 +113,16 @@ def _enable_worker_jit(
         jit.enable_specialized_opcodes()
 
     if raw_jitlist:
-        # JIT-list entries are compiled on first call when auto-JIT is at
-        # the eager setting. Keep the scope narrow by using the JIT list as
-        # the filter rather than broad worker-wide auto-JIT.
-        jit.compile_after_n_calls(0)
+        # When a worker auto-JIT threshold is present, treat the JIT list as a
+        # filter on what may compile rather than forcing eager first-call
+        # compilation of every matching function.
+        threshold = 0
+        if worker_autojit not in (None, ""):
+            try:
+                threshold = int(worker_autojit)
+            except Exception:
+                threshold = 0
+        jit.compile_after_n_calls(threshold)
         _append_worker_jitlists(jit, raw_jitlist)
     elif worker_autojit not in (None, ""):
         try:
@@ -139,8 +146,14 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
             def _deferred_enable(frame, event, arg):
                 if event != "call":
                     return None
-                back = frame.f_back
-                if back is None or back.f_globals.get("__name__") != "__main__":
+                if frame.f_globals.get("__name__") != "__main__":
+                    return None
+                if frame.f_code.co_name == "<module>":
+                    return None
+                if (
+                    argv0_abspath not in ("", "-c")
+                    and os.path.abspath(frame.f_code.co_filename) != argv0_abspath
+                ):
                     return None
                 sys.setprofile(None)
                 _enable_worker_jit(worker_autojit, raw_jitlist)

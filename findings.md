@@ -5315,7 +5315,7 @@ Conclusion:
       computed from this baseline because the baseline does not stay up long
       enough under the same benchmark harness
 
-- Overall assessment:
+  - Overall assessment:
   - stability:
     - current branch is materially better; it can complete the 13-benchmark
       matrix where the selected baseline cannot
@@ -5325,3 +5325,65 @@ Conclusion:
       `--debug-single-value`
     - the likely reason is that compilation / startup overhead still dominates
       in this measurement mode
+
+### Worker autojit threshold filter fix (`2026-04-14`)
+
+- Root cause:
+  - `scripts/arm/pyperf_env_hook/sitecustomize.py` treated any non-empty
+    `CINDERX_JITLIST_ENTRIES` as an eager-jit mode and unconditionally ran:
+    - `jit.compile_after_n_calls(0)`
+  - in the autojit worker path this silently overrode:
+    - `CINDERX_WORKER_PYTHONJITAUTO=50`
+  - practical effect:
+    - helper autojit workers with a jitlist filter were compiling matching
+      `__main__` functions on first call instead of after the intended worker
+      threshold
+    - this inflated cold `go` worker time
+
+- Additional deferred-trigger cleanup:
+  - deferred worker JIT now triggers only when the called frame itself belongs
+    to the benchmark script's `__main__` module/function
+  - it no longer fires early just because a `pyperf` helper method was called
+    from `__main__` top-level code
+
+- Local TDD / guardrails:
+  - new test file:
+    - `tests/test_pyperf_env_hook_sitecustomize.py`
+  - local results:
+    - `tests.test_pyperf_env_hook_sitecustomize`: `4` tests `OK`
+    - `tests.test_arm_remote_update_build_test` +
+      `tests.test_verify_pyperf_venv`: `12` tests `OK`
+  - covered behaviors:
+    - deferred mode ignores `pyperf` calls whose caller is `__main__`
+    - deferred mode does trigger for benchmark functions defined in `__main__`
+    - worker autojit threshold is preserved even when a jitlist filter is
+      present
+    - pure jitlist mode without worker autojit remains eager
+
+- Remote performance verification on current build:
+  - workdir:
+    - `/root/work/cinderx-matrix-current-20260414`
+  - `go` autojit worker path, before fix:
+    - existing artifact:
+      - `/root/work/arm-sync/go_autojit50_20260412_201519.json`
+    - value:
+      - `0.25092492700059665 s`
+  - `go` autojit worker path, after fix:
+    - artifact:
+      - `/root/work/arm-sync/go_autojit50_thresholdfix_20260414.json`
+    - value:
+      - `0.17462327599787386 s`
+    - delta vs previous current autojit result:
+      - about `-30.40%`
+  - `richards` defer-jit sanity check after fix:
+    - artifact:
+      - `/root/work/arm-sync/richards_defer_thresholdfix_20260414.json`
+    - value:
+      - `0.3466643659994588 s`
+    - confirms the defer path still runs successfully
+
+- Assessment:
+  - this is the first clear cold-path pyperformance improvement on the current
+    branch after the stability work
+  - the `go` autojit worker path now pays much less unnecessary compile cost
+    before reaching the benchmark body
