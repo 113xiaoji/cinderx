@@ -123,10 +123,48 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
         self.assertIn('DEFER_WORKER_JIT=1', text)
         self.assertIn('DEFER_WORKER_JIT=0', text)
 
+    def test_go_defaults_to_lower_worker_autojit_gate(self) -> None:
+        text = self._helper_text()
+        self.assertIn('AUTOJIT_GATE="${AUTOJIT_GATE:-}"', text)
+        self.assertIn('if [[ -z "$AUTOJIT_GATE" ]]; then', text)
+        self.assertIn('if [[ "$BENCH" == "go" ]]; then', text)
+        self.assertIn('AUTOJIT_GATE=20', text)
+        self.assertIn('AUTOJIT_GATE="$AUTOJIT"', text)
+
     def test_autojit_gate_uses_configured_worker_jit_deferral(self) -> None:
         text = self._helper_text()
         self.assertIn('CINDERX_DEFER_WORKER_JIT="$DEFER_WORKER_JIT"', text)
         self.assertNotIn('CINDERX_DEFER_WORKER_JIT=1 \\', text)
+
+    def test_autojit_timed_run_avoids_debug_logging(self) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'python -m pyperformance run --debug-single-value -b "$BENCH" \\',
+            text,
+        )
+        self.assertIn(
+            'AUTOJIT_JSON="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"',
+            text,
+        )
+        self.assertIn(
+            '-o "$AUTOJIT_JSON"',
+            text,
+        )
+        self.assertIn(
+            'AUTOJIT_PROOF_JSON="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}_proof.json"',
+            text,
+        )
+
+    def test_autojit_compile_proof_run_uses_debug_logging(self) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'PYTHONJITDEBUG=1 PYTHONJITLOGFILE="$LOG"',
+            text,
+        )
+        self.assertIn(
+            '-o "$AUTOJIT_PROOF_JSON"',
+            text,
+        )
 
 
 if __name__ == "__main__":

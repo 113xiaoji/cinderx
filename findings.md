@@ -5387,3 +5387,81 @@ Conclusion:
     branch after the stability work
   - the `go` autojit worker path now pays much less unnecessary compile cost
     before reaching the benchmark body
+
+### `go` benchmark-specific autojit gate tuning (`2026-04-14`)
+
+- Root cause:
+  - after preserving the worker autojit threshold, `go` still responded better
+    to a lower worker gate than the generic default `50`
+  - direct current-build A/B on the same host showed:
+    - gate `20`: `0.1739248250014498 s`
+    - gate `50`: `0.18020292800065363 s`
+    - gate `100`: `0.18553170599989244 s`
+    - gate `200`: `0.19196161099898745 s`
+  - interpretation:
+    - `go` benefits from entering JIT slightly earlier than the generic
+      benchmark default
+
+- Helper change:
+  - `scripts/arm/remote_update_build_test.sh`
+    - `AUTOJIT_GATE` is now resolved in benchmark-specific order:
+      - explicit `AUTOJIT_GATE` if provided
+      - otherwise `go -> 20`
+      - otherwise fallback to `AUTOJIT`
+  - `tests/test_arm_remote_update_build_test.py`
+    - added guardrail `test_go_defaults_to_lower_worker_autojit_gate`
+
+- Local verification:
+  - helper / hook / worker guardrails:
+    - `tests.test_arm_remote_update_build_test`
+    - `tests.test_verify_pyperf_venv`
+    - `tests.test_pyperf_env_hook_sitecustomize`
+    - combined: `19` tests `OK`
+
+- Remote standard-entry verification:
+  - `go` workdir:
+    - `/root/work/cinderx-go-opt3-20260414`
+  - artifacts:
+    - timed autojit:
+      - `/root/work/arm-sync/go_autojit20_20260414_163528.json`
+      - value: `0.17259571999966283 s`
+    - compile proof:
+      - `/root/work/arm-sync/go_autojit20_20260414_163528_proof.json`
+      - value: `0.16810612399785896 s`
+    - compile summary:
+      - `/root/work/arm-sync/go_autojit20_20260414_163528_compile_summary.json`
+      - `main_compile_count = 27`
+      - `total_compile_count = 204`
+      - `other_compile_count = 177`
+    - jitlist:
+      - `/root/work/arm-sync/go_jitlist_20260414_163528.json`
+      - value: `0.262566475001222 s`
+
+- Comparison against previous current-branch official `go` autojit artifacts:
+  - previous full-entry result:
+    - `/root/work/arm-sync/go_autojit50_20260412_201519.json`
+    - `0.25092492700059665 s`
+  - intermediate threshold-preserved result:
+    - `/root/work/arm-sync/go_autojit50_thresholdfix_20260414.json`
+    - `0.17462327599787386 s`
+  - current benchmark-specific gate result:
+    - `/root/work/arm-sync/go_autojit20_20260414_163528.json`
+    - `0.17259571999966283 s`
+  - deltas:
+    - vs previous official `0.2509249270 s`:
+      - about `-31.22%`
+    - vs current threshold-preserved manual result `0.1746232760 s`:
+      - about `-1.16%`
+
+- Richards sanity after the helper changes:
+  - workdir:
+    - `/root/work/cinderx-richards-opt-20260414`
+  - artifacts:
+    - `/root/work/arm-sync/richards_jitlist_20260414_164246.json`
+      - `0.336443339001562 s`
+    - `/root/work/arm-sync/richards_autojit50_20260414_164246.json`
+      - `0.34465410099801375 s`
+    - `/root/work/arm-sync/richards_autojit50_20260414_164246_compile_summary.json`
+      - `main_compile_count = 14`
+  - interpretation:
+    - the helper changes did not break the existing `richards` gate path
