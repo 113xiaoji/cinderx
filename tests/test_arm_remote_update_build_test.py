@@ -130,6 +130,11 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
         self.assertIn('AUTOJIT_GATE=20', text)
         self.assertIn('AUTOJIT_GATE="$AUTOJIT"', text)
 
+    def test_raytrace_defaults_to_higher_worker_autojit_gate(self) -> None:
+        text = self._helper_text()
+        self.assertIn('elif [[ "$BENCH" == "raytrace" ]]; then', text)
+        self.assertIn('AUTOJIT_GATE=100', text)
+
     def test_richards_defaults_to_focused_jitlist(self) -> None:
         text = self._helper_text()
         self.assertIn('BENCH_JITLIST_ENTRIES="${BENCH_JITLIST_ENTRIES:-}"', text)

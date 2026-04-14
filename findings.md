@@ -5587,6 +5587,66 @@ Conclusion:
     - the remaining blocker for a fresh full-entry artifact is ARM disk space,
       not a correctness or performance regression in the new default
 
+### `richards_super` helper-policy check (`2026-04-14`)
+
+- Benchmark code inspection:
+  - source:
+    - `/root/venv-cinderx314/lib/python3.14/site-packages/pyperformance/data-files/benchmarks/bm_richards_super/run_benchmark.py`
+  - structure is very close to `richards`, but differs in a few places:
+    - `Task.__init__` stores `last_packet`
+    - subclasses use `super().__init__(...)`
+    - task methods carry `assert isinstance(...)` checks
+- Same-workdir A/B in the helper-built environment:
+  - workdir:
+    - `/root/work/cinderx-richards-ab-20260414`
+  - artifacts:
+    - `/tmp/richards_super_broad_defer0_20260414_214531.json`
+      - `0.1438089180010138 s`
+    - `/tmp/richards_super_broad_defer1_20260414_214531.json`
+      - `0.3856493639977998 s`
+    - `/tmp/richards_super_richards_autojit_defer0_20260414_214531.json`
+      - `0.17234476400335552 s`
+    - `/tmp/richards_super_richards_jitlist_defer0_20260414_214531.json`
+      - `0.16265655600000173 s`
+  - interpretation:
+    - `richards_super` is, like `richards`, strongly harmed by deferred worker
+      JIT:
+      - broad `defer=0` vs broad `defer=1`: about `-62.71%`
+    - but unlike `richards`, it does not benefit from reusing the current
+      `richards` focused jitlists
+    - the best tested policy remains the existing helper default:
+      - broad `__main__:*`
+      - eager worker JIT (`defer=0`)
+      - no benchmark-specific focused jitlist change recommended
+
+### `raytrace` worker autojit gate tuning (`2026-04-14`)
+
+- Same-workdir A/B in the helper-built environment:
+  - workdir:
+    - `/root/work/cinderx-richards-ab-20260414`
+  - held constant:
+    - broad worker filter `CINDERX_JITLIST_ENTRIES='__main__:*'`
+    - eager worker JIT (`CINDERX_DEFER_WORKER_JIT=0`)
+  - artifacts:
+    - `/tmp/raytrace_gate20_20260414_214714.json`
+      - `0.5840771989969653 s`
+    - `/tmp/raytrace_gate50_20260414_214714.json`
+      - `0.5771076610035379 s`
+    - `/tmp/raytrace_gate100_20260414_214714.json`
+      - `0.5544077000013203 s`
+    - `/tmp/raytrace_gate200_20260414_214714.json`
+      - `0.5621677210001508 s`
+  - interpretation:
+    - for `raytrace`, entering JIT a bit later than the generic default helps
+      the cold single-value path
+    - `100` is the best tested gate in this group:
+      - vs `50`: about `-3.93%`
+      - vs `20`: about `-5.08%`
+      - vs `200`: about `-1.38%`
+  - decision:
+    - add a benchmark-specific helper default:
+      - `raytrace -> AUTOJIT_GATE=100`
+
 ### `richards_super` policy probes (`2026-04-14`)
 
 - Context:

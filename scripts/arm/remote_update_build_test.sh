@@ -52,6 +52,10 @@ fi
 if [[ -z "$AUTOJIT_GATE" ]]; then
   if [[ "$BENCH" == "go" ]]; then
     AUTOJIT_GATE=20
+  elif [[ "$BENCH" == "deltablue" ]]; then
+    AUTOJIT_GATE=20
+  elif [[ "$BENCH" == "raytrace" ]]; then
+    AUTOJIT_GATE=100
   else
     AUTOJIT_GATE="$AUTOJIT"
   fi
