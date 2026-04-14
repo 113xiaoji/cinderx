@@ -23,6 +23,7 @@ AUTOJIT_GATE="${AUTOJIT_GATE:-}"
 AUTOJIT_USE_JITLIST_FILTER="${AUTOJIT_USE_JITLIST_FILTER:-1}"
 AUTOJIT_EXTRA_JITLIST="${AUTOJIT_EXTRA_JITLIST:-}"
 BENCH_JITLIST_ENTRIES="${BENCH_JITLIST_ENTRIES:-}"
+BENCH_AUTOJIT_JITLIST_ENTRIES="${BENCH_AUTOJIT_JITLIST_ENTRIES:-}"
 DEFER_WORKER_JIT="${DEFER_WORKER_JIT:-}"
 ARM_RUNTIME_SKIP_TESTS="${ARM_RUNTIME_SKIP_TESTS:-}"
 EXTRA_TEST_CMD="${EXTRA_TEST_CMD:-}"
@@ -61,9 +62,16 @@ if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
 fi
 if [[ -z "$BENCH_JITLIST_ENTRIES" ]]; then
   if [[ "$BENCH" == "richards" ]]; then
-    BENCH_JITLIST_ENTRIES="__main__:schedule,__main__:HandlerTask.fn,__main__:DeviceTask.fn,__main__:IdleTask.fn,__main__:Richards.run,__main__:Task.waitTask,__main__:Task.qpkt,__main__:Task.addPacket,__main__:Task.release,__main__:Task.hold,__main__:TaskState.running,__main__:TaskState.packetPending,__main__:HandlerTaskRec.deviceInAdd,__main__:HandlerTaskRec.workInAdd"
+    BENCH_JITLIST_ENTRIES="__main__:schedule,__main__:Task.runTask,__main__:TaskState.isTaskHoldingOrWaiting,__main__:TaskState.isWaitingWithPacket,__main__:HandlerTask.fn,__main__:WorkTask.fn,__main__:IdleTask.fn,__main__:DeviceTask.fn,__main__:Task.qpkt,__main__:Task.addPacket,__main__:Task.release,__main__:Task.waitTask,__main__:Task.hold,__main__:Packet.append_to"
   else
     BENCH_JITLIST_ENTRIES="__main__:*"
+  fi
+fi
+if [[ -z "$BENCH_AUTOJIT_JITLIST_ENTRIES" ]]; then
+  if [[ "$BENCH" == "richards" ]]; then
+    BENCH_AUTOJIT_JITLIST_ENTRIES="__main__:schedule,__main__:HandlerTask.fn,__main__:DeviceTask.fn,__main__:IdleTask.fn,__main__:Richards.run,__main__:Task.waitTask,__main__:Task.qpkt,__main__:Task.addPacket,__main__:Task.release,__main__:Task.hold,__main__:TaskState.running,__main__:TaskState.packetPending,__main__:HandlerTaskRec.deviceInAdd,__main__:HandlerTaskRec.workInAdd"
+  else
+    BENCH_AUTOJIT_JITLIST_ENTRIES="$BENCH_JITLIST_ENTRIES"
   fi
 fi
 if [[ -z "$DEFER_WORKER_JIT" ]]; then
@@ -369,7 +377,7 @@ LOG="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.log"
 AUTOJIT_JSON="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
 AUTOJIT_PROOF_JSON="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}_proof.json"
 if [[ "$AUTOJIT_USE_JITLIST_FILTER" == "1" ]]; then
-  AUTOJIT_JITLIST_ENTRIES="$BENCH_JITLIST_ENTRIES"
+  AUTOJIT_JITLIST_ENTRIES="$BENCH_AUTOJIT_JITLIST_ENTRIES"
   if [[ -n "$AUTOJIT_EXTRA_JITLIST" ]]; then
     AUTOJIT_JITLIST_ENTRIES="$AUTOJIT_JITLIST_ENTRIES,$AUTOJIT_EXTRA_JITLIST"
   fi

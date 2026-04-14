@@ -140,10 +140,21 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
         self.assertIn('__main__:HandlerTask.fn', text)
         self.assertIn('__main__:DeviceTask.fn', text)
         self.assertIn('__main__:IdleTask.fn', text)
-        self.assertIn('__main__:Richards.run', text)
+        self.assertIn('__main__:Task.runTask', text)
+        self.assertIn('__main__:WorkTask.fn', text)
+        self.assertIn('__main__:TaskState.isTaskHoldingOrWaiting', text)
         self.assertIn('JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-$BENCH_JITLIST_ENTRIES}"', text)
-        self.assertIn('AUTOJIT_JITLIST_ENTRIES="$BENCH_JITLIST_ENTRIES"', text)
-        self.assertNotIn('AUTOJIT_JITLIST_ENTRIES="__main__:*"', text)
+
+    def test_richards_autojit_defaults_keep_separate_filter(self) -> None:
+        text = self._helper_text()
+        self.assertIn(
+            'BENCH_AUTOJIT_JITLIST_ENTRIES="${BENCH_AUTOJIT_JITLIST_ENTRIES:-}"',
+            text,
+        )
+        self.assertIn('if [[ -z "$BENCH_AUTOJIT_JITLIST_ENTRIES" ]]; then', text)
+        self.assertIn('__main__:Richards.run', text)
+        self.assertIn('__main__:HandlerTaskRec.deviceInAdd', text)
+        self.assertIn('AUTOJIT_JITLIST_ENTRIES="$BENCH_AUTOJIT_JITLIST_ENTRIES"', text)
 
     def test_autojit_gate_uses_configured_worker_jit_deferral(self) -> None:
         text = self._helper_text()
