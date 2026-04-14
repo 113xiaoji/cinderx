@@ -5450,3 +5450,53 @@ Conclusion:
   - the next blocker for `bm_go.Board.useful` is earlier in the pipeline:
     the `neighbour.find()` load site is not getting a recoverable MWV-like
     specialization signal in the real benchmark path
+
+## 2026-04-14 bm_go deeper-state compile maturity
+
+- Re-checking `bm_go.Board.useful` with a richer real game state changed the
+  conclusion materially.
+- With moves:
+  - `(0,0)`, `(1,0)`, `(0,1)`, `(2,0)`, `(2,1)`, `(1,2)`
+  - and probe position `(1,1)`
+- the real benchmark method now shows, after warmup:
+  - `board.useful_fast(board.squares[probe_pos]) == False`
+  - the hot `neighbour.find()` site specializes to:
+    - `LOAD_ATTR_METHOD_WITH_VALUES 19 (find + NULL|self)`
+- Explicit compile after this deeper-state warmup gives:
+  - `jit.force_compile(Board.useful) == True`
+  - `num_inlined_functions = 4`
+  - result `2`
+- This is a much stronger signal than the earlier shallow-state probes:
+  - the real benchmark path is capable of reaching the desired `find` fast path
+  - but it is **state / profile maturity dependent**
+- Updated interpretation:
+  - the remaining `bm_go` opportunity now looks like
+    **compile timing / recompile-after-profile-maturation**
+  - not a missing inliner capability for `find` itself
+
+## 2026-04-14 exact Python method recovery experiment
+
+- Experimental runtime direction:
+  - in
+    [simplify.cpp](C:/work/code/cinderx1/cinderx/cinderx/Jit/hir/simplify.cpp)
+  - recover `LoadMethodCached + CallMethod` into a Python-function
+    `VectorCall` when:
+    - receiver type is exact
+    - method lookup on the type resolves to a `PyFunction`
+- Validation:
+  - helper path on `/root/venv-cinderx314-exactpycall`:
+    - `Ran 99 tests in 65.517s`
+    - `OK`
+    - with the two collection-derived tests temporarily skipped
+  - on real `bm_go`:
+    - `Board.useful` inline count increased from `1` to `2`
+    - `UCTNode.play` inline count increased from `5` to `7`
+- But benchmark outcome did not justify landing it:
+  - 7-sample median `bm_go.versus_cpu()`:
+    - baseline `defaultarg`: `0.2064138580026338`
+    - experiment `exactpycall`: `0.20723362499848008`
+    - about `+0.4%`
+- Updated interpretation:
+  - this line is technically viable
+  - but it is not a net-positive benchmark win in its current form
+  - it should remain experimental rather than be landed as-is

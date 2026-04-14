@@ -464,6 +464,34 @@
   - so the next real `bm_go` blocker remains upstream of the new default-arg
     inliner capability
 
+## 2026-04-14 deeper-state bm_go follow-up
+
+- A richer real game state changed the picture:
+  - after warming `Board.useful((1,1))` on a denser board state,
+    the real benchmark bytecode now shows
+    `LOAD_ATTR_METHOD_WITH_VALUES` for `neighbour.find()`
+  - explicit compile of the real `Board.useful` in that state reaches
+    `num_inlined_functions = 4`
+- This means:
+  - the `find` site is not inherently unsupported
+  - the remaining opportunity is mostly about **when** the function gets
+    compiled relative to profile maturation
+
+## 2026-04-14 exact-Python-method recovery trial
+
+- Tried a narrow simplify-time recovery:
+  - convert `LoadMethodCached + CallMethod` to a Python-function `VectorCall`
+    when receiver type is exact and the type dictionary resolves the method to
+    a `PyFunction`
+- Validation outcome:
+  - helper correctness looked acceptable
+  - real `bm_go` inline counts improved
+  - but 7-sample median moved the wrong way:
+    - `0.20641s -> 0.20723s`
+- Conclusion:
+  - do not land this patch in its current form
+  - keep the focus on compile timing / profile maturation instead
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

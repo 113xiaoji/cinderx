@@ -127,6 +127,15 @@
           - real `Board.useful` still does not gain an extra inline from this
             patch, because `neighbour.find()` is not reaching MWV-like
             specialization in the benchmark path
+      - deeper-state `bm_go` follow-up:
+        - real `Board.useful` can reach `LOAD_ATTR_METHOD_WITH_VALUES` for
+          `neighbour.find()` once the non-empty branch is truly hot
+        - explicit compile in that state reaches `num_inlined_functions = 4`
+        - current working hypothesis is now compile timing / profile maturity
+      - exact-Python-method recovery trial:
+        - extra inline counts were achievable on `bm_go`
+        - but the 7-sample median still regressed slightly
+        - keep this line experimental; do not land it as-is
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
