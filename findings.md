@@ -5452,6 +5452,10 @@ Conclusion:
       - about `-31.22%`
     - vs current threshold-preserved manual result `0.1746232760 s`:
       - about `-1.16%`
+    - vs intermediate official two-pass helper result:
+      - `/root/work/arm-sync/go_autojit50_20260414_162027.json`
+      - `0.3157303250009136 s`
+      - about `-45.33%`
 
 - Richards sanity after the helper changes:
   - workdir:
@@ -5465,3 +5469,48 @@ Conclusion:
       - `main_compile_count = 14`
   - interpretation:
     - the helper changes did not break the existing `richards` gate path
+
+### Current direction check after `go` gains (`2026-04-14`)
+
+- Additional `go` tuning probes on the current build:
+  - `go` autojit with debug logging on vs off:
+    - `PYTHONJITDEBUG=1` median over 5 samples:
+      - `0.17831333899812307 s`
+    - timed run without debug logging median over 5 samples:
+      - `0.1730699479994655 s`
+    - interpretation:
+      - removing debug logging from the timed pass gives another small but real
+        cold-path win (`~ -2.94%`)
+  - `go` jitlist shape probes:
+    - broad `__main__:*`:
+      - `0.24591881499873125 s`
+    - focused candidate list:
+      - `0.298435355998663 s`
+    - tighter candidate list:
+      - `0.3052224290004233 s`
+    - interpretation:
+      - for `go`, broad `__main__:*` remains better than the narrower jitlist
+        candidates tried so far
+  - `go` autojit gate probes on current build:
+    - gate `20`: `0.1739248250014498 s`
+    - gate `50`: `0.18020292800065363 s`
+    - gate `100`: `0.18553170599989244 s`
+    - gate `200`: `0.19196161099898745 s`
+    - interpretation:
+      - `20` is the best tested benchmark-specific worker autojit default for
+        `go`
+
+- Richards follow-up probes:
+  - broad jitlist with current current-build manual probe:
+    - `0.726145741999062 s`
+  - focused jitlist candidates tried:
+    - hot10: `0.49361365900040255 s`
+    - hot14: `0.6512749139983498 s`
+  - broad autojit gate probes:
+    - gate `20`: `0.350631498000439 s`
+    - gate `50`: `0.3378977059983299`
+    - gate `100`: `0.34371607700086315`
+  - interpretation:
+    - current manual probes are noisy, but they do not support changing the
+      default richards gate away from `50` yet
+    - richards should stay on the existing helper defaults for now

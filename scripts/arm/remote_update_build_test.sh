@@ -22,6 +22,7 @@ RECREATE_PYPERF_VENV="${RECREATE_PYPERF_VENV:-0}"
 AUTOJIT_GATE="${AUTOJIT_GATE:-}"
 AUTOJIT_USE_JITLIST_FILTER="${AUTOJIT_USE_JITLIST_FILTER:-1}"
 AUTOJIT_EXTRA_JITLIST="${AUTOJIT_EXTRA_JITLIST:-}"
+BENCH_JITLIST_ENTRIES="${BENCH_JITLIST_ENTRIES:-}"
 DEFER_WORKER_JIT="${DEFER_WORKER_JIT:-}"
 ARM_RUNTIME_SKIP_TESTS="${ARM_RUNTIME_SKIP_TESTS:-}"
 EXTRA_TEST_CMD="${EXTRA_TEST_CMD:-}"
@@ -57,6 +58,13 @@ fi
 if ! [[ "$AUTOJIT_GATE" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AUTOJIT_GATE must be a non-negative integer, got '$AUTOJIT_GATE'"
   exit 1
+fi
+if [[ -z "$BENCH_JITLIST_ENTRIES" ]]; then
+  if [[ "$BENCH" == "richards" ]]; then
+    BENCH_JITLIST_ENTRIES="__main__:schedule,__main__:HandlerTask.fn,__main__:DeviceTask.fn,__main__:IdleTask.fn,__main__:Richards.run,__main__:Task.waitTask,__main__:Task.qpkt,__main__:Task.addPacket,__main__:Task.release,__main__:Task.hold,__main__:TaskState.running,__main__:TaskState.packetPending,__main__:HandlerTaskRec.deviceInAdd,__main__:HandlerTaskRec.workInAdd"
+  else
+    BENCH_JITLIST_ENTRIES="__main__:*"
+  fi
 fi
 if [[ -z "$DEFER_WORKER_JIT" ]]; then
   if [[ "$BENCH" == "richards" ]]; then
@@ -347,7 +355,7 @@ fi
 
 echo ">> pyperformance gate (jitlist, debug-single-value)"
 . "$DRIVER_VENV/bin/activate"
-JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-__main__:*}"
+JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-$BENCH_JITLIST_ENTRIES}"
 env PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" CINDERX_JITLIST_ENTRIES="$JITLIST_ENTRIES" PYTHONJITENABLEJITLISTWILDCARDS=1 \
   CINDERX_DEFER_WORKER_JIT="$DEFER_WORKER_JIT" \
   python -m pyperformance run --debug-single-value -b "$BENCH" \
@@ -361,7 +369,7 @@ LOG="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.log"
 AUTOJIT_JSON="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}.json"
 AUTOJIT_PROOF_JSON="/root/work/arm-sync/${BENCH}_autojit${AUTOJIT_GATE}_${RUN_ID}_proof.json"
 if [[ "$AUTOJIT_USE_JITLIST_FILTER" == "1" ]]; then
-  AUTOJIT_JITLIST_ENTRIES="__main__:*"
+  AUTOJIT_JITLIST_ENTRIES="$BENCH_JITLIST_ENTRIES"
   if [[ -n "$AUTOJIT_EXTRA_JITLIST" ]]; then
     AUTOJIT_JITLIST_ENTRIES="$AUTOJIT_JITLIST_ENTRIES,$AUTOJIT_EXTRA_JITLIST"
   fi

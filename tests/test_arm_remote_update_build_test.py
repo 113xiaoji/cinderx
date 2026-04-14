@@ -131,6 +131,20 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
         self.assertIn('AUTOJIT_GATE=20', text)
         self.assertIn('AUTOJIT_GATE="$AUTOJIT"', text)
 
+    def test_richards_defaults_to_focused_jitlist(self) -> None:
+        text = self._helper_text()
+        self.assertIn('BENCH_JITLIST_ENTRIES="${BENCH_JITLIST_ENTRIES:-}"', text)
+        self.assertIn('if [[ -z "$BENCH_JITLIST_ENTRIES" ]]; then', text)
+        self.assertIn('if [[ "$BENCH" == "richards" ]]; then', text)
+        self.assertIn('__main__:schedule', text)
+        self.assertIn('__main__:HandlerTask.fn', text)
+        self.assertIn('__main__:DeviceTask.fn', text)
+        self.assertIn('__main__:IdleTask.fn', text)
+        self.assertIn('__main__:Richards.run', text)
+        self.assertIn('JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-$BENCH_JITLIST_ENTRIES}"', text)
+        self.assertIn('AUTOJIT_JITLIST_ENTRIES="$BENCH_JITLIST_ENTRIES"', text)
+        self.assertNotIn('AUTOJIT_JITLIST_ENTRIES="__main__:*"', text)
+
     def test_autojit_gate_uses_configured_worker_jit_deferral(self) -> None:
         text = self._helper_text()
         self.assertIn('CINDERX_DEFER_WORKER_JIT="$DEFER_WORKER_JIT"', text)
