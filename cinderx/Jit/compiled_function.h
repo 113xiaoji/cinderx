@@ -80,6 +80,15 @@ bool isJitCompiled(const PyFunctionObject* func);
 
 namespace jit {
 
+struct CompileProfileStats {
+  uint64_t calls_at_compile{0};
+  uint32_t bytecode_hash{0};
+  int call_ops{0};
+  int attr_ops{0};
+  int method_load_sites{0};
+  int mwv_sites{0};
+};
+
 // Data members extracted from CompiledFunction to enable separate storage.
 struct CompiledFunctionData {
   std::span<const std::byte> code;
@@ -89,6 +98,7 @@ struct CompiledFunctionData {
   std::chrono::nanoseconds compile_time{};
   hir::Function::InlineFunctionStats inline_function_stats;
   hir::OpcodeCounts hir_opcode_counts{};
+  CompileProfileStats compile_profile_stats{};
   // All the code patchers pointing to patch points in this function.
   std::vector<std::unique_ptr<CodePatcher>> code_patchers;
   std::unique_ptr<hir::Function> irfunc;
@@ -109,6 +119,7 @@ class CompiledFunction {
       int spill_stack_size,
       hir::Function::InlineFunctionStats inline_function_stats,
       const hir::OpcodeCounts& hir_opcode_counts,
+      const CompileProfileStats& compile_profile_stats,
       CodeRuntime* runtime) {
     data_.code = code;
     data_.vectorcall_entry = vectorcall_entry;
@@ -116,6 +127,7 @@ class CompiledFunction {
     data_.spill_stack_size = spill_stack_size;
     data_.inline_function_stats = std::move(inline_function_stats);
     data_.hir_opcode_counts = hir_opcode_counts;
+    data_.compile_profile_stats = compile_profile_stats;
     data_.runtime = runtime;
   }
 
@@ -173,6 +185,10 @@ class CompiledFunction {
 
   const hir::OpcodeCounts& hirOpcodeCounts() const {
     return data_.hir_opcode_counts;
+  }
+
+  const CompileProfileStats& compileProfileStats() const {
+    return data_.compile_profile_stats;
   }
 
  private:

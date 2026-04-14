@@ -5525,3 +5525,42 @@ Conclusion:
     - deeper compile-maturity metadata
     - and/or an explicit recompile-after-profile-maturation hook
     - rather than another threshold-only delay rule
+
+## 2026-04-14 compile-profile metadata scaffold
+
+- New non-behavioral scaffolding added:
+  - compiled functions now store compile-time bytecode/profile metadata:
+    - `calls_at_compile`
+    - `bytecode_hash`
+    - `call_ops`
+    - `attr_ops`
+    - `method_load_sites`
+    - `mwv_sites`
+- New Python API:
+  - `jit.get_function_compile_profile_stats(func)`
+- Touch points:
+  - [compiled_function.h](C:/work/code/cinderx1/cinderx/cinderx/Jit/compiled_function.h)
+  - [pyjit.cpp](C:/work/code/cinderx1/cinderx/cinderx/Jit/pyjit.cpp)
+  - [jit.py](C:/work/code/cinderx1/cinderx/cinderx/PythonLib/cinderx/jit.py)
+  - [cinderjit.pyi](C:/work/code/cinderx1/cinderx/cinderx/cinderjit.pyi)
+- New regression test:
+  - `test_compile_profile_stats_reports_method_load_maturity`
+- Unified ARM helper validation:
+  - isolated install:
+    - `/root/venv-cinderx314-metastats2`
+  - helper result with one pre-existing local experimental red test skipped:
+    - `Ran 101 tests in 66.211s`
+    - `OK`
+- Direct API smoke on ARM:
+  - `jit.get_function_compile_profile_stats(Board.process)` returned:
+    - `calls_at_compile = 20000`
+    - `bytecode_hash = 1449234098`
+    - `call_ops = 1`
+    - `attr_ops = 5`
+    - `method_load_sites = 1`
+    - `mwv_sites = 1`
+- Updated interpretation:
+  - this is the right next layer for the work
+  - it does not try to solve compile timing yet
+  - but it gives the next recompile-after-maturation design a concrete data
+    surface instead of relying on heuristics alone

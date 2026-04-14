@@ -895,6 +895,97 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreater(payload["compiled_size"], 0, proc.stdout)
             self.assertEqual(payload["result"], [3.0, 1.0], proc.stdout)
 
+    def test_compile_profile_stats_reports_method_load_maturity(self) -> None:
+        code = textwrap.dedent(
+            """
+            import json
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Node:
+                def __init__(self, value, ref=None):
+                    self.value = value
+                    self.ref = ref
+                    self.tag = 0
+
+                def find(self, update=False):
+                    ref = self.ref if self.ref is not None else self
+                    if ref.value != self.value:
+                        ref = ref.find(update)
+                        if update:
+                            self.ref = ref
+                    return ref
+
+            class Board:
+                def __init__(self):
+                    root = Node(1, None)
+                    mid = Node(2, root)
+                    self.items = [Node(3, mid) for _ in range(8)]
+
+                def process(self):
+                    total = 0
+                    for item in self.items:
+                        ref = item.find()
+                        if ref.tag != 1:
+                            ref.tag = 1
+                        total += ref.value
+                    return total
+
+            board = Board()
+            for _ in range(20000):
+                board.process()
+
+            assert jit.force_compile(Board.process)
+            stats = jit.get_function_compile_profile_stats(Board.process)
+            print(
+                json.dumps(
+                    {
+                        "compiled": jit.is_jit_compiled(Board.process),
+                        "bytecode_hash": stats["bytecode_hash"],
+                        "calls_at_compile": stats["calls_at_compile"],
+                        "call_ops": stats["call_ops"],
+                        "attr_ops": stats["attr_ops"],
+                        "method_load_sites": stats["method_load_sites"],
+                        "mwv_sites": stats["mwv_sites"],
+                        "result": board.process(),
+                    }
+                )
+            )
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/compile_profile_stats.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertTrue(payload["compiled"], proc.stdout)
+            self.assertGreater(payload["bytecode_hash"], 0, proc.stdout)
+            self.assertGreaterEqual(payload["calls_at_compile"], 0, proc.stdout)
+            self.assertGreaterEqual(payload["call_ops"], 1, proc.stdout)
+            self.assertGreaterEqual(payload["attr_ops"], 2, proc.stdout)
+            self.assertGreaterEqual(payload["method_load_sites"], 1, proc.stdout)
+            self.assertGreaterEqual(payload["mwv_sites"], 1, proc.stdout)
+            self.assertEqual(payload["result"], 8, proc.stdout)
+
     def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
         code = textwrap.dedent(
             """

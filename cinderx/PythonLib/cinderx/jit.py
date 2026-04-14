@@ -42,6 +42,7 @@ try:
         get_compiled_spill_stack_size,
         get_compiled_stack_size,
         get_function_compilation_time,
+        get_function_compile_profile_stats,
         get_function_hir_opcode_counts,
         get_inlined_functions_stats,
         get_jit_list,
@@ -164,6 +165,9 @@ except ImportError:
 
     def get_function_compilation_time(func: FuncAny) -> int:
         return 0
+
+    def get_function_compile_profile_stats(func: FuncAny) -> dict[str, int] | None:
+        return None
 
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:
         return {}

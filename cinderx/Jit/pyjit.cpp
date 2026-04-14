@@ -182,6 +182,11 @@ struct HotLoopOpcodeCounts {
   int attr_ops{0};
 };
 
+struct MethodLoadSpecializationStats {
+  int method_load_sites{0};
+  int mwv_sites{0};
+};
+
 bool functionHasBackwardJump(BorrowedRef<PyCodeObject> code) {
   int limit = countIndices(code);
   for (int idx = 0; idx < limit;) {
@@ -208,6 +213,50 @@ HotLoopOpcodeCounts analyzeFunctionOpcodeCounts(BorrowedRef<PyCodeObject> code) 
     idx += inlineCacheSize(code, idx) + 1;
   }
   return counts;
+}
+
+bool isNonSelfLocalLoadForMethodSpecialization(
+    const BytecodeInstruction& instr) {
+  switch (instr.opcode()) {
+    case LOAD_FAST:
+    case LOAD_FAST_BORROW:
+    case LOAD_FAST_CHECK:
+      return instr.oparg() != 0;
+    default:
+      return false;
+  }
+}
+
+MethodLoadSpecializationStats analyzeMethodLoadSpecialization(
+    BorrowedRef<PyCodeObject> code) {
+  MethodLoadSpecializationStats stats;
+  bool has_prev = false;
+  BytecodeInstruction prev{code, BCOffset{0}};
+
+  for (auto bc_instr : BytecodeInstructionBlock{code}) {
+    bool local_nonself_method_site =
+        has_prev && isNonSelfLocalLoadForMethodSpecialization(prev);
+    if (bc_instr.specializedOpcode() == LOAD_ATTR_METHOD_WITH_VALUES) {
+      if (local_nonself_method_site) {
+        stats.method_load_sites++;
+        stats.mwv_sites++;
+      }
+      prev = bc_instr;
+      has_prev = true;
+      continue;
+    }
+#if PY_VERSION_HEX >= 0x030C0000
+    if (
+        local_nonself_method_site && bc_instr.opcode() == LOAD_ATTR &&
+        (bc_instr.oparg() & 1) != 0) {
+      stats.method_load_sites++;
+    }
+#endif
+    prev = bc_instr;
+    has_prev = true;
+  }
+
+  return stats;
 }
 
 HotLoopOpcodeCounts analyzeHotLoopOpcodeCounts(
@@ -2420,6 +2469,44 @@ PyObject* get_function_hir_opcode_counts(PyObject* /* self */, PyObject* arg) {
   return dict.release();
 }
 
+PyObject* get_function_compile_profile_stats(PyObject* /* self */, PyObject* arg) {
+  if (jitCtx() == nullptr || !PyFunction_Check(arg)) {
+    Py_RETURN_NONE;
+  }
+  BorrowedRef<PyFunctionObject> func{arg};
+  CompiledFunction* compiled_func = jitCtx()->lookupFunc(func);
+  if (compiled_func == nullptr) {
+    Py_RETURN_NONE;
+  }
+
+  const CompileProfileStats& stats = compiled_func->compileProfileStats();
+  Ref<> dict = Ref<>::steal(PyDict_New());
+  if (dict == nullptr) {
+    return nullptr;
+  }
+
+  auto set_long = [&](const char* name, long long value) -> int {
+    Ref<> value_obj = Ref<>::steal(PyLong_FromLongLong(value));
+    return value_obj != nullptr ? PyDict_SetItemString(dict, name, value_obj) : -1;
+  };
+  auto set_ulong = [&](const char* name, unsigned long long value) -> int {
+    Ref<> value_obj = Ref<>::steal(PyLong_FromUnsignedLongLong(value));
+    return value_obj != nullptr ? PyDict_SetItemString(dict, name, value_obj) : -1;
+  };
+
+  if (
+      set_ulong("calls_at_compile", stats.calls_at_compile) < 0 ||
+      set_ulong("bytecode_hash", stats.bytecode_hash) < 0 ||
+      set_long("call_ops", stats.call_ops) < 0 ||
+      set_long("attr_ops", stats.attr_ops) < 0 ||
+      set_long("method_load_sites", stats.method_load_sites) < 0 ||
+      set_long("mwv_sites", stats.mwv_sites) < 0) {
+    return nullptr;
+  }
+
+  return dict.release();
+}
+
 PyObject* mlock_profiler_dependencies(PyObject* /* self */, PyObject*) {
   if (jitCtx() == nullptr) {
     Py_RETURN_NONE;
@@ -3506,6 +3593,12 @@ PyMethodDef jit_methods[] = {
      METH_O,
      PyDoc_STR(
          "Return a map from HIR opcode name to the count of that opcode in the "
+         "JIT-compiled version of this function.")},
+    {"get_function_compile_profile_stats",
+     get_function_compile_profile_stats,
+     METH_O,
+     PyDoc_STR(
+         "Return compile-time bytecode maturity/profile stats for the "
          "JIT-compiled version of this function.")},
     {"mlock_profiler_dependencies",
      mlock_profiler_dependencies,
@@ -4608,6 +4701,18 @@ Result compilePreloaderImpl(
 
   register_pycode_debug_symbol(
       preloader.code(), preloader.fullname().c_str(), *compiled_func);
+
+  CompileProfileStats profile_stats;
+  profile_stats.calls_at_compile = countCalls(code);
+  profile_stats.bytecode_hash = hashBytecode(code);
+  HotLoopOpcodeCounts opcode_counts = analyzeFunctionOpcodeCounts(code);
+  profile_stats.call_ops = opcode_counts.call_ops;
+  profile_stats.attr_ops = opcode_counts.attr_ops;
+  MethodLoadSpecializationStats method_stats =
+      analyzeMethodLoadSpecialization(code);
+  profile_stats.method_load_sites = method_stats.method_load_sites;
+  profile_stats.mwv_sites = method_stats.mwv_sites;
+  compiled_func->compile_profile_stats = profile_stats;
 
   jit_ctx->codeCompiled(func, key, std::move(*compiled_func));
 

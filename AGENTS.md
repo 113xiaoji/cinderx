@@ -143,6 +143,16 @@
           `bm_go` timing badly
         - current recommendation is to stop pursuing threshold-only delay rules
           and switch to maturity metadata / recompile design
+      - compile-profile metadata scaffold:
+        - compiled functions now retain compile-time bytecode/profile metadata
+        - new Python accessor:
+          - `jit.get_function_compile_profile_stats(func)`
+        - helper on `/root/venv-cinderx314-metastats2`:
+          - `Ran 101 tests in 66.211s`
+          - `OK`
+        - current recommendation:
+          - build the next timing/recompile work on top of this metadata rather
+            than another threshold-only delay heuristic
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

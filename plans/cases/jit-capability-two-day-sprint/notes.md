@@ -507,6 +507,30 @@
     - compile-maturity metadata
     - and/or a deliberate recompile-after-profile-maturation mechanism
 
+## 2026-04-14 compile-profile metadata
+
+- Added a pure observability scaffold rather than another policy change.
+- New stored compile-time metadata on compiled functions:
+  - `calls_at_compile`
+  - `bytecode_hash`
+  - `call_ops`
+  - `attr_ops`
+  - `method_load_sites`
+  - `mwv_sites`
+- New Python accessor:
+  - `jit.get_function_compile_profile_stats(func)`
+- ARM validation:
+  - helper on `/root/venv-cinderx314-metastats2` with the unrelated local
+    `go_like_collection_method_chain_inlines_find_after_helper_inline` red test
+    skipped:
+    - `Ran 101 tests in 66.211s`
+    - `OK`
+  - direct API smoke returned sensible values for a method-load-heavy helper
+- Conclusion:
+  - this is the right foundation for a future recompile-after-maturation
+    design
+  - it gives us evidence without perturbing current runtime policy
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：
