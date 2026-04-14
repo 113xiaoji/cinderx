@@ -75,11 +75,10 @@ if [[ -z "$BENCH_AUTOJIT_JITLIST_ENTRIES" ]]; then
   fi
 fi
 if [[ -z "$DEFER_WORKER_JIT" ]]; then
-  if [[ "$BENCH" == "richards" ]]; then
-    DEFER_WORKER_JIT=1
-  else
-    DEFER_WORKER_JIT=0
-  fi
+  # The richards worker startup crash chain has been fixed. Keeping worker JIT
+  # deferred now only delays useful compilation and regresses the cold-path
+  # benchmark run, so default to eager worker JIT for every benchmark.
+  DEFER_WORKER_JIT=0
 fi
 if [[ "$DEFER_WORKER_JIT" != "0" && "$DEFER_WORKER_JIT" != "1" ]]; then
   echo "ERROR: DEFER_WORKER_JIT must be 0 or 1, got '$DEFER_WORKER_JIT'"

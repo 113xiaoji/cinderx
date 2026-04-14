@@ -5514,3 +5514,75 @@ Conclusion:
     - current manual probes are noisy, but they do not support changing the
       default richards gate away from `50` yet
     - richards should stay on the existing helper defaults for now
+
+### Richards worker-JIT deferral recheck (`2026-04-14`)
+
+- Follow-up hypothesis:
+  - the earlier richards worker-startup crashes are fixed now, so keeping
+    `CINDERX_DEFER_WORKER_JIT=1` may be paying extra cold-path cost without
+    protecting anything useful anymore.
+- Unified-entry A/B evidence:
+  - workdir:
+    - `/root/work/cinderx-richards-ab-20260414`
+  - the A/B ran inside the standard ARM helper flow via `POST_PYPERF_CMD`, on
+    the helper-built wheel/pyperformance environment, while holding:
+    - `AUTOJIT_GATE=50`
+    - the same richards-focused autojit filter:
+      - `__main__:schedule`
+      - `__main__:HandlerTask.fn`
+      - `__main__:DeviceTask.fn`
+      - `__main__:IdleTask.fn`
+      - `__main__:Richards.run`
+      - `__main__:Task.waitTask`
+      - `__main__:Task.qpkt`
+      - `__main__:Task.addPacket`
+      - `__main__:Task.release`
+      - `__main__:Task.hold`
+      - `__main__:TaskState.running`
+      - `__main__:TaskState.packetPending`
+      - `__main__:HandlerTaskRec.deviceInAdd`
+      - `__main__:HandlerTaskRec.workInAdd`
+  - artifacts:
+    - `/root/work/arm-sync/richards_ab_default_defer1_20260414_173243.json`
+      - `0.22251762599989888 s`
+    - `/root/work/arm-sync/richards_ab_default_defer0_20260414_173243.json`
+      - `0.15065439499812783 s`
+    - `/root/work/arm-sync/richards_ab_plus_hot_defer1_20260414_173243.json`
+      - `0.2527011929996661 s`
+    - `/root/work/arm-sync/richards_ab_plus_hot_defer0_20260414_173243.json`
+      - `0.15511344900005497 s`
+  - interpretation:
+    - richards is materially faster when worker JIT is eager:
+      - `defer=0` vs `defer=1`: about `-32.30%`
+    - adding `WorkTask.fn` / `Task.runTask` on top of the current autojit
+      filter did not help; it regressed slightly in both defer modes
+
+- Same-workdir direct recheck (to rule out helper-script noise):
+  - reran the helper-equivalent richards autojit command in the same
+    `/root/work/cinderx-richards-ab-20260414` workdir, writing outputs to
+    `/tmp` to avoid `/root` filesystem pressure
+  - artifacts:
+    - `/tmp/richards_defer1_20260414_175744.json`
+      - `0.2220480849937303 s`
+    - `/tmp/richards_defer0_20260414_175744.json`
+      - `0.15360388700355543 s`
+  - interpretation:
+    - the same-workdir recheck reproduces the result closely:
+      - `defer=0` vs `defer=1`: about `-30.82%`
+    - this is strong enough to justify flipping the helper default from
+      deferred to eager worker JIT for richards
+
+- Standard full-entry follow-up:
+  - attempted to rerun the full richards helper path after the default flip on:
+    - `/root/work/cinderx-richards-opt4-20260414`
+  - result:
+    - the build failed with `ERROR Backend subprocess exited when trying to
+      invoke build_wheel`
+    - root cause was environment pressure, not benchmark behavior:
+      - `/dev/vda2` at `100%`
+      - build output ended with `OSError: [Errno 28] No space left on device`
+  - interpretation:
+    - the performance claim above comes from richards A/B runs inside the
+      helper-prepared environment and a same-workdir recheck
+    - the remaining blocker for a fresh full-entry artifact is ARM disk space,
+      not a correctness or performance regression in the new default

@@ -115,13 +115,12 @@ class RemoteUpdateBuildTestScriptTests(unittest.TestCase):
             text,
         )
 
-    def test_only_richards_defaults_to_deferred_worker_jit(self) -> None:
+    def test_worker_jit_deferral_defaults_off(self) -> None:
         text = self._helper_text()
         self.assertIn('DEFER_WORKER_JIT="${DEFER_WORKER_JIT:-}"', text)
         self.assertIn('if [[ -z "$DEFER_WORKER_JIT" ]]; then', text)
-        self.assertIn('if [[ "$BENCH" == "richards" ]]; then', text)
-        self.assertIn('DEFER_WORKER_JIT=1', text)
         self.assertIn('DEFER_WORKER_JIT=0', text)
+        self.assertNotIn('DEFER_WORKER_JIT=1', text)
 
     def test_go_defaults_to_lower_worker_autojit_gate(self) -> None:
         text = self._helper_text()
