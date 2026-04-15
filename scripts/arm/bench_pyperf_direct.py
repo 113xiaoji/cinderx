@@ -13,6 +13,20 @@ import time
 import types
 from pathlib import Path
 
+RECIPE_SUPPORTED_KEYS = {
+    "name",
+    "description",
+    "stub_pyperf",
+    "compile_strategy",
+    "compile_names",
+    "compile_exprs",
+    "reprofile_exprs",
+    "reprofile_warmup_runs",
+    "reprofile_warmup_expr",
+    "prewarm_runs",
+    "specialized_opcodes",
+}
+
 
 def load_module(path: Path, module_name: str):
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -34,6 +48,45 @@ def install_pyperf_stub():
 
     pyperf.Runner = _Runner
     sys.modules.setdefault("pyperf", pyperf)
+
+
+def load_recipe(path: Path):
+    recipe = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(recipe, dict):
+        raise TypeError(f"recipe must be a JSON object: {path}")
+    unknown_keys = sorted(set(recipe) - RECIPE_SUPPORTED_KEYS)
+    if unknown_keys:
+        raise ValueError(
+            f"recipe contains unsupported keys {unknown_keys}: {path}"
+        )
+    return recipe
+
+
+def apply_recipe_defaults(args, recipe):
+    if not recipe:
+        return args
+
+    def apply_if_default(arg_name, default_value, recipe_key=None, transform=None):
+        key = recipe_key or arg_name
+        if key not in recipe:
+            return
+        if getattr(args, arg_name) != default_value:
+            return
+        value = recipe[key]
+        if transform is not None:
+            value = transform(value)
+        setattr(args, arg_name, value)
+
+    apply_if_default("stub_pyperf", False)
+    apply_if_default("compile_strategy", "none")
+    apply_if_default("compile_names", "")
+    apply_if_default("compile_exprs_json", "[]", "compile_exprs", json.dumps)
+    apply_if_default("reprofile_exprs_json", "[]", "reprofile_exprs", json.dumps)
+    apply_if_default("reprofile_warmup_runs", 0)
+    apply_if_default("reprofile_warmup_expr", "")
+    apply_if_default("prewarm_runs", 0)
+    apply_if_default("specialized_opcodes", False)
+    return args
 
 
 def collect_functions(module):
@@ -170,6 +223,11 @@ def main() -> int:
     parser.add_argument("--module-name", default="bench_module")
     parser.add_argument("--bench-func", required=True)
     parser.add_argument("--bench-args-json", default="[]")
+    parser.add_argument(
+        "--recipe-json",
+        default="",
+        help="Path to a JSON recipe that fills default harness settings",
+    )
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--prewarm-runs", type=int, default=0)
     parser.add_argument(
@@ -211,6 +269,13 @@ def main() -> int:
     parser.add_argument("--specialized-opcodes", action="store_true")
     parser.add_argument("--output", default="")
     args = parser.parse_args()
+
+    recipe = None
+    recipe_path = ""
+    if args.recipe_json:
+        recipe_path = str(Path(args.recipe_json).resolve())
+        recipe = load_recipe(Path(args.recipe_json))
+        args = apply_recipe_defaults(args, recipe)
 
     module_path = Path(args.module_path)
     if args.stub_pyperf:
@@ -295,6 +360,8 @@ def main() -> int:
         all_hot_loop_skips.extend(stats.get("hot_loop_skip", []))
 
     payload = {
+        "recipe_name": recipe.get("name") if recipe else "",
+        "recipe_path": recipe_path,
         "module_path": str(module_path),
         "bench_func": args.bench_func,
         "bench_args": bench_args,

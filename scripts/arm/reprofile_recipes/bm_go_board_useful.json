@@ -1,0 +1,9 @@
+{
+  "name": "bm_go_board_useful",
+  "description": "Reprofile Board.useful after warming a deeper real-game board state so neighbour.find() can mature into MWV before recompilation.",
+  "stub_pyperf": true,
+  "reprofile_exprs": [
+    "Board.useful"
+  ],
+  "reprofile_warmup_expr": "(lambda history=[to_pos(0,0), to_pos(1,0), to_pos(0,1), to_pos(2,0), to_pos(2,1), to_pos(1,2)], probe=to_pos(1,1), runs=50000: (lambda: (lambda board=Board(): (board.replay(history), all(map(board.useful, [probe] * runs))))()))()"
+}

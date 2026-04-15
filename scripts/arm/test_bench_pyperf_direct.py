@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import textwrap
@@ -26,6 +27,95 @@ def load_temp_module(source: str):
 
 
 class BenchPyperfDirectTests(unittest.TestCase):
+    def test_load_recipe_rejects_unknown_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "recipe.json"
+            path.write_text(
+                json.dumps({"name": "bad", "unknown_key": 1}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError):
+                MODULE.load_recipe(path)
+
+    def test_apply_recipe_defaults_fills_empty_cli_values(self):
+        args = type(
+            "Args",
+            (),
+            {
+                "stub_pyperf": False,
+                "compile_strategy": "none",
+                "compile_names": "",
+                "compile_exprs_json": "[]",
+                "reprofile_exprs_json": "[]",
+                "reprofile_warmup_runs": 0,
+                "reprofile_warmup_expr": "",
+                "prewarm_runs": 0,
+                "specialized_opcodes": False,
+            },
+        )()
+        recipe = {
+            "name": "bm_go_board_useful",
+            "stub_pyperf": True,
+            "compile_strategy": "exprs",
+            "compile_exprs": ["Board.useful"],
+            "reprofile_exprs": ["Board.useful"],
+            "reprofile_warmup_runs": 7,
+            "reprofile_warmup_expr": "make_warmup()",
+            "prewarm_runs": 3,
+            "specialized_opcodes": True,
+        }
+
+        MODULE.apply_recipe_defaults(args, recipe)
+
+        self.assertTrue(args.stub_pyperf)
+        self.assertEqual(args.compile_strategy, "exprs")
+        self.assertEqual(args.compile_exprs_json, '["Board.useful"]')
+        self.assertEqual(args.reprofile_exprs_json, '["Board.useful"]')
+        self.assertEqual(args.reprofile_warmup_runs, 7)
+        self.assertEqual(args.reprofile_warmup_expr, "make_warmup()")
+        self.assertEqual(args.prewarm_runs, 3)
+        self.assertTrue(args.specialized_opcodes)
+
+    def test_apply_recipe_defaults_preserves_explicit_cli_overrides(self):
+        args = type(
+            "Args",
+            (),
+            {
+                "stub_pyperf": True,
+                "compile_strategy": "names",
+                "compile_names": "Board.useful",
+                "compile_exprs_json": '["explicit"]',
+                "reprofile_exprs_json": '["explicit"]',
+                "reprofile_warmup_runs": 11,
+                "reprofile_warmup_expr": "explicit_warmup()",
+                "prewarm_runs": 2,
+                "specialized_opcodes": True,
+            },
+        )()
+        recipe = {
+            "stub_pyperf": False,
+            "compile_strategy": "exprs",
+            "compile_names": "Board.other",
+            "compile_exprs": ["recipe"],
+            "reprofile_exprs": ["recipe"],
+            "reprofile_warmup_runs": 1,
+            "reprofile_warmup_expr": "recipe_warmup()",
+            "prewarm_runs": 0,
+            "specialized_opcodes": False,
+        }
+
+        MODULE.apply_recipe_defaults(args, recipe)
+
+        self.assertTrue(args.stub_pyperf)
+        self.assertEqual(args.compile_strategy, "names")
+        self.assertEqual(args.compile_names, "Board.useful")
+        self.assertEqual(args.compile_exprs_json, '["explicit"]')
+        self.assertEqual(args.reprofile_exprs_json, '["explicit"]')
+        self.assertEqual(args.reprofile_warmup_runs, 11)
+        self.assertEqual(args.reprofile_warmup_expr, "explicit_warmup()")
+        self.assertEqual(args.prewarm_runs, 2)
+        self.assertTrue(args.specialized_opcodes)
+
     def test_resolve_compile_exprs_supports_functions_methods_and_lists(self):
         module = load_temp_module(
             textwrap.dedent(
