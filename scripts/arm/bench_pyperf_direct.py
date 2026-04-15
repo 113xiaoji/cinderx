@@ -16,6 +16,11 @@ from pathlib import Path
 RECIPE_SUPPORTED_KEYS = {
     "name",
     "description",
+    "benchmark_name",
+    "module_path",
+    "module_name",
+    "bench_func",
+    "bench_args",
     "stub_pyperf",
     "compile_strategy",
     "compile_names",
@@ -77,6 +82,11 @@ def apply_recipe_defaults(args, recipe):
             value = transform(value)
         setattr(args, arg_name, value)
 
+    apply_if_default("benchmark_name", "")
+    apply_if_default("module_path", "")
+    apply_if_default("module_name", "bench_module")
+    apply_if_default("bench_func", "")
+    apply_if_default("bench_args_json", "[]", "bench_args", json.dumps)
     apply_if_default("stub_pyperf", False)
     apply_if_default("compile_strategy", "none")
     apply_if_default("compile_names", "")
@@ -87,6 +97,20 @@ def apply_recipe_defaults(args, recipe):
     apply_if_default("prewarm_runs", 0)
     apply_if_default("specialized_opcodes", False)
     return args
+
+
+def resolve_benchmark_module_path(benchmark_name: str) -> Path:
+    import pyperformance
+
+    root = Path(pyperformance.__file__).resolve().parent
+    module_path = (
+        root / "data-files" / "benchmarks" / benchmark_name / "run_benchmark.py"
+    )
+    if not module_path.is_file():
+        raise FileNotFoundError(
+            f"failed to locate pyperformance benchmark module for {benchmark_name}: {module_path}"
+        )
+    return module_path
 
 
 def collect_functions(module):
@@ -219,9 +243,10 @@ def choose_candidates(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--module-path", required=True)
+    parser.add_argument("--module-path", default="")
+    parser.add_argument("--benchmark-name", default="")
     parser.add_argument("--module-name", default="bench_module")
-    parser.add_argument("--bench-func", required=True)
+    parser.add_argument("--bench-func", default="")
     parser.add_argument("--bench-args-json", default="[]")
     parser.add_argument(
         "--recipe-json",
@@ -277,7 +302,16 @@ def main() -> int:
         recipe = load_recipe(Path(args.recipe_json))
         args = apply_recipe_defaults(args, recipe)
 
-    module_path = Path(args.module_path)
+    if args.module_path:
+        module_path = Path(args.module_path)
+    elif args.benchmark_name:
+        module_path = resolve_benchmark_module_path(args.benchmark_name)
+    else:
+        parser.error("one of --module-path or --benchmark-name is required")
+
+    if not args.bench_func:
+        parser.error("--bench-func is required (or provide it in the recipe)")
+
     if args.stub_pyperf:
         install_pyperf_stub()
     module = load_module(module_path, args.module_name)
@@ -362,7 +396,9 @@ def main() -> int:
     payload = {
         "recipe_name": recipe.get("name") if recipe else "",
         "recipe_path": recipe_path,
+        "benchmark_name": args.benchmark_name,
         "module_path": str(module_path),
+        "module_name": args.module_name,
         "bench_func": args.bench_func,
         "bench_args": bench_args,
         "compile_strategy": args.compile_strategy,

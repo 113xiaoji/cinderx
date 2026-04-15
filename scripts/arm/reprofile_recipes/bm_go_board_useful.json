@@ -1,9 +1,13 @@
 {
   "name": "bm_go_board_useful",
-  "description": "Reprofile Board.useful after warming a deeper real-game board state so neighbour.find() can mature into MWV before recompilation.",
+  "description": "Reprofile Board.useful after a deeper-state warmup on the real bm_go board shape.",
+  "benchmark_name": "bm_go",
+  "module_name": "bm_go_recipe",
+  "bench_func": "versus_cpu",
+  "bench_args": [],
   "stub_pyperf": true,
   "reprofile_exprs": [
     "Board.useful"
   ],
-  "reprofile_warmup_expr": "(lambda history=[to_pos(0,0), to_pos(1,0), to_pos(0,1), to_pos(2,0), to_pos(2,1), to_pos(1,2)], probe=to_pos(1,1), runs=50000: (lambda: (lambda board=Board(): (board.replay(history), all(map(board.useful, [probe] * runs))))()))()"
+  "reprofile_warmup_expr": "lambda: (lambda board=Board(), moves=[(0, 0), (1, 0), (0, 1), (2, 0), (2, 1), (1, 2)], probe=to_pos(1, 1): (all(board.move(to_pos(x, y)) is None for x, y in moves), sum(board.useful(probe) is None for _ in range(50000))))()"
 }

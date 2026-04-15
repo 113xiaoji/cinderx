@@ -42,6 +42,11 @@ class BenchPyperfDirectTests(unittest.TestCase):
             "Args",
             (),
             {
+                "benchmark_name": "",
+                "module_path": "",
+                "module_name": "bench_module",
+                "bench_func": "",
+                "bench_args_json": "[]",
                 "stub_pyperf": False,
                 "compile_strategy": "none",
                 "compile_names": "",
@@ -55,6 +60,9 @@ class BenchPyperfDirectTests(unittest.TestCase):
         )()
         recipe = {
             "name": "bm_go_board_useful",
+            "benchmark_name": "bm_go",
+            "bench_func": "versus_cpu",
+            "bench_args": [],
             "stub_pyperf": True,
             "compile_strategy": "exprs",
             "compile_exprs": ["Board.useful"],
@@ -67,6 +75,9 @@ class BenchPyperfDirectTests(unittest.TestCase):
 
         MODULE.apply_recipe_defaults(args, recipe)
 
+        self.assertEqual(args.benchmark_name, "bm_go")
+        self.assertEqual(args.bench_func, "versus_cpu")
+        self.assertEqual(args.bench_args_json, "[]")
         self.assertTrue(args.stub_pyperf)
         self.assertEqual(args.compile_strategy, "exprs")
         self.assertEqual(args.compile_exprs_json, '["Board.useful"]')
@@ -81,6 +92,11 @@ class BenchPyperfDirectTests(unittest.TestCase):
             "Args",
             (),
             {
+                "benchmark_name": "explicit_bm",
+                "module_path": "explicit.py",
+                "module_name": "explicit_module",
+                "bench_func": "explicit_bench",
+                "bench_args_json": "[1]",
                 "stub_pyperf": True,
                 "compile_strategy": "names",
                 "compile_names": "Board.useful",
@@ -93,6 +109,11 @@ class BenchPyperfDirectTests(unittest.TestCase):
             },
         )()
         recipe = {
+            "benchmark_name": "bm_go",
+            "module_path": "recipe.py",
+            "module_name": "recipe_module",
+            "bench_func": "versus_cpu",
+            "bench_args": [],
             "stub_pyperf": False,
             "compile_strategy": "exprs",
             "compile_names": "Board.other",
@@ -106,6 +127,11 @@ class BenchPyperfDirectTests(unittest.TestCase):
 
         MODULE.apply_recipe_defaults(args, recipe)
 
+        self.assertEqual(args.benchmark_name, "explicit_bm")
+        self.assertEqual(args.module_path, "explicit.py")
+        self.assertEqual(args.module_name, "explicit_module")
+        self.assertEqual(args.bench_func, "explicit_bench")
+        self.assertEqual(args.bench_args_json, "[1]")
         self.assertTrue(args.stub_pyperf)
         self.assertEqual(args.compile_strategy, "names")
         self.assertEqual(args.compile_names, "Board.useful")
@@ -115,6 +141,20 @@ class BenchPyperfDirectTests(unittest.TestCase):
         self.assertEqual(args.reprofile_warmup_expr, "explicit_warmup()")
         self.assertEqual(args.prewarm_runs, 2)
         self.assertTrue(args.specialized_opcodes)
+
+    def test_resolve_benchmark_module_path_uses_pyperformance_data_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "pyperformance"
+            bench = root / "data-files" / "benchmarks" / "bm_go" / "run_benchmark.py"
+            bench.parent.mkdir(parents=True, exist_ok=True)
+            (root / "__init__.py").write_text("# stub\n", encoding="utf-8")
+            bench.write_text("def versus_cpu():\n    return 1\n", encoding="utf-8")
+
+            fake = type("PyPerfModule", (), {"__file__": str(root / "__init__.py")})()
+            with patch.dict(sys.modules, {"pyperformance": fake}):
+                resolved = MODULE.resolve_benchmark_module_path("bm_go")
+
+        self.assertEqual(resolved.resolve(), bench.resolve())
 
     def test_resolve_compile_exprs_supports_functions_methods_and_lists(self):
         module = load_temp_module(
