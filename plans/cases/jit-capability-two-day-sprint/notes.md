@@ -601,6 +601,20 @@
   - but `bm_go` still requires a stronger, state-aware warmup than the generic
     harness currently provides
 
+## 2026-04-15 harness warmup callable
+
+- Added `--reprofile-warmup-expr` to
+  [bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/bench_pyperf_direct.py)
+- This lets the caller provide a benchmark-module-scoped warmup callable,
+  which is much closer to the manual `bm_go` experiment we previously ran.
+- Result on real `bm_go`:
+  - reprofile path triggered
+  - but median remained essentially flat/slightly negative versus plain harness
+- Conclusion:
+  - the harness automation is now expressive enough
+  - but the benchmark wrapper still does not fully reproduce the manual
+    helper-driven win
+
 ## 2026-04-15 automatic maturity-gate failure
 
 - Tried a narrower automatic policy:

@@ -152,6 +152,30 @@ class BenchPyperfDirectTests(unittest.TestCase):
         self.assertEqual(fake.reprofile_calls, 1)
         self.assertEqual(reprofiled, ["bench"])
 
+    def test_resolve_callable_expr_returns_callable(self):
+        module = load_temp_module(
+            textwrap.dedent(
+                """
+                def make_warmup():
+                    return lambda: 42
+                """
+            )
+        )
+        warmup = MODULE.resolve_callable_expr(module, "make_warmup()")
+        self.assertTrue(callable(warmup))
+        self.assertEqual(warmup(), 42)
+
+    def test_resolve_callable_expr_rejects_non_callable(self):
+        module = load_temp_module(
+            textwrap.dedent(
+                """
+                x = 123
+                """
+            )
+        )
+        with self.assertRaises(TypeError):
+            MODULE.resolve_callable_expr(module, "x")
+
 
 if __name__ == "__main__":
     unittest.main()

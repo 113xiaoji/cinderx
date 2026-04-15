@@ -5675,6 +5675,35 @@ Conclusion:
     - good automation support
     - not yet a benchmark-quality one-click optimization policy
 
+## 2026-04-15 direct benchmark harness custom warmup callable
+
+- Extended `bench_pyperf_direct.py` again with:
+  - `--reprofile-warmup-expr`
+  - expression is evaluated in benchmark-module globals and must return a
+    zero-arg warmup callable
+- Local harness tests now:
+  - `Ran 7 tests ... OK`
+- ARM validation:
+  - helper on `/root/venv-cinderx314-benchwarmexpr` with the existing unrelated
+    local `go_like_collection_method_chain_inlines_find_after_helper_inline`
+    red test skipped:
+    - `Ran 103 tests in 67.686s`
+    - `OK`
+- Real `bm_go` harness run with:
+  - `--reprofile-exprs-json ["Board.useful"]`
+  - a board-state-specific warmup callable via `--reprofile-warmup-expr`
+  - `reprofiled_count = 1`
+- Result:
+  - median:
+    - `0.2832313010003418`
+  - this is essentially flat/slightly negative versus the plain harness run
+- Updated interpretation:
+  - the harness can now express domain-specific reprofile warmups
+  - but even with a custom warmup callable, the direct benchmark wrapper still
+    does not reproduce the full manual `bm_go` helper-driven win
+  - so the harness enhancement is worth keeping for automation, but it still
+    should not be treated as a full automatic performance policy
+
 ## 2026-04-15 automatic method-load maturity gate trial
 
 - Tried a more targeted automatic policy in `jitVectorcall` and hot-loop OSR:

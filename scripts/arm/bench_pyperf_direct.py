@@ -84,6 +84,14 @@ def resolve_compile_exprs(module, expressions):
     return funcs
 
 
+def resolve_callable_expr(module, expression):
+    globals_dict = module.__dict__
+    value = eval(expression, globals_dict, globals_dict)
+    if not callable(value):
+        raise TypeError(f"warmup expression did not resolve to a callable: {value!r}")
+    return value
+
+
 def has_backedge(fn) -> bool:
     return any(ins.opname == "JUMP_BACKWARD" for ins in dis.get_instructions(fn))
 
@@ -191,6 +199,11 @@ def main() -> int:
         help="Extra interpreted warmup runs before reprofile helper is invoked",
     )
     parser.add_argument(
+        "--reprofile-warmup-expr",
+        default="",
+        help="Python expression evaluated in module globals that returns a zero-arg warmup callable",
+    )
+    parser.add_argument(
         "--stub-pyperf",
         action="store_true",
         help="Install a tiny pyperf stub before importing the benchmark module",
@@ -221,6 +234,7 @@ def main() -> int:
     }
     compile_exprs = json.loads(args.compile_exprs_json)
     reprofile_exprs = json.loads(args.reprofile_exprs_json)
+    reprofile_warmup_expr = args.reprofile_warmup_expr.strip()
     candidates = choose_candidates(
         module,
         functions,
@@ -244,10 +258,12 @@ def main() -> int:
     reprofiled = []
     if reprofile_exprs:
         reprofile_funcs = resolve_compile_exprs(module, reprofile_exprs)
-
-        def reprofile_warmup():
-            for _ in range(args.reprofile_warmup_runs):
-                bench(*bench_args)
+        if reprofile_warmup_expr:
+            reprofile_warmup = resolve_callable_expr(module, reprofile_warmup_expr)
+        else:
+            def reprofile_warmup():
+                for _ in range(args.reprofile_warmup_runs):
+                    bench(*bench_args)
 
         for fn in reprofile_funcs:
             try:
@@ -286,6 +302,7 @@ def main() -> int:
         "compile_exprs": compile_exprs,
         "reprofile_exprs": reprofile_exprs,
         "reprofile_warmup_runs": args.reprofile_warmup_runs,
+        "reprofile_warmup_expr": reprofile_warmup_expr,
         "stub_pyperf": args.stub_pyperf,
         "specialized_opcodes": args.specialized_opcodes,
         "prewarm_runs": args.prewarm_runs,

@@ -186,6 +186,13 @@
         - current recommendation:
           - keep the harness support
           - but do not mistake it for a full automatic policy yet
+      - harness warmup callable:
+        - `bench_pyperf_direct.py` also supports:
+          - `--reprofile-warmup-expr`
+        - this makes the harness expressive enough for domain-specific
+          warmup flows
+        - but real `bm_go` still does not reproduce the full manual helper win
+          inside the harness wrapper
       - automatic maturity-gate trial:
         - a narrower wrapper/hot-loop delay policy still regressed real
           `bm_go` badly
