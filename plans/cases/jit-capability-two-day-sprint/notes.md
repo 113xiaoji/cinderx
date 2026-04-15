@@ -601,6 +601,21 @@
   - but `bm_go` still requires a stronger, state-aware warmup than the generic
     harness currently provides
 
+## 2026-04-15 automatic maturity-gate failure
+
+- Tried a narrower automatic policy:
+  - only delay compilation for non-self local method-load sites
+  - plus backward-jump and density checks
+- This still was not viable:
+  - targeted tests looked okay
+  - but real `bm_go` timing regressed massively
+- Practical takeaway:
+  - do not pursue more compile-blocking wrapper heuristics
+  - keep the focus on:
+    - explicit helper-driven reprofile
+    - metadata
+    - and future safe automatic triggers built on top of them
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

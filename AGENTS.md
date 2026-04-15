@@ -186,6 +186,12 @@
         - current recommendation:
           - keep the harness support
           - but do not mistake it for a full automatic policy yet
+      - automatic maturity-gate trial:
+        - a narrower wrapper/hot-loop delay policy still regressed real
+          `bm_go` badly
+        - current recommendation:
+          - stop pursuing compile-blocking automatic delay heuristics
+          - keep building on explicit reprofile helpers instead
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

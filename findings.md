@@ -5674,3 +5674,29 @@ Conclusion:
   - so this harness feature should be treated as:
     - good automation support
     - not yet a benchmark-quality one-click optimization policy
+
+## 2026-04-15 automatic method-load maturity gate trial
+
+- Tried a more targeted automatic policy in `jitVectorcall` and hot-loop OSR:
+  - delay compilation only when:
+    - the function has a backward jump
+    - non-self local method-load sites exist
+    - `mwv_sites == 0`
+    - attr/call density is above a narrow threshold
+- Targeted synthetic results looked superficially acceptable:
+  - the new go-like maturity red test passed
+  - `numeric_hot_loop_still_autojit_compiles` stayed green
+  - `attr_heavy_helper_with_internal_calls_still_autojit_compiles` stayed green
+- But the real benchmark result was decisively negative:
+  - baseline direct harness (`benchstub2`) median:
+    - `0.2824887820006552`
+  - automatic policy experiment median:
+    - `0.7829114159994788`
+  - this is a massive regression
+- Updated interpretation:
+  - even a more selective automatic delay gate is still too blunt
+  - the next safe automation step should *not* be more wrapper-level delay
+  - instead it should build on the explicit reprofile helper path, likely from:
+    - previously stored compile-profile metadata
+    - safe-point or externally-triggered reprofile hooks
+    - not another pre-compile blocking heuristic
