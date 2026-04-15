@@ -556,6 +556,32 @@
   - it proves the maturity-aware recompile idea works in principle before we
     consider any automatic policy
 
+## 2026-04-15 higher-level reprofile helper
+
+- Added:
+  - `jit.reprofile_after_interpreter_warmup(func, warmup, compiled_stats=None)`
+- This wraps the explicit prototype into a single helper:
+  - capture/accept baseline profile
+  - uncompile
+  - interpreted warmup
+  - explicit maturity-aware recompile
+- ARM validation:
+  - helper on `/root/venv-cinderx314-reprofilehelper` with the unrelated local
+    `go_like_collection_method_chain_inlines_find_after_helper_inline` red test
+    skipped:
+    - `Ran 102 tests in 67.327s`
+    - `OK`
+- Real `bm_go` measurement:
+  - plain median:
+    - `0.21782498600009603`
+  - helper-driven reprofile median:
+    - `0.2073838670000896`
+  - about `-4.79%`
+- Conclusion:
+  - this is the first practical low-risk workflow that turns the maturity
+    metadata into a measurable benchmark win
+  - the next step can now focus on whether and how to automate it safely
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

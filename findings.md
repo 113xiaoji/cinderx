@@ -5599,3 +5599,49 @@ Conclusion:
   - it still does not change default runtime policy
   - but it gives us a concrete stepping stone toward automatic
     recompile-after-profile-maturation
+
+## 2026-04-15 reprofile-after-interpreter-warmup helper
+
+- Added a higher-level Python helper:
+  - `jit.reprofile_after_interpreter_warmup(func, warmup, compiled_stats=None)`
+- It bundles the previously manual steps:
+  - use an older compile-profile snapshot as baseline
+  - uncompile if currently compiled
+  - run an interpreted warmup callback
+  - call `recompile_if_profile_mature(...)`
+- New regression guard:
+  - `test_reprofile_after_interpreter_warmup_closes_the_loop`
+- ARM validation:
+  - helper on `/root/venv-cinderx314-reprofilehelper` with the existing
+    unrelated local `go_like_collection_method_chain_inlines_find_after_helper_inline`
+    red test skipped:
+    - `Ran 102 tests in 67.327s`
+    - `OK`
+  - targeted tests:
+    - `test_recompile_if_profile_mature_updates_compile_profile`
+    - `test_reprofile_after_interpreter_warmup_closes_the_loop`
+    - both `OK`
+- Real `bm_go` measurement using the new helper:
+  - same shallow-compile preparation on both sides
+  - plain median:
+    - `0.21782498600009603`
+  - helper-driven reprofile median:
+    - `0.2073838670000896`
+  - delta:
+    - about `-4.79%`
+  - `Board.useful` compile profile changed from:
+    - `mwv_sites = 0`
+    - `calls_at_compile = 10`
+    to:
+    - `mwv_sites = 1`
+    - `calls_at_compile = 50010`
+  - `Board.useful` inline count moved from:
+    - `num_inlined_functions = 1`
+    to:
+    - `num_inlined_functions = 4`
+- Updated interpretation:
+  - this is the first low-risk, user-facing workflow that both:
+    - reduces manual intervention
+    - and shows a real benchmark win on `bm_go`
+  - it still stops short of changing default runtime policy, which is the
+    right risk posture for now

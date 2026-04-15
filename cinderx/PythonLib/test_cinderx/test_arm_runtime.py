@@ -1090,6 +1090,105 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreaterEqual(payload["num_inlined"], 1, proc.stdout)
             self.assertEqual(payload["result"], 8, proc.stdout)
 
+    def test_reprofile_after_interpreter_warmup_closes_the_loop(self) -> None:
+        code = textwrap.dedent(
+            """
+            import json
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Node:
+                def __init__(self, value, ref=None):
+                    self.value = value
+                    self.ref = ref
+                    self.tag = 0
+
+                def find(self, update=False):
+                    ref = self.ref if self.ref is not None else self
+                    if ref.value != self.value:
+                        ref = ref.find(update)
+                        if update:
+                            self.ref = ref
+                    return ref
+
+            class Board:
+                def __init__(self):
+                    root = Node(1, None)
+                    mid = Node(2, root)
+                    self.items = [Node(3, mid) for _ in range(8)]
+
+                def process(self, deep):
+                    total = 0
+                    for item in self.items:
+                        if deep:
+                            ref = item.find()
+                            if ref.tag != 1:
+                                ref.tag = 1
+                            total += ref.value
+                        else:
+                            total += item.value
+                    return total
+
+            board = Board()
+            for _ in range(20):
+                board.process(False)
+
+            assert jit.force_compile(Board.process)
+            compiled_before = jit.get_function_compile_profile_stats(Board.process)
+            assert compiled_before is not None
+            assert compiled_before["mwv_sites"] == 0
+
+            def warmup():
+                for _ in range(20000):
+                    board.process(True)
+
+            reprofiled = jit.reprofile_after_interpreter_warmup(
+                Board.process, warmup, compiled_before
+            )
+            compiled_after = jit.get_function_compile_profile_stats(Board.process)
+            inline_stats = jit.get_inlined_functions_stats(Board.process)
+
+            print(
+                json.dumps(
+                    {
+                        "reprofiled": reprofiled,
+                        "mwv_after": compiled_after["mwv_sites"],
+                        "num_inlined": inline_stats["num_inlined_functions"],
+                        "result": board.process(True),
+                    }
+                )
+            )
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/reprofile_after_interpreter_warmup.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            payload = json.loads(proc.stdout.strip().splitlines()[-1])
+            self.assertTrue(payload["reprofiled"], proc.stdout)
+            self.assertGreaterEqual(payload["mwv_after"], 1, proc.stdout)
+            self.assertGreaterEqual(payload["num_inlined"], 1, proc.stdout)
+            self.assertEqual(payload["result"], 8, proc.stdout)
+
     def test_phase1_loop_osr_skips_search_state_transition_shape(self) -> None:
         code = textwrap.dedent(
             """

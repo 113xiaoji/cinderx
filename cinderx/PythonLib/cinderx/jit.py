@@ -273,3 +273,21 @@ def recompile_if_profile_mature(
     if is_jit_compiled(func) and not force_uncompile(func):
         return False
     return force_compile(func)
+
+
+def reprofile_after_interpreter_warmup(
+    func: FuncAny,
+    warmup: Callable[[], object],
+    compiled_stats: Mapping[str, int] | None = None,
+) -> bool:
+    compiled = (
+        dict(compiled_stats)
+        if compiled_stats is not None
+        else get_function_compile_profile_stats(func)
+    )
+    if compiled is None:
+        return False
+    if is_jit_compiled(func) and not force_uncompile(func):
+        return False
+    warmup()
+    return recompile_if_profile_mature(func, compiled)

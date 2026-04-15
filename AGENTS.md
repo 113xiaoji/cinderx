@@ -164,6 +164,17 @@
         - current recommendation:
           - keep the next step focused on turning this explicit prototype into
             a safe automatic policy
+      - higher-level reprofile helper:
+        - new Python helper:
+          - `jit.reprofile_after_interpreter_warmup(func, warmup, compiled_stats=None)`
+        - helper on `/root/venv-cinderx314-reprofilehelper`:
+          - `Ran 102 tests in 67.327s`
+          - `OK`
+        - real `bm_go` signal with this helper:
+          - about `-4.8%`
+        - current recommendation:
+          - keep using explicit helper-driven workflows while designing a safe
+            automatic policy
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 
