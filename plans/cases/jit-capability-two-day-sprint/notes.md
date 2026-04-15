@@ -630,6 +630,40 @@
     - metadata
     - and future safe automatic triggers built on top of them
 
+## 2026-04-15 recipe-driven benchmark reprofile
+
+- Added `--recipe-json` to `bench_pyperf_direct.py`.
+- Recipes now package the explicit helper-driven workflow instead of forcing us
+  to rebuild long command lines by hand.
+- Standardization follow-up:
+  - recipes can now carry benchmark identity too:
+    - `benchmark_name`
+    - `module_name`
+    - `bench_func`
+    - `bench_args`
+  - the first checked-in `bm_go` recipe is therefore self-contained
+- Local verification:
+  - `python -m unittest discover -s scripts/arm -p test_bench_pyperf_direct.py`
+    -> `Ran 11 tests ... OK`
+- Remote verification:
+  - deployed through the normal ARM helper/archive path on
+    `/root/venv-cinderx314-recipetest2`
+  - helper still hit the known unrelated local experimental red
+    `go_like_collection_method_chain_inlines_find_after_helper_inline`
+  - remote script tests on the deployed tree:
+    - `Ran 11 tests ... OK`
+  - self-contained `bm_go` recipe run:
+    - `reprofiled_count = 1`
+    - `benchmark_name = bm_go`
+    - `bench_func = versus_cpu`
+    - median `0.7387524410005426`
+  - plain `--benchmark-name bm_go` compare:
+    - median `0.583373842000583`
+- Takeaway:
+  - the recipe path is now good enough to serve as the standard reproducible
+    workflow surface
+  - but it still should not be marketed as an automatic speedup path
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

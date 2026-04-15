@@ -193,6 +193,27 @@
           warmup flows
         - but real `bm_go` still does not reproduce the full manual helper win
           inside the harness wrapper
+      - recipe-driven benchmark reprofile:
+        - `bench_pyperf_direct.py` now also supports:
+          - `--recipe-json`
+        - recipes can now carry benchmark identity:
+          - `benchmark_name`
+          - `module_name`
+          - `bench_func`
+          - `bench_args`
+        - checked-in first self-contained recipe:
+          - `scripts/arm/reprofile_recipes/bm_go_board_useful.json`
+        - local harness tests:
+          - `Ran 11 tests ... OK`
+        - deployed ARM script tests on `/root/venv-cinderx314-recipetest2`:
+          - `Ran 11 tests ... OK`
+        - self-contained `bm_go` recipe run:
+          - `reprofiled_count = 1`
+          - median remained slower than plain harness
+        - current recommendation:
+          - keep recipes as the standard way to package explicit helper-driven
+            workflows
+          - but do not treat them as an automatic performance policy
       - automatic maturity-gate trial:
         - a narrower wrapper/hot-loop delay policy still regressed real
           `bm_go` badly

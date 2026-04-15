@@ -5729,3 +5729,51 @@ Conclusion:
     - previously stored compile-profile metadata
     - safe-point or externally-triggered reprofile hooks
     - not another pre-compile blocking heuristic
+
+## 2026-04-15 benchmark reprofile recipes
+
+- Added a recipe-driven configuration layer to
+  [bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/bench_pyperf_direct.py):
+  - `--recipe-json`
+- Recipe behavior:
+  - load a JSON object from disk
+  - fill harness defaults only
+  - explicit CLI flags still win
+  - unknown keys fail fast
+- Added the first checked-in recipe:
+  - [bm_go_board_useful.json](C:/work/code/cinderx1/cinderx/scripts/arm/reprofile_recipes/bm_go_board_useful.json)
+- Follow-up standardization:
+  - recipes can now also carry:
+    - `benchmark_name`
+    - `module_name`
+    - `bench_func`
+    - `bench_args`
+  - this makes the `bm_go` recipe self-contained
+- Local verification:
+  - `python -m unittest discover -s scripts/arm -p test_bench_pyperf_direct.py`
+    - `Ran 11 tests ... OK`
+- Remote verification:
+  - deployed via the standard ARM archive + `remote_update_build_test.sh` path
+    on `/root/venv-cinderx314-recipetest2`
+  - the helper again hit the already-known unrelated local experimental red:
+    - `test_go_like_collection_method_chain_inlines_find_after_helper_inline`
+  - remote script tests on the deployed tree:
+    - `Ran 11 tests ... OK`
+  - self-contained recipe run:
+    - `python scripts/arm/bench_pyperf_direct.py --recipe-json scripts/arm/reprofile_recipes/bm_go_board_useful.json --samples 3`
+    - `reprofiled_count = 1`
+    - `recipe_name = bm_go_board_useful`
+    - `benchmark_name = bm_go`
+    - `bench_func = versus_cpu`
+    - `module_path = /root/venv-cinderx314-recipetest2/lib/python3.14/site-packages/pyperformance/data-files/benchmarks/bm_go/run_benchmark.py`
+  - same benchmark-name invocation without the recipe:
+    - plain median:
+      - `0.583373842000583`
+    - recipe median:
+      - `0.7387524410005426`
+- Updated interpretation:
+  - recipe support is the right way to productize explicit helper-driven
+    workflows without changing runtime policy
+  - the first `bm_go` workflow is now reproducible from a checked-in recipe
+  - but it still does not turn the direct harness into an automatic
+    performance win by itself
