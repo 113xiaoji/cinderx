@@ -205,11 +205,13 @@
           - `scripts/arm/reprofile_recipes/bm_go_board_useful.json`
         - local harness tests:
           - `Ran 11 tests ... OK`
-        - deployed ARM script tests on `/root/venv-cinderx314-recipetest2`:
+        - deployed ARM script tests on `/root/venv-cinderx314-recipes`:
           - `Ran 11 tests ... OK`
         - self-contained `bm_go` recipe run:
           - `reprofiled_count = 1`
-          - median remained slower than plain harness
+          - `benchmark_name = bm_go`
+          - `bench_func = versus_cpu`
+          - recipe smoke median was about `0.319s`
         - current recommendation:
           - keep recipes as the standard way to package explicit helper-driven
             workflows

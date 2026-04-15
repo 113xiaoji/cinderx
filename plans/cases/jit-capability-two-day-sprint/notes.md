@@ -615,6 +615,38 @@
   - but the benchmark wrapper still does not fully reproduce the manual
     helper-driven win
 
+## 2026-04-15 recipe-driven benchmark reprofile
+
+- Added a new harness config path:
+  - `--recipe-json`
+- Recipe semantics:
+  - load a JSON object from disk
+  - fill harness defaults only
+  - explicit CLI flags still win
+  - unknown keys fail fast
+- Checked-in first real recipe:
+  - `scripts/arm/reprofile_recipes/bm_go_board_useful.json`
+- Local verification:
+  - `python -m unittest discover -s scripts/arm -p test_bench_pyperf_direct.py`
+    -> `Ran 10 tests ... OK`
+- Remote verification:
+  - deployed through the normal ARM helper/archive path
+  - helper itself hit the known unrelated local experimental red
+    `go_like_collection_method_chain_inlines_find_after_helper_inline`
+  - remote script tests on the deployed tree:
+    - `Ran 10 tests ... OK`
+  - real `bm_go` recipe run:
+    - plain median:
+      - `0.28981749000013224`
+    - recipe median:
+      - `0.3012433069998224`
+    - `reprofiled_count = 1`
+- Practical takeaway:
+  - recipe support is worth keeping because it standardizes the explicit
+    helper-driven workflow in a reusable way
+  - but it still does not make the harness wrapper itself a reliable automatic
+    speedup path
+
 ## 2026-04-15 automatic maturity-gate failure
 
 - Tried a narrower automatic policy:
@@ -632,22 +664,22 @@
 
 ## 2026-04-15 recipe-driven benchmark reprofile
 
-- Added `--recipe-json` to `bench_pyperf_direct.py`.
-- Recipes now package the explicit helper-driven workflow instead of forcing us
-  to rebuild long command lines by hand.
-- Standardization follow-up:
-  - recipes can now carry benchmark identity too:
-    - `benchmark_name`
-    - `module_name`
-    - `bench_func`
-    - `bench_args`
-  - the first checked-in `bm_go` recipe is therefore self-contained
+- Extended the existing `--recipe-json` path in
+  [bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/bench_pyperf_direct.py)
+  so recipes can now also carry benchmark identity:
+  - `benchmark_name`
+  - `module_name`
+  - `bench_func`
+  - `bench_args`
+- The first checked-in recipe
+  [bm_go_board_useful.json](C:/work/code/cinderx1/cinderx/scripts/arm/reprofile_recipes/bm_go_board_useful.json)
+  is now self-contained.
 - Local verification:
   - `python -m unittest discover -s scripts/arm -p test_bench_pyperf_direct.py`
     -> `Ran 11 tests ... OK`
 - Remote verification:
   - deployed through the normal ARM helper/archive path on
-    `/root/venv-cinderx314-recipetest2`
+    `/root/venv-cinderx314-recipes`
   - helper still hit the known unrelated local experimental red
     `go_like_collection_method_chain_inlines_find_after_helper_inline`
   - remote script tests on the deployed tree:
@@ -656,13 +688,12 @@
     - `reprofiled_count = 1`
     - `benchmark_name = bm_go`
     - `bench_func = versus_cpu`
-    - median `0.7387524410005426`
-  - plain `--benchmark-name bm_go` compare:
-    - median `0.583373842000583`
+    - `module_path = /root/venv-cinderx314-recipes/lib/python3.14/site-packages/pyperformance/data-files/benchmarks/bm_go/run_benchmark.py`
+    - recipe smoke median `0.3190243630015175`
 - Takeaway:
   - the recipe path is now good enough to serve as the standard reproducible
     workflow surface
-  - but it still should not be marketed as an automatic speedup path
+  - but this smoke run is only a workflow validation, not a new speed claim
 
 ## Initial prioritization
 
