@@ -5645,3 +5645,32 @@ Conclusion:
     - and shows a real benchmark win on `bm_go`
   - it still stops short of changing default runtime policy, which is the
     right risk posture for now
+
+## 2026-04-15 direct benchmark harness reprofile integration
+
+- Added new harness features in
+  [bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/bench_pyperf_direct.py):
+  - `--stub-pyperf`
+  - `--reprofile-exprs-json`
+  - `--reprofile-warmup-runs`
+- New local script tests in
+  [test_bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/test_bench_pyperf_direct.py):
+  - local result:
+    - `Ran 5 tests ... OK`
+- Real `bm_go` harness behavior on ARM:
+  - plain harness run with `--stub-pyperf`:
+    - `median_wall_sec = 0.2780660819998957`
+  - harness run with:
+    - `--reprofile-exprs-json ["Board.useful"]`
+    - `--reprofile-warmup-runs 1`
+    - `reprofiled_count = 1`
+    - `median_wall_sec = 0.27917186899958324`
+- Updated interpretation:
+  - the harness integration itself works
+  - but a generic one-run warmup is not strong enough to reproduce the
+    targeted `bm_go` improvement
+  - `bm_go` still needs a domain-specific deeper warmup state to expose the
+    `Board.useful` maturity win
+  - so this harness feature should be treated as:
+    - good automation support
+    - not yet a benchmark-quality one-click optimization policy

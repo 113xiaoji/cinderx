@@ -582,6 +582,25 @@
     metadata into a measurable benchmark win
   - the next step can now focus on whether and how to automate it safely
 
+## 2026-04-15 harness-level reprofile support
+
+- Added reprofile support directly to
+  [bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/bench_pyperf_direct.py):
+  - `--stub-pyperf`
+  - `--reprofile-exprs-json`
+  - `--reprofile-warmup-runs`
+- Local script tests are green.
+- Real `bm_go` result with the generic harness warmup:
+  - plain median:
+    - `0.2780660819998957`
+  - reprofile median:
+    - `0.27917186899958324`
+  - no win despite `reprofiled_count = 1`
+- Conclusion:
+  - the automation support is useful and worth keeping
+  - but `bm_go` still requires a stronger, state-aware warmup than the generic
+    harness currently provides
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：

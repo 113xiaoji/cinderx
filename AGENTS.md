@@ -175,6 +175,17 @@
         - current recommendation:
           - keep using explicit helper-driven workflows while designing a safe
             automatic policy
+      - harness-level reprofile support:
+        - `bench_pyperf_direct.py` now supports:
+          - `--stub-pyperf`
+          - `--reprofile-exprs-json`
+          - `--reprofile-warmup-runs`
+        - local harness tests are green
+        - generic `bm_go` warmup still does not reproduce the full targeted
+          improvement
+        - current recommendation:
+          - keep the harness support
+          - but do not mistake it for a full automatic policy yet
 
 本仓库当前有一个正在进行中的专项 case：`issue85-object-heavy-osr-profitability`。
 

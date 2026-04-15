@@ -8,7 +8,9 @@ import inspect
 import itertools
 import json
 import statistics
+import sys
 import time
+import types
 from pathlib import Path
 
 
@@ -19,6 +21,19 @@ def load_module(path: Path, module_name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def install_pyperf_stub():
+    pyperf = types.ModuleType("pyperf")
+
+    class _Runner:
+        metadata = {}
+
+        def bench_func(self, *args, **kwargs):
+            return None
+
+    pyperf.Runner = _Runner
+    sys.modules.setdefault("pyperf", pyperf)
 
 
 def collect_functions(module):
@@ -164,11 +179,29 @@ def main() -> int:
         default="[]",
         help="JSON list of Python expressions resolving to functions when --compile-strategy=exprs",
     )
+    parser.add_argument(
+        "--reprofile-exprs-json",
+        default="[]",
+        help="JSON list of Python expressions resolving to functions to reprofile after warmup",
+    )
+    parser.add_argument(
+        "--reprofile-warmup-runs",
+        type=int,
+        default=0,
+        help="Extra interpreted warmup runs before reprofile helper is invoked",
+    )
+    parser.add_argument(
+        "--stub-pyperf",
+        action="store_true",
+        help="Install a tiny pyperf stub before importing the benchmark module",
+    )
     parser.add_argument("--specialized-opcodes", action="store_true")
     parser.add_argument("--output", default="")
     args = parser.parse_args()
 
     module_path = Path(args.module_path)
+    if args.stub_pyperf:
+        install_pyperf_stub()
     module = load_module(module_path, args.module_name)
     bench = getattr(module, args.bench_func)
     bench_args = json.loads(args.bench_args_json)
@@ -187,6 +220,7 @@ def main() -> int:
         name.strip() for name in args.compile_names.split(",") if name.strip()
     }
     compile_exprs = json.loads(args.compile_exprs_json)
+    reprofile_exprs = json.loads(args.reprofile_exprs_json)
     candidates = choose_candidates(
         module,
         functions,
@@ -207,6 +241,30 @@ def main() -> int:
         if ok:
             compiled.append(fn.__qualname__)
 
+    reprofiled = []
+    if reprofile_exprs:
+        reprofile_funcs = resolve_compile_exprs(module, reprofile_exprs)
+
+        def reprofile_warmup():
+            for _ in range(args.reprofile_warmup_runs):
+                bench(*bench_args)
+
+        for fn in reprofile_funcs:
+            try:
+                compiled_stats = jit.get_function_compile_profile_stats(fn)
+                if compiled_stats is None:
+                    if not bool(jit.force_compile(fn)):
+                        continue
+                    compiled_stats = jit.get_function_compile_profile_stats(fn)
+                if compiled_stats is None:
+                    continue
+                if jit.reprofile_after_interpreter_warmup(
+                    fn, reprofile_warmup, compiled_stats
+                ):
+                    reprofiled.append(fn.__qualname__)
+            except Exception:
+                pass
+
     samples = []
     all_deopts = []
     all_hot_loop_skips = []
@@ -226,12 +284,17 @@ def main() -> int:
         "bench_args": bench_args,
         "compile_strategy": args.compile_strategy,
         "compile_exprs": compile_exprs,
+        "reprofile_exprs": reprofile_exprs,
+        "reprofile_warmup_runs": args.reprofile_warmup_runs,
+        "stub_pyperf": args.stub_pyperf,
         "specialized_opcodes": args.specialized_opcodes,
         "prewarm_runs": args.prewarm_runs,
         "candidate_count": len(functions),
         "selected_compile_count": len(candidates),
         "compiled_count": len(compiled),
         "compiled_qualnames": compiled,
+        "reprofiled_count": len(reprofiled),
+        "reprofiled_qualnames": reprofiled,
         "samples": samples,
         "median_wall_sec": statistics.median(sample["wall_sec"] for sample in samples),
         "min_wall_sec": min(sample["wall_sec"] for sample in samples),

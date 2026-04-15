@@ -1,8 +1,10 @@
 import importlib.util
+import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).with_name("bench_pyperf_direct.py")
@@ -55,6 +57,100 @@ class BenchPyperfDirectTests(unittest.TestCase):
 
         with self.assertRaises(TypeError):
             MODULE.resolve_compile_exprs(module, ["x"])
+
+    def test_resolve_compile_exprs_can_drive_reprofile_targets(self):
+        module = load_temp_module(
+            textwrap.dedent(
+                """
+                def warm():
+                    return 1
+
+                class C:
+                    def method(self):
+                        return 2
+
+                reprofile_targets = [warm, C.method]
+                """
+            )
+        )
+
+        funcs = MODULE.resolve_compile_exprs(module, ["reprofile_targets"])
+        qualnames = [fn.__qualname__ for fn in funcs]
+        self.assertEqual(qualnames, ["warm", "C.method"])
+
+    def test_install_pyperf_stub_supports_benchmark_imports(self):
+        with patch.dict(sys.modules, {}, clear=False):
+            MODULE.install_pyperf_stub()
+            module = load_temp_module(
+                textwrap.dedent(
+                    """
+                    import pyperf
+
+                    runner = pyperf.Runner()
+
+                    def bench():
+                        return 1
+                    """
+                )
+            )
+            self.assertTrue(hasattr(module, "runner"))
+
+    def test_reprofile_path_can_bootstrap_compile_profile(self):
+        class FakeJit:
+            def __init__(self):
+                self.force_compile_calls = 0
+                self.reprofile_calls = 0
+
+            def force_compile(self, fn):
+                self.force_compile_calls += 1
+                return True
+
+            def get_function_compile_profile_stats(self, fn):
+                if self.force_compile_calls == 0:
+                    return None
+                return {"mwv_sites": 0}
+
+            def reprofile_after_interpreter_warmup(self, fn, warmup, compiled_stats):
+                self.reprofile_calls += 1
+                warmup()
+                return compiled_stats == {"mwv_sites": 0}
+
+        fake = FakeJit()
+
+        with patch.dict(sys.modules, {}, clear=False):
+            MODULE.install_pyperf_stub()
+            module = load_temp_module(
+                textwrap.dedent(
+                    """
+                    import pyperf
+
+                    def bench():
+                        return 1
+                    """
+                )
+            )
+
+            funcs = MODULE.resolve_compile_exprs(module, ["bench"])
+            reprofiled = []
+
+            def warmup():
+                return None
+
+            for fn in funcs:
+                compiled_stats = fake.get_function_compile_profile_stats(fn)
+                compiled_stats = fake.get_function_compile_profile_stats(fn)
+                if compiled_stats is None:
+                    if not bool(fake.force_compile(fn)):
+                        continue
+                    compiled_stats = fake.get_function_compile_profile_stats(fn)
+                if compiled_stats is None:
+                    continue
+                if fake.reprofile_after_interpreter_warmup(fn, warmup, compiled_stats):
+                    reprofiled.append(fn.__qualname__)
+
+        self.assertEqual(fake.force_compile_calls, 1)
+        self.assertEqual(fake.reprofile_calls, 1)
+        self.assertEqual(reprofiled, ["bench"])
 
 
 if __name__ == "__main__":
