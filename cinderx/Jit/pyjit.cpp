@@ -249,6 +249,16 @@ std::string_view functionTierStateName(FunctionTierState tier) {
   return "unknown";
 }
 
+std::string_view tierTransitionReasonName(TierTransitionReason reason) {
+  switch (reason) {
+    case TierTransitionReason::kActivateBaseline:
+      return "activate_baseline";
+    case TierTransitionReason::kActivateOptimized:
+      return "activate_optimized";
+  }
+  return "unknown";
+}
+
 Result compileFunctionAtTier(
     BorrowedRef<PyFunctionObject> func,
     CompileTier tier) {
@@ -2132,6 +2142,37 @@ PyObject* get_function_tier(PyObject* /* self */, PyObject* arg) {
   return PyUnicode_FromString(functionTierStateName(tier).data());
 }
 
+PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
+  BorrowedRef<PyFunctionObject> func =
+      get_func_arg("get_function_tier_info", arg);
+  if (func == nullptr) {
+    return nullptr;
+  }
+
+  FunctionTierInfo info;
+  if (jitCtx() != nullptr) {
+    info = jitCtx()->lookupFuncTierInfo(func);
+  }
+
+  Ref<> result = Ref<>::steal(PyDict_New());
+  if (result == nullptr) {
+    return nullptr;
+  }
+  Ref<> active_tier = Ref<>::steal(
+      PyUnicode_FromString(functionTierStateName(info.active_tier).data()));
+  Ref<> has_baseline = Ref<>::steal(PyBool_FromLong(info.has_baseline));
+  Ref<> has_optimized = Ref<>::steal(PyBool_FromLong(info.has_optimized));
+  if (active_tier == nullptr || has_baseline == nullptr || has_optimized == nullptr) {
+    return nullptr;
+  }
+  if (PyDict_SetItemString(result, "active_tier", active_tier) < 0 ||
+      PyDict_SetItemString(result, "has_baseline", has_baseline) < 0 ||
+      PyDict_SetItemString(result, "has_optimized", has_optimized) < 0) {
+    return nullptr;
+  }
+  return result.release();
+}
+
 PyObject* set_max_code_size(PyObject* /* self */, PyObject* arg) {
   Py_ssize_t new_size;
   if (!PyArg_Parse(arg, "n:set_max_code_size", &new_size)) {
@@ -2666,6 +2707,47 @@ PyObject* clear_runtime_stats(PyObject* /* self */, PyObject*) {
   jitCtx()->clearDeoptStats();
   jitCtx()->clearOSRStats();
   Py_RETURN_NONE;
+}
+
+PyObject* get_and_clear_tiering_stats(PyObject* /* self */, PyObject*) {
+  Ref<> result = Ref<>::steal(PyDict_New());
+  Ref<> events = Ref<>::steal(PyList_New(0));
+  if (result == nullptr || events == nullptr) {
+    return nullptr;
+  }
+
+  if (jitCtx() != nullptr) {
+    for (const auto& event : jitCtx()->getAndClearTierTransitionEvents()) {
+      Ref<> item = Ref<>::steal(PyDict_New());
+      if (item == nullptr) {
+        return nullptr;
+      }
+      Ref<> func_qualname =
+          Ref<>::steal(PyUnicode_FromString(event.func_qualname.c_str()));
+      Ref<> from_tier = Ref<>::steal(
+          PyUnicode_FromString(functionTierStateName(event.from_tier).data()));
+      Ref<> to_tier = Ref<>::steal(
+          PyUnicode_FromString(functionTierStateName(event.to_tier).data()));
+      Ref<> reason = Ref<>::steal(
+          PyUnicode_FromString(tierTransitionReasonName(event.reason).data()));
+      if (func_qualname == nullptr || from_tier == nullptr || to_tier == nullptr ||
+          reason == nullptr) {
+        return nullptr;
+      }
+      if (PyDict_SetItemString(item, "func_qualname", func_qualname) < 0 ||
+          PyDict_SetItemString(item, "from_tier", from_tier) < 0 ||
+          PyDict_SetItemString(item, "to_tier", to_tier) < 0 ||
+          PyDict_SetItemString(item, "reason", reason) < 0 ||
+          PyList_Append(events, item) < 0) {
+        return nullptr;
+      }
+    }
+  }
+
+  if (PyDict_SetItemString(result, "events", events) < 0) {
+    return nullptr;
+  }
+  return result.release();
 }
 
 PyObject* get_compiled_size(PyObject* /* self */, PyObject* func) {
@@ -3377,6 +3459,10 @@ PyMethodDef jit_methods[] = {
      get_function_tier,
      METH_O,
      PyDoc_STR("Get the current active JIT tier for a function.")},
+    {"get_function_tier_info",
+     get_function_tier_info,
+     METH_O,
+     PyDoc_STR("Get active and available JIT tier information for a function.")},
     {"set_max_code_size",
      set_max_code_size,
      METH_O,
@@ -3451,6 +3537,11 @@ PyMethodDef jit_methods[] = {
      PyDoc_STR(
          "Returns information about the runtime behavior of JIT-compiled "
          "code.")},
+    {"get_and_clear_tiering_stats",
+     get_and_clear_tiering_stats,
+     METH_NOARGS,
+     PyDoc_STR(
+         "Returns and clears global JIT tier transition events.")},
     {"clear_runtime_stats",
      clear_runtime_stats,
      METH_NOARGS,

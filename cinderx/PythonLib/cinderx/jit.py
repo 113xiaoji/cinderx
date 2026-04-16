@@ -44,11 +44,13 @@ try:
         get_compiled_size,
         get_deopt_entries,
         get_function_tier,
+        get_function_tier_info,
         get_osr_entries,
         get_compiled_spill_stack_size,
         get_compiled_stack_size,
         get_function_compilation_time,
         get_function_hir_opcode_counts,
+        get_and_clear_tiering_stats,
         get_inlined_functions_stats,
         get_jit_list,
         get_num_inlined_functions,
@@ -177,8 +179,18 @@ except ImportError:
     def get_function_tier(func: FuncAny) -> str:
         return "interp"
 
+    def get_function_tier_info(func: FuncAny) -> dict[str, object]:
+        return {
+            "active_tier": "interp",
+            "has_baseline": False,
+            "has_optimized": False,
+        }
+
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:
         return {}
+
+    def get_and_clear_tiering_stats() -> dict[str, object]:
+        return {"events": []}
 
     def get_inlined_functions_stats(func: FuncAny) -> dict[str, object]:
         return {}

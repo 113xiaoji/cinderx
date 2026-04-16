@@ -20,6 +20,20 @@
 
 namespace jit {
 
+namespace {
+
+FunctionTierState functionTierStateFromCompileTier(CompileTier tier) {
+  switch (tier) {
+    case CompileTier::kBaseline:
+      return FunctionTierState::kBaseline;
+    case CompileTier::kOptimized:
+      return FunctionTierState::kOptimized;
+  }
+  JIT_ABORT("Unknown compile tier {}", tierName(tier));
+}
+
+} // namespace
+
 AotContext g_aot_ctx;
 
 PyObject* yieldFromValue(
@@ -447,11 +461,23 @@ void Context::finalizeFunc(
     BorrowedRef<PyFunctionObject> func,
     const CompiledFunction& compiled) {
   ThreadedCompileSerialize guard;
+  FunctionTierState from_tier = currentFuncTierUnlocked(func);
+  FunctionTierState to_tier = functionTierStateFromCompileTier(compiled.tier());
   addCompiledFunc(func);
   compiled_func_tiers_[func] = compiled.tier();
 
   // In case the function had previously been deopted.
   removeDeoptedFunc(func);
+
+  if (from_tier != to_tier) {
+    recordTierTransition(
+        func,
+        from_tier,
+        to_tier,
+        compiled.tier() == CompileTier::kBaseline
+            ? TierTransitionReason::kActivateBaseline
+            : TierTransitionReason::kActivateOptimized);
+  }
 
   auto* versions = lookupCompiledVersions(CompilationKey{func});
   JIT_CHECK(versions != nullptr, "Expected compiled tiers for {}", funcFullname(func));
@@ -580,27 +606,37 @@ CodeRuntime* Context::lookupCodeRuntime(BorrowedRef<PyFunctionObject> func) {
 
 FunctionTierState Context::lookupFuncTier(BorrowedRef<PyFunctionObject> func) {
   ThreadedCompileSerialize guard;
-  if (!compiled_funcs_.contains(func)) {
-    return FunctionTierState::kInterp;
-  }
-  auto it = compiled_func_tiers_.find(func);
-  JIT_CHECK(
-      it != compiled_func_tiers_.end(),
-      "Expected active compiled tier for {}",
-      funcFullname(func));
-  switch (it->second) {
-    case CompileTier::kBaseline:
-      return FunctionTierState::kBaseline;
-    case CompileTier::kOptimized:
-      return FunctionTierState::kOptimized;
-  }
-  JIT_ABORT("Unknown compile tier {}", tierName(it->second));
+  return currentFuncTierUnlocked(func);
 }
 
 bool Context::hasOptimizedTier(BorrowedRef<PyFunctionObject> func) {
   ThreadedCompileSerialize guard;
   auto* versions = lookupCompiledVersions(CompilationKey{func});
   return versions != nullptr && versions->hasOptimizedTier();
+}
+
+FunctionTierInfo Context::lookupFuncTierInfo(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  FunctionTierInfo info;
+  info.active_tier = currentFuncTierUnlocked(func);
+  auto* versions = lookupCompiledVersions(CompilationKey{func});
+  if (versions != nullptr) {
+    info.has_baseline = versions->baseline != nullptr;
+    info.has_optimized = versions->optimized != nullptr;
+  }
+  return info;
+}
+
+std::vector<TierTransitionEvent> Context::getAndClearTierTransitionEvents() {
+  ThreadedCompileSerialize guard;
+  auto events = std::move(tier_transition_events_);
+  tier_transition_events_.clear();
+  return events;
+}
+
+void Context::clearTierTransitionEvents() {
+  ThreadedCompileSerialize guard;
+  tier_transition_events_.clear();
 }
 
 const UnorderedMap<CompilationKey, CompiledFunctionVersions>&
@@ -716,6 +752,28 @@ const CompiledFunctionVersions* Context::lookupCompiledVersions(
     const CompilationKey& key) const {
   auto it = compiled_codes_.find(key);
   return it == compiled_codes_.end() ? nullptr : &it->second;
+}
+
+FunctionTierState Context::currentFuncTierUnlocked(
+    BorrowedRef<PyFunctionObject> func) const {
+  if (!compiled_funcs_.contains(func)) {
+    return FunctionTierState::kInterp;
+  }
+  auto it = compiled_func_tiers_.find(func);
+  JIT_CHECK(
+      it != compiled_func_tiers_.end(),
+      "Expected active compiled tier for {}",
+      funcFullname(func));
+  return functionTierStateFromCompileTier(it->second);
+}
+
+void Context::recordTierTransition(
+    BorrowedRef<PyFunctionObject> func,
+    FunctionTierState from_tier,
+    FunctionTierState to_tier,
+    TierTransitionReason reason) {
+  tier_transition_events_.push_back(TierTransitionEvent{
+      funcFullname(func), from_tier, to_tier, reason});
 }
 
 #ifndef WIN32

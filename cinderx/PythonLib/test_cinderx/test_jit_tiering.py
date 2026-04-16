@@ -1,7 +1,11 @@
+from pathlib import Path
 import subprocess
 import sys
 import textwrap
 import unittest
+
+
+PYTHONLIB = str(Path(__file__).resolve().parents[1])
 
 
 class TieringApiTests(unittest.TestCase):
@@ -9,20 +13,21 @@ class TieringApiTests(unittest.TestCase):
         script = (
             textwrap.dedent(
                 """
+                import sys
+                sys.path.insert(0, {!r})
                 import cinderx.jit as jit
-
                 jit.enable()
                 if not jit.is_enabled():
                     print("__SKIP__:requires JIT")
                     raise SystemExit(0)
                 """
-            ).strip()
+            ).format(PYTHONLIB).strip()
             + "\n\n"
             + textwrap.dedent(body).strip()
             + "\n"
         )
         result = subprocess.run(
-            [sys.executable, "-S", "-u", "-c", script],
+            [sys.executable, "-u", "-c", script],
             capture_output=True,
             check=False,
             text=True,
@@ -139,4 +144,75 @@ class TieringApiTests(unittest.TestCase):
         self.assertEqual(
             lines,
             ["optimized", "interp", "baseline", "baseline", "optimized"],
+        )
+
+
+    def test_get_function_tier_info_reports_active_and_available_tiers(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            info = jit.get_function_tier_info(helper)
+            print(info["active_tier"])
+            print(info["has_baseline"])
+            print(info["has_optimized"])
+
+            if not jit.force_compile_baseline(helper):
+                raise AssertionError("force_compile_baseline() failed")
+            info = jit.get_function_tier_info(helper)
+            print(info["active_tier"])
+            print(info["has_baseline"])
+            print(info["has_optimized"])
+
+            if not jit.force_compile(helper):
+                raise AssertionError("force_compile() failed")
+            info = jit.get_function_tier_info(helper)
+            print(info["active_tier"])
+            print(info["has_baseline"])
+            print(info["has_optimized"])
+            """
+        )
+        self.assertEqual(
+            lines,
+            [
+                "interp",
+                "False",
+                "False",
+                "baseline",
+                "True",
+                "False",
+                "optimized",
+                "True",
+                "True",
+            ],
+        )
+
+    def test_get_and_clear_tiering_stats_records_transitions(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            stats = jit.get_and_clear_tiering_stats()
+            print(len(stats["events"]))
+
+            if not jit.force_compile_baseline(helper):
+                raise AssertionError("force_compile_baseline() failed")
+            if not jit.force_compile(helper):
+                raise AssertionError("force_compile() failed")
+
+            stats = jit.get_and_clear_tiering_stats()
+            print(len(stats["events"]))
+            for event in stats["events"]:
+                print(event["from_tier"])
+                print(event["to_tier"])
+
+            stats = jit.get_and_clear_tiering_stats()
+            print(len(stats["events"]))
+            """
+        )
+        self.assertEqual(
+            lines,
+            ["0", "2", "interp", "baseline", "baseline", "optimized", "0"],
         )

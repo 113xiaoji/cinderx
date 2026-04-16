@@ -5850,3 +5850,66 @@ Conclusion:
   - interpretation:
     - `50` is still the best tested autojit gate for `raytrace`
     - helper-only gate tuning is not opening a new win here
+
+### Tier transition telemetry (`2026-04-16`)
+
+- Goal:
+  - add mainline observability for tiered-JIT state without changing
+    promotion policy itself
+  - expose both:
+    - per-function tier snapshot
+    - global tier transition events
+
+- Files:
+  - `cinderx/Jit/context.h`
+  - `cinderx/Jit/context.cpp`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/PythonLib/cinderx/jit.py`
+  - `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - `docs/superpowers/plans/2026-04-16-tier-transition-telemetry.md`
+
+- Public API added:
+  - `jit.get_function_tier_info(func)`
+    - returns:
+      - `active_tier`
+      - `has_baseline`
+      - `has_optimized`
+  - `jit.get_and_clear_tiering_stats()`
+    - returns:
+      - `{"events": [...]}` with per-event
+        - `func_qualname`
+        - `from_tier`
+        - `to_tier`
+        - `reason`
+
+- Runtime model:
+  - tier transitions are recorded in `Context` when `finalizeFunc()` changes the
+    active tier for a function
+  - initial reasons are intentionally minimal:
+    - `activate_baseline`
+    - `activate_optimized`
+
+- Verification:
+  - local harness:
+    - `python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+    - result: `OK (skipped=7)` when no local JIT extension is present
+    - harness was adjusted so subprocess tests import `cinderx.jit` correctly
+      from repo `PythonLib` and skip cleanly instead of failing on missing
+      module path
+  - ARM built environment:
+    - workdir:
+      - `/root/work/cinderx-richards-fresh-20260414`
+    - command:
+      - `cd cinderx/PythonLib && python -m unittest -v test_cinderx.test_jit_tiering`
+    - result:
+      - all `TieringApiTests` passed
+      - unrelated legacy failures remained in
+        `test_cpython_overrides.test__opcode`, outside this slice
+
+- Interpretation:
+  - this slice does not change promotion behavior
+  - it closes an actual mainline gap:
+    - we can now observe whether a function has only baseline code, both
+      baseline+optimized code, and which tier activation transitions occurred
+  - this should make subsequent promotion/fallback work measurable instead of
+    inferred indirectly from benchmark artifacts

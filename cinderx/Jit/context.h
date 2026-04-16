@@ -29,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -99,6 +100,24 @@ enum class FunctionTierState {
   kInterp,
   kBaseline,
   kOptimized,
+};
+
+enum class TierTransitionReason {
+  kActivateBaseline,
+  kActivateOptimized,
+};
+
+struct TierTransitionEvent {
+  std::string func_qualname;
+  FunctionTierState from_tier;
+  FunctionTierState to_tier;
+  TierTransitionReason reason;
+};
+
+struct FunctionTierInfo {
+  FunctionTierState active_tier{FunctionTierState::kInterp};
+  bool has_baseline{false};
+  bool has_optimized{false};
 };
 
 struct CompiledFunctionVersions {
@@ -311,7 +330,10 @@ class Context : public IJitContext {
   CodeRuntime* lookupCodeRuntime(BorrowedRef<PyFunctionObject> func) override;
 
   FunctionTierState lookupFuncTier(BorrowedRef<PyFunctionObject> func);
+  FunctionTierInfo lookupFuncTierInfo(BorrowedRef<PyFunctionObject> func);
   bool hasOptimizedTier(BorrowedRef<PyFunctionObject> func);
+  std::vector<TierTransitionEvent> getAndClearTierTransitionEvents();
+  void clearTierTransitionEvents();
 
   /*
    * Get the map of all compiled code objects, keyed by their address and also
@@ -606,6 +628,13 @@ class Context : public IJitContext {
   CompiledFunctionVersions* lookupCompiledVersions(const CompilationKey& key);
   const CompiledFunctionVersions* lookupCompiledVersions(
       const CompilationKey& key) const;
+  FunctionTierState currentFuncTierUnlocked(BorrowedRef<PyFunctionObject> func)
+      const;
+  void recordTierTransition(
+      BorrowedRef<PyFunctionObject> func,
+      FunctionTierState from_tier,
+      FunctionTierState to_tier,
+      TierTransitionReason reason);
 
   /*
    * Map of all compiled code objects, keyed by their address and also their
@@ -616,6 +645,7 @@ class Context : public IJitContext {
   /* Set of which functions have JIT-compiled entrypoints. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> compiled_funcs_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, CompileTier> compiled_func_tiers_;
+  std::vector<TierTransitionEvent> tier_transition_events_;
 
   /* Set of which functions were JIT-compiled but have since been deopted. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> deopted_funcs_;
