@@ -216,6 +216,22 @@
           - keep recipes as the standard way to package explicit helper-driven
             workflows
           - but do not treat them as an automatic performance policy
+      - plain-vs-recipe compare runner:
+        - added:
+          - `scripts/arm/compare_bench_pyperf_direct.py`
+        - local script tests:
+          - `Ran 3 tests ... OK`
+        - deployed ARM script tests on `/root/venv-cinderx314-recipecompare2`:
+          - `test_bench_pyperf_direct.py`: `Ran 11 tests ... OK`
+          - `test_compare_bench_pyperf_direct.py`: `Ran 3 tests ... OK`
+        - real `bm_go_board_useful` compare result:
+          - plain median about `0.2783s`
+          - recipe median about `0.3015s`
+          - delta about `+8.33%`
+          - `reprofiled_count = 1`
+        - current recommendation:
+          - use compare runner as the standard evaluation surface for recipes
+          - do not treat the current `bm_go` recipe as a default win yet
       - automatic maturity-gate trial:
         - a narrower wrapper/hot-loop delay policy still regressed real
           `bm_go` badly

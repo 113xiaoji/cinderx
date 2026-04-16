@@ -5766,3 +5766,43 @@ Conclusion:
     workflows without changing runtime policy
   - the first `bm_go` workflow is now reproducible from a checked-in recipe
   - this verifies workflow reproducibility, not a new speedup claim
+
+## 2026-04-16 plain-vs-recipe compare runner
+
+- Added a dedicated compare runner:
+  - [compare_bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/compare_bench_pyperf_direct.py)
+- Purpose:
+  - standardize `plain` vs `recipe` direct-harness comparisons
+  - avoid rebuilding two separate command lines by hand for every recipe trial
+- New local script tests:
+  - [test_compare_bench_pyperf_direct.py](C:/work/code/cinderx1/cinderx/scripts/arm/test_compare_bench_pyperf_direct.py)
+  - local result:
+    - `Ran 3 tests ... OK`
+- Remote verification:
+  - deployed through the standard ARM helper/archive path on
+    `/root/venv-cinderx314-recipecompare2`
+  - helper path with:
+    - `ARM_RUNTIME_SKIP_TESTS=go_like_collection_method_chain_inlines_find_after_helper_inline`
+    - `EXTRA_TEST_CMD` covering both:
+      - `test_bench_pyperf_direct.py`
+      - `test_compare_bench_pyperf_direct.py`
+  - helper result:
+    - `Ran 103 tests ... OK`
+  - remote script tests:
+    - `test_bench_pyperf_direct.py`: `Ran 11 tests ... OK`
+    - `test_compare_bench_pyperf_direct.py`: `Ran 3 tests ... OK`
+- Real `bm_go` compare-runner output on ARM:
+  - command:
+    - `python scripts/arm/compare_bench_pyperf_direct.py --recipe-json scripts/arm/reprofile_recipes/bm_go_board_useful.json --samples 3 --output ...`
+  - output payload:
+    - `recipe_name = bm_go_board_useful`
+    - `benchmark_name = bm_go`
+    - `plain_median_wall_sec = 0.2782897510001021`
+    - `recipe_median_wall_sec = 0.3014778639999349`
+    - `delta_pct = 8.33236327119511`
+    - `reprofiled_count = 1`
+- Updated interpretation:
+  - compare runner is worth keeping because it standardizes evaluation of
+    checked-in reprofile workflows
+  - the current `bm_go` recipe remains reproducible, but its compare result is
+    still negative under the generic direct-harness wrapper

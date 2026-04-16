@@ -695,6 +695,38 @@
     workflow surface
   - but this smoke run is only a workflow validation, not a new speed claim
 
+## 2026-04-16 plain-vs-recipe compare runner
+
+- Added `scripts/arm/compare_bench_pyperf_direct.py`.
+- Goal:
+  - run a plain direct-harness baseline and a recipe-driven run with one
+    command
+  - emit a single JSON compare payload with medians and delta
+- Local verification:
+  - `python -m unittest discover -s scripts/arm -p test_compare_bench_pyperf_direct.py`
+    -> `Ran 3 tests ... OK`
+- Remote verification:
+  - deployed through the standard ARM helper/archive path on
+    `/root/venv-cinderx314-recipecompare2`
+  - helper with the known unrelated local experimental red skipped:
+    - `Ran 103 tests ... OK`
+  - remote script tests:
+    - `test_bench_pyperf_direct.py`: `Ran 11 tests ... OK`
+    - `test_compare_bench_pyperf_direct.py`: `Ran 3 tests ... OK`
+  - real compare output for `bm_go_board_useful`:
+    - plain median:
+      - `0.2782897510001021`
+    - recipe median:
+      - `0.3014778639999349`
+    - delta:
+      - `+8.33%`
+    - `reprofiled_count = 1`
+- Practical takeaway:
+  - compare runner is now the right standard surface for judging whether a
+    checked-in recipe actually helps
+  - current `bm_go` recipe is still reproducible but not yet a net win inside
+    the generic direct-harness wrapper
+
 ## Initial prioritization
 
 当前最可能在两天内打出“本质飞跃”的，不是去补全所有大能力，而是：
