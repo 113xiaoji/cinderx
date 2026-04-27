@@ -309,6 +309,8 @@ std::string_view tierPromotionDecisionReasonName(
       return "optimized_threshold_reached";
     case TierPromotionDecisionReason::kOptimizedCompileFailed:
       return "optimized_compile_failed";
+    case TierPromotionDecisionReason::kOptimizedCompileCooldown:
+      return "optimized_compile_cooldown";
   }
   return "unknown";
 }
@@ -386,25 +388,35 @@ PyObject* baselineTieringVectorcall(
       optimize_limit.has_value()) {
     auto const calls = countCalls(code) + ctx->baselineTierCallCount(func);
     if (calls >= *optimize_limit) {
-      ctx->recordTierPromotionDecision(
-          func,
-          FunctionTierState::kBaseline,
-          FunctionTierState::kOptimized,
-          TierPromotionDecisionAction::kPromote,
-          TierPromotionDecisionReason::kOptimizedThresholdReached);
-      auto result = compileFunctionAtTier(
-          func,
-          CompileTier::kOptimized,
-          TierTransitionReason::kAutoThresholdOptimized);
-      if (result == Result::OK) {
-        return func->vectorcall(func_obj, stack, nargsf, kwnames);
+      if (ctx->consumeOptimizedPromotionCooldown(func)) {
+        ctx->recordTierPromotionDecision(
+            func,
+            FunctionTierState::kBaseline,
+            FunctionTierState::kOptimized,
+            TierPromotionDecisionAction::kSkip,
+            TierPromotionDecisionReason::kOptimizedCompileCooldown);
+      } else {
+        ctx->recordTierPromotionDecision(
+            func,
+            FunctionTierState::kBaseline,
+            FunctionTierState::kOptimized,
+            TierPromotionDecisionAction::kPromote,
+            TierPromotionDecisionReason::kOptimizedThresholdReached);
+        auto result = compileFunctionAtTier(
+            func,
+            CompileTier::kOptimized,
+            TierTransitionReason::kAutoThresholdOptimized);
+        if (result == Result::OK) {
+          return func->vectorcall(func_obj, stack, nargsf, kwnames);
+        }
+        ctx->recordOptimizedPromotionFailure(func);
+        ctx->recordTierPromotionDecision(
+            func,
+            FunctionTierState::kBaseline,
+            FunctionTierState::kOptimized,
+            TierPromotionDecisionAction::kFail,
+            TierPromotionDecisionReason::kOptimizedCompileFailed);
       }
-      ctx->recordTierPromotionDecision(
-          func,
-          FunctionTierState::kBaseline,
-          FunctionTierState::kOptimized,
-          TierPromotionDecisionAction::kFail,
-          TierPromotionDecisionReason::kOptimizedCompileFailed);
     } else {
       ctx->recordTierPromotionDecision(
           func,
@@ -2344,9 +2356,16 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
   Ref<> is_deopted = Ref<>::steal(PyBool_FromLong(info.is_deopted));
   Ref<> has_invalidated_dependencies =
       Ref<>::steal(PyBool_FromLong(info.has_invalidated_dependencies));
+  Ref<> optimized_compile_failures =
+      Ref<>::steal(PyLong_FromUnsignedLong(info.optimized_compile_failures));
+  Ref<> optimized_compile_cooldown_calls_remaining = Ref<>::steal(
+      PyLong_FromUnsignedLongLong(
+          info.optimized_compile_cooldown_calls_remaining));
   if (active_tier == nullptr || has_baseline == nullptr ||
       has_optimized == nullptr || is_deopted == nullptr ||
-      has_invalidated_dependencies == nullptr) {
+      has_invalidated_dependencies == nullptr ||
+      optimized_compile_failures == nullptr ||
+      optimized_compile_cooldown_calls_remaining == nullptr) {
     return nullptr;
   }
   if (PyDict_SetItemString(result, "active_tier", active_tier) < 0 ||
@@ -2356,7 +2375,14 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
       PyDict_SetItemString(
           result,
           "has_invalidated_dependencies",
-          has_invalidated_dependencies) < 0) {
+          has_invalidated_dependencies) < 0 ||
+      PyDict_SetItemString(
+          result, "optimized_compile_failures", optimized_compile_failures) <
+          0 ||
+      PyDict_SetItemString(
+          result,
+          "optimized_compile_cooldown_calls_remaining",
+          optimized_compile_cooldown_calls_remaining) < 0) {
     return nullptr;
   }
   if (info.last_transition.has_value()) {
@@ -2423,6 +2449,38 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
   } else if (
       PyDict_SetItemString(result, "last_dependency_invalidation", Py_None) <
       0) {
+    return nullptr;
+  }
+  if (info.last_promotion_decision.has_value()) {
+    Ref<> last_promotion_decision = Ref<>::steal(PyDict_New());
+    if (last_promotion_decision == nullptr) {
+      return nullptr;
+    }
+    const auto& decision = *info.last_promotion_decision;
+    Ref<> current_tier = Ref<>::steal(PyUnicode_FromString(
+        functionTierStateName(decision.current_tier).data()));
+    Ref<> target_tier = Ref<>::steal(PyUnicode_FromString(
+        functionTierStateName(decision.target_tier).data()));
+    Ref<> action = Ref<>::steal(PyUnicode_FromString(
+        tierPromotionDecisionActionName(decision.action).data()));
+    Ref<> reason = Ref<>::steal(PyUnicode_FromString(
+        tierPromotionDecisionReasonName(decision.reason).data()));
+    if (current_tier == nullptr || target_tier == nullptr ||
+        action == nullptr || reason == nullptr) {
+      return nullptr;
+    }
+    if (PyDict_SetItemString(
+            last_promotion_decision, "current_tier", current_tier) < 0 ||
+        PyDict_SetItemString(
+            last_promotion_decision, "target_tier", target_tier) < 0 ||
+        PyDict_SetItemString(last_promotion_decision, "action", action) < 0 ||
+        PyDict_SetItemString(last_promotion_decision, "reason", reason) < 0 ||
+        PyDict_SetItemString(
+            result, "last_promotion_decision", last_promotion_decision) < 0) {
+      return nullptr;
+    }
+  } else if (
+      PyDict_SetItemString(result, "last_promotion_decision", Py_None) < 0) {
     return nullptr;
   }
   return result.release();

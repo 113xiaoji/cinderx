@@ -186,8 +186,11 @@ except ImportError:
             "has_optimized": False,
             "is_deopted": False,
             "has_invalidated_dependencies": False,
+            "optimized_compile_failures": 0,
+            "optimized_compile_cooldown_calls_remaining": 0,
             "last_transition": None,
             "last_dependency_invalidation": None,
+            "last_promotion_decision": None,
         }
 
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:

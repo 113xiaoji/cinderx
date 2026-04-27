@@ -22,6 +22,9 @@ namespace jit {
 
 namespace {
 
+constexpr std::uint64_t kOptimizedCompileFailureCooldownCalls = 8;
+constexpr std::uint32_t kMaxOptimizedCompileFailureCooldownShift = 3;
+
 FunctionTierState functionTierStateFromCompileTier(CompileTier tier) {
   switch (tier) {
     case CompileTier::kBaseline:
@@ -528,6 +531,8 @@ void Context::finalizeFunc(
   }
   if (compiled.tier() == CompileTier::kOptimized) {
     state.baseline_call_count = 0;
+    state.optimized_compile_failures = 0;
+    state.optimized_compile_cooldown_calls_remaining = 0;
   }
 
   auto* versions = lookupCompiledVersions(CompilationKey{func});
@@ -622,6 +627,7 @@ void Context::forgetCode(BorrowedRef<PyFunctionObject> func) {
   state.active_tier = FunctionTierState::kInterp;
   state.has_invalidated_dependencies = false;
   state.baseline_call_count = 0;
+  state.optimized_compile_cooldown_calls_remaining = 0;
 }
 
 bool Context::didCompile(BorrowedRef<PyFunctionObject> func) {
@@ -681,8 +687,12 @@ FunctionTierInfo Context::lookupFuncTierInfo(BorrowedRef<PyFunctionObject> func)
     const auto& state = state_it->second;
     info.is_deopted = state.is_deopted;
     info.has_invalidated_dependencies = state.has_invalidated_dependencies;
+    info.optimized_compile_failures = state.optimized_compile_failures;
+    info.optimized_compile_cooldown_calls_remaining =
+        state.optimized_compile_cooldown_calls_remaining;
     info.last_transition = state.last_transition;
     info.last_dependency_invalidation = state.last_dependency_invalidation;
+    info.last_promotion_decision = state.last_promotion_decision;
   }
   auto* versions = lookupCompiledVersions(CompilationKey{func});
   if (versions != nullptr) {
@@ -729,6 +739,36 @@ void Context::recordTierPromotionDecision(
   ThreadedCompileSerialize guard;
   tier_promotion_decisions_.push_back(TierPromotionDecision{
       funcFullname(func), current_tier, target_tier, action, reason});
+  tier_states_[func].last_promotion_decision = LastTierPromotionDecision{
+      current_tier,
+      target_tier,
+      action,
+      reason,
+  };
+}
+
+bool Context::consumeOptimizedPromotionCooldown(
+    BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  auto& state = tier_states_[func];
+  if (state.optimized_compile_cooldown_calls_remaining == 0) {
+    return false;
+  }
+  state.optimized_compile_cooldown_calls_remaining--;
+  return true;
+}
+
+void Context::recordOptimizedPromotionFailure(
+    BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  auto& state = tier_states_[func];
+  state.optimized_compile_failures++;
+  auto shift = state.optimized_compile_failures - 1;
+  if (shift > kMaxOptimizedCompileFailureCooldownShift) {
+    shift = kMaxOptimizedCompileFailureCooldownShift;
+  }
+  state.optimized_compile_cooldown_calls_remaining =
+      kOptimizedCompileFailureCooldownCalls << shift;
 }
 
 void Context::recordTierFallback(
@@ -814,6 +854,7 @@ void Context::clearCache() {
     state.active_tier = FunctionTierState::kInterp;
     state.has_invalidated_dependencies = false;
     state.baseline_call_count = 0;
+    state.optimized_compile_cooldown_calls_remaining = 0;
   }
 }
 
@@ -866,6 +907,7 @@ bool Context::removeCompiledFunc(BorrowedRef<PyFunctionObject> func) {
   state.active_tier = FunctionTierState::kInterp;
   state.has_invalidated_dependencies = false;
   state.baseline_call_count = 0;
+  state.optimized_compile_cooldown_calls_remaining = 0;
   return compiled_funcs_.erase(func) == 1;
 }
 
