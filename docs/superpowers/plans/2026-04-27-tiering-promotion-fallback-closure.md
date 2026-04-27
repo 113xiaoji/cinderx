@@ -52,3 +52,17 @@
 - [x] Run the targeted tiering tests on ARM and record the passing tests.
 - [x] Run a small direct ARM probe for baseline-to-optimized automatic promotion and capture the event/decision shape.
 - [x] Update `findings.md` with the exact commands and results.
+
+### Task 5: Extend fallback reasons to deopt-all paths
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/pyjit.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Add a failing test showing that `jit.disable(deopt_all=True)` records a fallback transition for a baseline-tier function.
+- [x] Thread explicit deopt reasons through `deoptFuncImpl()` and the deopt-all path.
+- [x] Preserve existing `force_uncompile()` fallback telemetry.
+- [x] Rebuild on ARM and run the full targeted tiering API suite.
+- [x] Run a direct ARM probe for the public event shape and update `findings.md`.

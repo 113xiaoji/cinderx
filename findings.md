@@ -6022,3 +6022,72 @@ Conclusion:
   - this is still not a full production-grade tier controller:
     deopt-driven fallback, dependency invalidation, and richer promotion policy
     remain future mainline work
+
+### Deopt-all fallback telemetry (`2026-04-27`)
+
+- Goal:
+  - move fallback telemetry beyond explicit `force_uncompile()` calls by
+    recording why a compiled function is returned to the interpreter during
+    runtime deopt paths
+  - start with the public `jit.disable(deopt_all=True)` path because it is a
+    visible, deterministic fallback trigger
+
+- Files:
+  - `cinderx/Jit/context.h`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - `docs/superpowers/plans/2026-04-27-tiering-promotion-fallback-closure.md`
+
+- Behavior added:
+  - `deoptFuncImpl()` now accepts a `TierTransitionReason` and records a
+    fallback transition before removing compiled state
+  - `jit.disable(deopt_all=True)` records `disable_deopt_all`
+  - function modification deopts use `function_modified`
+  - runtime shutdown deopts use `runtime_shutdown`
+  - `force_uncompile()` remains recorded as `force_uncompile`
+
+- TDD red evidence:
+  - ARM path:
+    - `/root/work/cinderx-richards-fresh-20260414`
+  - test added:
+    - `test_disable_deopt_all_records_fallback_transition`
+  - command before production implementation:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering.TieringApiTests.test_disable_deopt_all_records_fallback_transition`
+  - result before implementation:
+    - failed with only `['interp']` printed, proving the function returned to
+      interpreter tier but no fallback event was emitted
+
+- Verification:
+  - local harness:
+    - `python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+    - result:
+      - `OK (skipped=11)` when no local JIT extension is present
+  - ARM build:
+    - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+    - result:
+      - `Successfully built cinderx-2026.4.27.0-cp314-cp314-linux_aarch64.whl`
+  - ARM targeted tests:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+    - result:
+      - `Ran 11 tests in 0.383s`
+      - `OK`
+
+- Direct ARM deopt-all probe:
+  - final tier:
+    - `interp`
+  - events:
+    - `('baseline', 'interp', 'disable_deopt_all')`
+
+- Direct ARM multi-function deopt-all probe:
+  - final tiers:
+    - `interp`, `interp`
+  - events:
+    - `('__main__:helper_a', 'baseline', 'interp', 'disable_deopt_all')`
+    - `('__main__:helper_b', 'baseline', 'interp', 'disable_deopt_all')`
+
+- Interpretation:
+  - fallback telemetry now explains a real runtime deopt-all transition rather
+    than only an explicit test helper uncompile path
+  - this is another step toward a unified tier state model, but dependency
+    invalidation and policy-level fallback accounting still need dedicated
+    follow-up slices

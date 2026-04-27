@@ -275,6 +275,12 @@ std::string_view tierTransitionReasonName(TierTransitionReason reason) {
       return "force_optimized";
     case TierTransitionReason::kForceUncompile:
       return "force_uncompile";
+    case TierTransitionReason::kDisableDeoptAll:
+      return "disable_deopt_all";
+    case TierTransitionReason::kFunctionModified:
+      return "function_modified";
+    case TierTransitionReason::kRuntimeShutdown:
+      return "runtime_shutdown";
   }
   return "unknown";
 }
@@ -1593,7 +1599,9 @@ PyObject* is_multithreaded_compile_test_enabled(PyObject*, PyObject*) {
   Py_RETURN_FALSE;
 }
 
-bool deoptFuncImpl(BorrowedRef<PyFunctionObject> func) {
+bool deoptFuncImpl(
+    BorrowedRef<PyFunctionObject> func,
+    TierTransitionReason reason) {
   // There appear to be instances where the runtime is finalizing and goes to
   // destroy the cinderjit module and deopt all compiled functions, only to find
   // that some of the compiled functions have already been zeroed out and
@@ -1609,6 +1617,7 @@ bool deoptFuncImpl(BorrowedRef<PyFunctionObject> func) {
     return false;
   }
 
+  jitCtx()->recordTierFallback(func, reason);
   if (!jitCtx()->removeCompiledFunc(func)) {
     return false;
   }
@@ -1616,8 +1625,10 @@ bool deoptFuncImpl(BorrowedRef<PyFunctionObject> func) {
   return true;
 }
 
-void uncompile(BorrowedRef<PyFunctionObject> func) {
-  deoptFuncImpl(func);
+void uncompile(
+    BorrowedRef<PyFunctionObject> func,
+    TierTransitionReason reason = TierTransitionReason::kForceUncompile) {
+  deoptFuncImpl(func, reason);
   jitCtx()->forgetCode(func);
 }
 
@@ -1627,8 +1638,10 @@ void uncompile(BorrowedRef<PyFunctionObject> func) {
  *
  * Return true if the function was previously JIT-compiled, false otherwise.
  */
-bool deoptFunc(BorrowedRef<PyFunctionObject> func) {
-  if (jitCtx() && deoptFuncImpl(func)) {
+bool deoptFunc(
+    BorrowedRef<PyFunctionObject> func,
+    TierTransitionReason reason = TierTransitionReason::kFunctionModified) {
+  if (jitCtx() && deoptFuncImpl(func, reason)) {
     jitCtx()->addDeoptedFunc(func);
     return true;
   }
@@ -1645,7 +1658,7 @@ void disable_jit_impl(bool deopt_all) {
         "Deopting {} compiled functions", jitCtx()->compiledFuncs().size());
     size_t success = 0;
     for (BorrowedRef<PyFunctionObject> func : jitCtx()->compiledFuncs()) {
-      if (deoptFunc(func)) {
+      if (deoptFunc(func, TierTransitionReason::kDisableDeoptAll)) {
         success++;
       } else {
         JIT_DLOG("Failed to deopt compiled function '{}'", funcFullname(func));
@@ -2160,7 +2173,7 @@ PyObject* force_uncompile(PyObject* /* self */, PyObject* arg) {
   // all traces of it from the metadata.
   funcDestroyed(func);
   if (jitCtx() != nullptr) {
-    uncompile(func);
+    uncompile(func, TierTransitionReason::kForceUncompile);
   }
 
   Py_RETURN_TRUE;
@@ -4570,7 +4583,7 @@ void finalize() {
   // that if any JIT Python functions are invoked as side-effects during the
   // remainder of shutdown, they will go through the interpreter.
   for (PyFunctionObject* func : jitCtx()->compiledFuncs()) {
-    deoptFuncImpl(func);
+    deoptFuncImpl(func, TierTransitionReason::kRuntimeShutdown);
   }
 
   // Always release references from Context objects: C++ clients may have
@@ -4768,7 +4781,7 @@ void funcDestroyed(BorrowedRef<PyFunctionObject> func) {
 }
 
 void funcModified(BorrowedRef<PyFunctionObject> func) {
-  deoptFunc(func);
+  deoptFunc(func, TierTransitionReason::kFunctionModified);
   // Clean up registrations for the old code object. At this point
   // func->func_code still refers to the old code. The caller will update
   // func->func_code and call scheduleCompile() to re-register with the new

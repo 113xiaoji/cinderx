@@ -304,3 +304,25 @@ class TieringApiTests(unittest.TestCase):
             """
         )
         self.assertEqual(lines, ["baseline", "interp", "force_uncompile"])
+
+    def test_disable_deopt_all_records_fallback_transition(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            if not jit.force_compile_baseline(helper):
+                raise AssertionError("force_compile_baseline() failed")
+            jit.get_and_clear_tiering_stats()
+            jit.disable(deopt_all=True)
+
+            stats = jit.get_and_clear_tiering_stats()
+            print(jit.get_function_tier(helper))
+            for event in stats["events"]:
+                if event["func_qualname"].endswith("helper"):
+                    print(event["from_tier"])
+                    print(event["to_tier"])
+                    print(event["reason"])
+            """
+        )
+        self.assertEqual(lines, ["interp", "baseline", "interp", "disable_deopt_all"])

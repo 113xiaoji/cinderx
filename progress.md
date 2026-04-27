@@ -212,3 +212,36 @@
 - Tried disabling `LOAD_ATTR_INSTANCE_VALUE` for non-leaf `self` receivers.
 - That removed the last deopt bucket but regressed raytrace to about `1.92s`, so it was not kept.
 
+## Session Update: 2026-04-27 (tiering fallback telemetry)
+
+### Task status
+- Extended the tiering promotion/fallback closure with a deopt-all fallback
+  telemetry slice.
+- Scope:
+  - record why `jit.disable(deopt_all=True)` moves a compiled function back to
+    interpreter tier
+  - keep `force_uncompile()` fallback telemetry intact
+  - thread explicit deopt reasons through the shared deopt implementation
+
+### TDD evidence
+- Added `test_disable_deopt_all_records_fallback_transition`.
+- ARM red run before implementation:
+  - actual output was only `['interp']`
+  - expected fallback event was missing
+
+### Verification summary
+- ARM staging workdir:
+  - `/root/work/cinderx-richards-fresh-20260414`
+- ARM build:
+  - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+  - result: wheel built successfully
+- ARM targeted tests:
+  - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+  - result: `Ran 11 tests in 0.383s`, `OK`
+- Direct probe:
+  - final tier: `interp`
+  - event: `('baseline', 'interp', 'disable_deopt_all')`
+- Multi-function direct probe:
+  - final tiers: `interp`, `interp`
+  - events recorded for both `helper_a` and `helper_b`
+

@@ -111,6 +111,9 @@ enum class TierTransitionReason {
   kForceBaseline,
   kForceOptimized,
   kForceUncompile,
+  kDisableDeoptAll,
+  kFunctionModified,
+  kRuntimeShutdown,
 };
 
 struct TierTransitionEvent {
