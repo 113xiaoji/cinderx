@@ -311,3 +311,58 @@
   - `PyType_Modified(Point)` emitted six `split_dict` invalidation/check events
   - each event reported `action=skip`, `reason=type_modified`
 
+## Session Update: 2026-04-27 (tier state / policy closeout)
+
+### Task status
+- Connected dependency invalidation outcomes into stable per-function tier state.
+- Consolidated active tier, last transition, dependency state, baseline call
+  counts, and promotion policy counters into `TierState`.
+- Added optimized compile-failure cooldown/backoff so repeated promotion
+  failures stop retrying on every baseline call.
+- Fixed a review-found owner identity bug where dependency patch state could be
+  assigned by qualname to the wrong function.
+- Fixed the pyperformance subset matrix summarizer for pyperformance 1.14
+  debug-single-value JSON.
+
+### TDD / review evidence
+- Owner identity regression:
+  - old behavior attached `action=patch` dependency state to the second
+    same-qualname function instead of the compiled owner
+  - new regression:
+    `test_dependency_invalidation_state_uses_compiled_owner_identity`
+- Pyperformance parser regression:
+  - old `run_pyperf_subset.sh` produced empty `benchmarks: []`
+  - new unit coverage:
+    `tests.test_summarize_pyperf_subset`
+- Subagent review:
+  - checked all type deopt patcher constructor call sites
+  - no P0/P1/P2 issues found
+
+### Verification summary
+- Local helper tests:
+  - `python -m unittest -v tests.test_arm_remote_update_build_test tests.test_summarize_pyperf_subset`
+  - result: `Ran 20 tests`, `OK`
+- ARM build:
+  - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+  - result: wheel built successfully
+- ARM tiering suite with scratch PYTHONPATH:
+  - `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+  - result: `Ran 16 tests in 1.769s`, `OK`
+- Pyperformance matrix after summarizer fix:
+  - `richards`, 9 samples: median `0.12229131999993115s`
+  - `go`, 9 samples: median `0.27292389099966385s`
+  - `deltablue`, 7 samples: median `0.04078413099887257s`
+  - `raytrace`, 7 samples: median `0.5151431289996253s`
+
+### Performance evidence
+- Promotion failure policy microbenchmark:
+  - baseline `94fb6b8f`: median `0.0002002040000661509s`
+  - current ownerfix build: median `0.00004339299994171597s`
+  - repeated compile-fail decisions: `553 -> 28`
+  - cooldown decisions: `0 -> 525`
+- Interpretation:
+  - the real speedup is in the tier policy failure path, not claimed as a broad
+    pyperformance win
+  - pyperformance matrix is the guardrail that the tier-state/policy work did
+    not destabilize object-heavy workloads
+

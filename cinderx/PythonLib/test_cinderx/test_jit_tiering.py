@@ -533,3 +533,82 @@ class TieringApiTests(unittest.TestCase):
                 "split_dict",
             ],
         )
+
+    def test_dependency_invalidation_state_uses_compiled_owner_identity(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            import cinderjit
+
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            source = (
+                "class Point:\\n"
+                "    def __init__(self):\\n"
+                "        self.x = 42\\n"
+                "\\n"
+                "    def getx(self):\\n"
+                "        return self.x\\n"
+                "\\n"
+                "class Other:\\n"
+                "    def __init__(self):\\n"
+                "        self.x = 99\\n"
+            )
+            ns_a = {"__name__": "__main__"}
+            ns_b = {"__name__": "__main__"}
+            exec(source, ns_a)
+            exec(source, ns_b)
+
+            PointA = ns_a["Point"]
+            OtherA = ns_a["Other"]
+            PointB = ns_b["Point"]
+            a = PointA()
+            b = PointB()
+
+            for _ in range(20000):
+                a.getx()
+                b.getx()
+
+            if not jit.force_compile(PointA.getx):
+                raise AssertionError("force_compile(PointA.getx) failed")
+            if not jit.force_compile(PointB.getx):
+                raise AssertionError("force_compile(PointB.getx) failed")
+            print(cinderjit.get_function_hir_opcode_counts(PointA.getx).get("DeoptPatchpoint", 0) > 0)
+            print(cinderjit.get_function_hir_opcode_counts(PointB.getx).get("DeoptPatchpoint", 0) > 0)
+            print(PointA.getx.__qualname__ == PointB.getx.__qualname__)
+            jit.get_and_clear_tiering_stats()
+
+            a.__class__ = OtherA
+
+            stats = jit.get_and_clear_tiering_stats()
+            print(
+                any(
+                    item["action"] == "patch"
+                    and item["func_qualname"].endswith("Point.getx")
+                    for item in stats.get("invalidations", [])
+                )
+            )
+
+            info_a = jit.get_function_tier_info(PointA.getx)
+            info_b = jit.get_function_tier_info(PointB.getx)
+            last_a = info_a.get("last_dependency_invalidation") or {}
+            last_b = info_b.get("last_dependency_invalidation") or {}
+            print(info_a.get("has_invalidated_dependencies"))
+            print(last_a.get("action"))
+            print(info_b.get("has_invalidated_dependencies"))
+            print(last_b.get("action"))
+            """
+        )
+        self.assertEqual(
+            lines,
+            [
+                "True",
+                "True",
+                "True",
+                "True",
+                "True",
+                "patch",
+                "False",
+                "None",
+            ],
+        )

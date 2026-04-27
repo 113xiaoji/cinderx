@@ -18,6 +18,9 @@ class TypeDeoptPatcher : public JumpPatcher {
  public:
   TypeDeoptPatcher(
       BorrowedRef<PyTypeObject> type,
+      BorrowedRef<PyCodeObject> owner_code,
+      BorrowedRef<PyDictObject> owner_builtins,
+      BorrowedRef<PyDictObject> owner_globals,
       std::string owner_func_qualname,
       std::string description);
 
@@ -25,6 +28,7 @@ class TypeDeoptPatcher : public JumpPatcher {
 
   // Access the type being watched.
   BorrowedRef<PyTypeObject> type() const;
+  bool ownerMatches(BorrowedRef<PyFunctionObject> func) const;
   std::string_view ownerFuncQualname() const;
   virtual std::string_view kind() const;
   std::string_view description() const;
@@ -35,6 +39,9 @@ class TypeDeoptPatcher : public JumpPatcher {
   // The type being watched.  It outlives this object because this object will
   // be cleaned up by a type watcher notification.
   BorrowedRef<PyTypeObject> type_;
+  BorrowedRef<PyCodeObject> owner_code_;
+  BorrowedRef<PyDictObject> owner_builtins_;
+  BorrowedRef<PyDictObject> owner_globals_;
   std::string owner_func_qualname_;
   std::string description_;
 };
@@ -47,6 +54,9 @@ class TypeAttrDeoptPatcher : public TypeDeoptPatcher {
       BorrowedRef<PyTypeObject> type,
       BorrowedRef<PyUnicodeObject> attr_name,
       BorrowedRef<> target_object,
+      BorrowedRef<PyCodeObject> owner_code,
+      BorrowedRef<PyDictObject> owner_builtins,
+      BorrowedRef<PyDictObject> owner_globals,
       std::string owner_func_qualname,
       std::string description);
 
@@ -66,6 +76,9 @@ class SplitDictDeoptPatcher : public TypeDeoptPatcher {
       BorrowedRef<PyTypeObject> type,
       BorrowedRef<PyUnicodeObject> attr_name,
       PyDictKeysObject* keys,
+      BorrowedRef<PyCodeObject> owner_code,
+      BorrowedRef<PyDictObject> owner_builtins,
+      BorrowedRef<PyDictObject> owner_globals,
       std::string owner_func_qualname,
       std::string description);
 

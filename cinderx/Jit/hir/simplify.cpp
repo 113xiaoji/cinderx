@@ -1671,7 +1671,14 @@ Register* simplifyLoadAttrSplitDict(
   Register* receiver = load_attr->GetOperand(0);
   auto patchpoint = env.emitInstr<DeoptPatchpoint>(
       env.func.allocateCodePatcher<SplitDictDeoptPatcher>(
-          type, name, keys, env.func.fullname, "SplitDictDeoptPatcher"));
+          type,
+          name,
+          keys,
+          env.func.code,
+          env.func.builtins,
+          env.func.globals,
+          env.func.fullname,
+          "SplitDictDeoptPatcher"));
   patchpoint->setGuiltyReg(receiver);
   patchpoint->setDescr("SplitDictDeoptPatcher");
   env.emit<UseType>(receiver, receiver->type());
@@ -1760,7 +1767,14 @@ Register* simplifyLoadAttrSplitDict(
   Register* receiver = load_attr->GetOperand(0);
   auto patchpoint = env.emitInstr<DeoptPatchpoint>(
       env.func.allocateCodePatcher<SplitDictDeoptPatcher>(
-          type, name, keys, env.func.fullname, "SplitDictDeoptPatcher"));
+          type,
+          name,
+          keys,
+          env.func.code,
+          env.func.builtins,
+          env.func.globals,
+          env.func.fullname,
+          "SplitDictDeoptPatcher"));
   patchpoint->setGuiltyReg(receiver);
   patchpoint->setDescr("SplitDictDeoptPatcher");
   env.emit<UseType>(receiver, receiver->type());
@@ -1839,6 +1853,9 @@ void emitTypeAttrDeoptPatcher(
           info.py_type,
           info.attr_name,
           info.descr,
+          env.func.code,
+          env.func.builtins,
+          env.func.globals,
           env.func.fullname,
           description));
   patchpoint->setGuiltyReg(info.receiver);
@@ -1926,7 +1943,12 @@ Register* simplifyLoadAttrGenericDescriptor(Env& env, const DescrInfo& info) {
     // PyType_Modified() before updating tp_descr_{get,set}.
     auto patchpoint = env.emitInstr<DeoptPatchpoint>(
         env.func.allocateCodePatcher<TypeDeoptPatcher>(
-            descr_type, env.func.fullname, "tp_descr_get/tp_descr_set"));
+            descr_type,
+            env.func.code,
+            env.func.builtins,
+            env.func.globals,
+            env.func.fullname,
+            "tp_descr_get/tp_descr_set"));
     patchpoint->setGuiltyReg(info.receiver);
     patchpoint->setDescr("tp_descr_get/tp_descr_set");
   }

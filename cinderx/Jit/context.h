@@ -750,8 +750,6 @@ class Context : public IJitContext {
   /* Set of which functions have JIT-compiled entrypoints. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> compiled_funcs_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, TierState> tier_states_;
-  UnorderedMap<std::string, BorrowedRef<PyFunctionObject>>
-      tier_state_funcs_by_qualname_;
   std::vector<TierTransitionEvent> tier_transition_events_;
   std::vector<TierPromotionDecision> tier_promotion_decisions_;
   std::vector<TierDependencyInvalidation> tier_dependency_invalidations_;

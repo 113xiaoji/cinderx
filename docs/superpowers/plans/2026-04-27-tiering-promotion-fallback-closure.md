@@ -100,3 +100,81 @@
 - [x] Record each dependency check as `patch` or `skip` in `Context::notifyTypeModified()`.
 - [x] Expose dependency invalidations through `jit.get_and_clear_tiering_stats()["invalidations"]`.
 - [x] Rebuild on ARM, run the tiering API suite, and capture a direct probe of the event shape.
+
+### Task 8: Close patched invalidation into tier state
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/pyjit.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/cinderx/jit.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Write a failing test that triggers a real `action=patch` dependency invalidation.
+- [x] Require `get_function_tier_info()` to report the patched dependency reason after the invalidation.
+- [x] Add a stable tier-state field for the latest dependency invalidation/check.
+- [x] Keep `active_tier` accurate: a patched deopt point does not globally uncompile the function until an explicit fallback path does so.
+- [x] Rebuild on ARM and run the tiering suite.
+
+### Task 9: Consolidate per-function tier state
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/pyjit.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Write a failing test proving clearable stats do not erase stable tier state.
+- [x] Add a per-function `TierState` record inside `Context`.
+- [x] Move last transition, last dependency invalidation, baseline call count, and policy counters into `TierState`.
+- [x] Preserve the existing public event stream shape for compatibility.
+- [x] Rebuild on ARM and run the tiering suite.
+
+### Task 10: Add promotion policy state machine MVP
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/pyjit.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Write a failing test showing repeated optimized compile failures enter cooldown instead of retrying every call.
+- [x] Track optimized compile failures, cooldown calls remaining, and last policy reason per function.
+- [x] Record `cooldown` promotion decisions while the backoff window is active.
+- [x] Expose the policy counters through `get_function_tier_info()`.
+- [x] Rebuild on ARM, run tiering tests, then run a pyperformance guardrail matrix.
+
+### Task 11: Fix dependency invalidation owner identity
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/type_deopt_patchers.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/type_deopt_patchers.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/hir/simplify.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Write a regression test with two different functions that share the same qualname.
+- [x] Verify the old qualname-based mapping attaches patched dependency state to the wrong function.
+- [x] Store compiled owner identity (`code`, `builtins`, `globals`) on type deopt patchers.
+- [x] Update `Context::notifyTypeModified()` to match tier states with `ownerMatches()` instead of qualname.
+- [x] Rebuild on ARM and run the tiering suite.
+- [x] Get a subagent code-review pass on the owner identity change.
+
+### Task 12: Repair pyperformance subset matrix summarization
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/scripts/arm/run_pyperf_subset.sh`
+- Create: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/scripts/arm/summarize_pyperf_subset.py`
+- Create: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/tests/test_summarize_pyperf_subset.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Reproduce the empty-summary bug against pyperformance 1.14 debug-single-value JSON.
+- [x] Add a unit test for top-level `metadata.name` parsing.
+- [x] Move summary parsing into a testable helper.
+- [x] Confirm a remote smoke run produces a non-empty summary JSON.
+- [x] Re-run the pyperformance guardrail matrix after the parser fix.

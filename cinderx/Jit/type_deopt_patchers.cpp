@@ -34,9 +34,15 @@ bool shouldPatchForAttr(
 
 TypeDeoptPatcher::TypeDeoptPatcher(
     BorrowedRef<PyTypeObject> type,
+    BorrowedRef<PyCodeObject> owner_code,
+    BorrowedRef<PyDictObject> owner_builtins,
+    BorrowedRef<PyDictObject> owner_globals,
     std::string owner_func_qualname,
     std::string description)
     : type_{type},
+      owner_code_{owner_code},
+      owner_builtins_{owner_builtins},
+      owner_globals_{owner_globals},
       owner_func_qualname_{std::move(owner_func_qualname)},
       description_{std::move(description)} {}
 
@@ -47,6 +53,12 @@ bool TypeDeoptPatcher::maybePatch(BorrowedRef<PyTypeObject>) {
 
 BorrowedRef<PyTypeObject> TypeDeoptPatcher::type() const {
   return type_;
+}
+
+bool TypeDeoptPatcher::ownerMatches(BorrowedRef<PyFunctionObject> func) const {
+  return func->func_code == owner_code_ &&
+      func->func_builtins == owner_builtins_ &&
+      func->func_globals == owner_globals_;
 }
 
 std::string_view TypeDeoptPatcher::ownerFuncQualname() const {
@@ -71,10 +83,16 @@ TypeAttrDeoptPatcher::TypeAttrDeoptPatcher(
     BorrowedRef<PyTypeObject> type,
     BorrowedRef<PyUnicodeObject> attr_name,
     BorrowedRef<> target_object,
+    BorrowedRef<PyCodeObject> owner_code,
+    BorrowedRef<PyDictObject> owner_builtins,
+    BorrowedRef<PyDictObject> owner_globals,
     std::string owner_func_qualname,
     std::string description)
     : TypeDeoptPatcher{
           type,
+          owner_code,
+          owner_builtins,
+          owner_globals,
           std::move(owner_func_qualname),
           std::move(description)} {
   ThreadedCompileSerialize guard;
@@ -106,10 +124,16 @@ SplitDictDeoptPatcher::SplitDictDeoptPatcher(
     BorrowedRef<PyTypeObject> type,
     BorrowedRef<PyUnicodeObject> attr_name,
     PyDictKeysObject* keys,
+    BorrowedRef<PyCodeObject> owner_code,
+    BorrowedRef<PyDictObject> owner_builtins,
+    BorrowedRef<PyDictObject> owner_globals,
     std::string owner_func_qualname,
     std::string description)
     : TypeDeoptPatcher{
           type,
+          owner_code,
+          owner_builtins,
+          owner_globals,
           std::move(owner_func_qualname),
           std::move(description)},
       keys_{keys} {

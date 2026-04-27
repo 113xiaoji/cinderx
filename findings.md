@@ -6270,3 +6270,200 @@ Conclusion:
   - remaining gap:
     - connect dependency invalidation outcomes to a stronger unified tier state
       model and policy-level fallback decisions when a patch actually fires
+
+### Tier state / policy closeout (`2026-04-27`)
+
+- Goal:
+  - finish the mainline tiered-JIT closure slice:
+    - dependency invalidation outcome visible in stable per-function tier state
+    - active tier, compiled tiers, last transition, deopt/fallback, dependency
+      invalidation, and promotion policy counters owned by one `TierState`
+      record
+    - repeated optimized compile failures enter cooldown/backoff instead of
+      retrying blindly on every baseline call
+
+- Files:
+  - `cinderx/Jit/context.h`
+  - `cinderx/Jit/context.cpp`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/Jit/type_deopt_patchers.h`
+  - `cinderx/Jit/type_deopt_patchers.cpp`
+  - `cinderx/Jit/hir/simplify.cpp`
+  - `cinderx/PythonLib/cinderx/jit.py`
+  - `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - `scripts/arm/run_pyperf_subset.sh`
+  - `scripts/arm/summarize_pyperf_subset.py`
+  - `tests/test_summarize_pyperf_subset.py`
+  - `docs/superpowers/plans/2026-04-27-tiering-promotion-fallback-closure.md`
+
+- Behavior now covered:
+  - `jit.get_function_tier_info(func)` reports stable dependency invalidation
+    state:
+    - `has_invalidated_dependencies`
+    - `last_dependency_invalidation`
+  - a patched dependency invalidation updates that function's stable tier state
+    while keeping `active_tier` at the compiled tier until an actual fallback or
+    deopt path changes it
+  - clearable telemetry streams no longer own the durable answer; they are a
+    log view over state
+  - optimized compile failure policy records:
+    - `optimized_compile_failures`
+    - `optimized_compile_cooldown_remaining`
+    - `last_promotion_decision`
+  - repeated optimized compile failures emit `cooldown` decisions rather than
+    re-invoking optimized compilation on every call
+
+- Review-found owner identity issue:
+  - problem:
+    - dependency invalidation state was initially associated back to a function
+      through `owner_func_qualname`
+    - two live function objects can share the same qualname, for example two
+      separate `exec()` namespaces both defining `__main__:Point.getx`
+    - in that shape, the latest qualname mapping could receive the earlier
+      function's `action=patch` dependency state
+  - TDD red evidence on the old mapping:
+    - both functions compiled with real `DeoptPatchpoint`
+    - both qualnames were identical
+    - after patching `PointA.getx`, old output showed:
+      - `PointA.has_invalidated_dependencies = False`
+      - `PointB.has_invalidated_dependencies = True`
+      - `PointB.last_dependency_invalidation.action = patch`
+  - fix:
+    - type deopt patchers now store compiled owner identity:
+      - `owner_code`
+      - `owner_builtins`
+      - `owner_globals`
+    - `Context::notifyTypeModified()` scans `tier_states_` and updates only
+      states where `patcher->ownerMatches(func)`
+    - the old `tier_state_funcs_by_qualname_` map was removed
+  - subagent review:
+    - checked all `TypeDeoptPatcher`, `TypeAttrDeoptPatcher`, and
+      `SplitDictDeoptPatcher` constructor call sites
+    - no P0/P1/P2 issues found
+    - reviewer note:
+      - matching is compiled-owner identity, not raw `PyFunctionObject*`
+      - functions sharing the same `code/builtins/globals` also share the same
+        compiled artifact, so that behavior is intentional
+
+- Pyperformance matrix summarizer fix:
+  - problem:
+    - pyperformance 1.14 `--debug-single-value` JSON stores benchmark name in
+      top-level `metadata.name`
+    - `scripts/arm/run_pyperf_subset.sh` only read
+      `benchmarks[].metadata.name`, so all runs were discarded and summary
+      files contained `benchmarks: []`
+  - fix:
+    - added `scripts/arm/summarize_pyperf_subset.py`
+    - updated `run_pyperf_subset.sh` to call the helper
+    - added `tests/test_summarize_pyperf_subset.py`
+  - local verification:
+    - command:
+      `python -m unittest -v tests.test_arm_remote_update_build_test tests.test_summarize_pyperf_subset`
+    - result:
+      `Ran 20 tests in 0.013s`, `OK`
+  - remote smoke:
+    - output:
+      `/root/work/arm-sync/tiering_policy_smoke_richards_s2.json`
+    - result:
+      `richards` summary contained two samples and median
+      `0.12185447850060882s`
+
+- ARM functional verification:
+  - workdir:
+    - `/root/work/cinderx-richards-fresh-20260414`
+  - critical import path:
+    - `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib`
+    - without this, the driver venv can import the installed `_cinderx.so`
+      instead of the freshly built scratch extension
+  - build:
+    - command:
+      `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+    - result:
+      `Successfully built cinderx-2026.4.27.0-cp314-cp314-linux_aarch64.whl`
+  - owner identity targeted test:
+    - command:
+      `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering.TieringApiTests.test_dependency_invalidation_state_uses_compiled_owner_identity`
+    - result:
+      `Ran 1 test in 1.209s`, `OK`
+  - full tiering suite:
+    - command:
+      `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+    - result:
+      `Ran 16 tests in 1.769s`, `OK`
+
+- Performance evidence: promotion failure policy microbenchmark:
+  - artifacts:
+    - baseline:
+      `/root/work/arm-sync/policy_micro_base_94fb.json`
+    - current:
+      `/root/work/arm-sync/policy_micro_current_ownerfix.json`
+  - baseline `94fb6b8f`:
+    - `iters`: `80`
+    - `samples`: `7`
+    - `median_sec`: `0.0002002040000661509`
+    - `total_fail_decisions`: `553`
+    - `total_cooldown_decisions`: `0`
+  - current ownerfix build:
+    - `iters`: `80`
+    - `samples`: `7`
+    - `median_sec`: `0.00004339299994171597`
+    - `total_fail_decisions`: `28`
+    - `total_cooldown_decisions`: `525`
+  - interpretation:
+    - median elapsed dropped by about `78.3%`
+    - repeated optimized compile-fail decisions dropped by about `94.9%`
+    - this is the real performance gain for the new tier policy state machine:
+      repeated failures no longer burn compile attempts on every baseline call
+
+- Pyperformance guardrail matrix after summarizer repair:
+  - command shape:
+    - `BENCHMARKS=<bench> SAMPLES=<n> AUTOJIT=<gate> OUTPUT=<json> bash scripts/arm/run_pyperf_subset.sh`
+    - all runs used:
+      `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib`
+  - `richards`:
+    - output:
+      `/root/work/arm-sync/tiering_policy_current_ownerfix_richards_s9.json`
+    - samples:
+      `0.12476421100109292`, `0.1215165129997331`,
+      `0.12229131999993115`, `0.12107174000084342`,
+      `0.12379988099928596`, `0.12226802800068981`,
+      `0.1234335530007229`, `0.12256900100146595`,
+      `0.1220472310014884`
+    - median:
+      `0.12229131999993115s`
+  - `go`:
+    - output:
+      `/root/work/arm-sync/tiering_policy_current_ownerfix_go_s9.json`
+    - samples:
+      `0.27112373700038006`, `0.2716159859992331`,
+      `0.27765865000037593`, `0.2721380639995914`,
+      `0.27141873099935765`, `0.278258303000257`,
+      `0.27292389099966385`, `0.2759454939987336`,
+      `0.27399533100106055`
+    - median:
+      `0.27292389099966385s`
+  - `deltablue`:
+    - output:
+      `/root/work/arm-sync/tiering_policy_current_ownerfix_deltablue_s7.json`
+    - samples:
+      `0.04085681600008684`, `0.040767520000372315`,
+      `0.04086893699968641`, `0.040735757000220474`,
+      `0.04067708300135564`, `0.04078413099887257`,
+      `0.04095486400001391`
+    - median:
+      `0.04078413099887257s`
+  - `raytrace`:
+    - output:
+      `/root/work/arm-sync/tiering_policy_current_ownerfix_raytrace_s7.json`
+    - samples:
+      `0.5151431289996253`, `0.5170595189993037`,
+      `0.5022835159998067`, `0.5161502430000837`,
+      `0.5077452969999285`, `0.505014926999138`,
+      `0.5161113209996984`
+    - median:
+      `0.5151431289996253s`
+  - interpretation:
+    - the matrix is a guardrail for object-heavy workloads
+    - no broad pyperformance speedup is claimed from tier-state bookkeeping
+      itself
+    - the material speedup is the policy failure-path microbenchmark above

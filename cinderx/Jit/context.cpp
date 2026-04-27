@@ -357,7 +357,6 @@ void Context::releaseReferences() {
   references_.clear();
   type_deopt_patchers_.clear();
   tier_states_.clear();
-  tier_state_funcs_by_qualname_.clear();
 }
 
 LoadAttrCache* Context::allocateLoadAttrCache() {
@@ -460,10 +459,10 @@ void Context::notifyTypeModified(
             : new_type == lookup_type ? "type_modified"
                                       : "instance_type_assigned"};
     tier_dependency_invalidations_.push_back(invalidation);
-    auto func_it =
-        tier_state_funcs_by_qualname_.find(invalidation.func_qualname);
-    if (func_it != tier_state_funcs_by_qualname_.end()) {
-      auto& state = tier_states_[func_it->second];
+    for (auto& [func, state] : tier_states_) {
+      if (!patcher->ownerMatches(func)) {
+        continue;
+      }
       state.last_dependency_invalidation = LastTierDependencyInvalidation{
           invalidation.watched_type,
           invalidation.patcher_kind,
@@ -509,9 +508,7 @@ void Context::finalizeFunc(
   ThreadedCompileSerialize guard;
   FunctionTierState from_tier = currentFuncTierUnlocked(func);
   FunctionTierState to_tier = functionTierStateFromCompileTier(compiled.tier());
-  std::string fullname = funcFullname(func);
   addCompiledFunc(func);
-  tier_state_funcs_by_qualname_[fullname] = func;
   auto& state = tier_states_[func];
   state.active_tier = to_tier;
   state.is_deopted = false;
@@ -859,10 +856,8 @@ void Context::clearCache() {
 }
 
 void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
-  std::string fullname = funcFullname(func);
   compiled_funcs_.erase(func);
   tier_states_.erase(func);
-  tier_state_funcs_by_qualname_.erase(fullname);
   deopted_funcs_.erase(func);
 
   // This doesn't modify compiled_codes_, so if this is a nested function it can
