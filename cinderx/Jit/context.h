@@ -182,6 +182,15 @@ struct FunctionTierInfo {
   std::optional<LastTierDependencyInvalidation> last_dependency_invalidation;
 };
 
+struct TierState {
+  FunctionTierState active_tier{FunctionTierState::kInterp};
+  bool is_deopted{false};
+  bool has_invalidated_dependencies{false};
+  std::optional<LastTierTransition> last_transition;
+  std::optional<LastTierDependencyInvalidation> last_dependency_invalidation;
+  std::uint64_t baseline_call_count{0};
+};
+
 struct CompiledFunctionVersions {
   std::unique_ptr<CompiledFunction> baseline;
   std::unique_ptr<CompiledFunction> optimized;
@@ -724,17 +733,12 @@ class Context : public IJitContext {
 
   /* Set of which functions have JIT-compiled entrypoints. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> compiled_funcs_;
-  UnorderedMap<BorrowedRef<PyFunctionObject>, CompileTier> compiled_func_tiers_;
+  UnorderedMap<BorrowedRef<PyFunctionObject>, TierState> tier_states_;
+  UnorderedMap<std::string, BorrowedRef<PyFunctionObject>>
+      tier_state_funcs_by_qualname_;
   std::vector<TierTransitionEvent> tier_transition_events_;
   std::vector<TierPromotionDecision> tier_promotion_decisions_;
   std::vector<TierDependencyInvalidation> tier_dependency_invalidations_;
-  UnorderedMap<BorrowedRef<PyFunctionObject>, LastTierTransition>
-      last_tier_transitions_;
-  UnorderedMap<std::string, LastTierDependencyInvalidation>
-      last_dependency_invalidations_;
-  UnorderedSet<std::string> dependency_invalidated_funcs_;
-  UnorderedMap<BorrowedRef<PyFunctionObject>, std::uint64_t>
-      baseline_tier_call_counts_;
 
   /* Set of which functions were JIT-compiled but have since been deopted. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> deopted_funcs_;

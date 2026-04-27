@@ -32,6 +32,19 @@ FunctionTierState functionTierStateFromCompileTier(CompileTier tier) {
   JIT_ABORT("Unknown compile tier {}", tierName(tier));
 }
 
+std::optional<CompileTier> compileTierFromFunctionTierState(
+    FunctionTierState tier) {
+  switch (tier) {
+    case FunctionTierState::kInterp:
+      return std::nullopt;
+    case FunctionTierState::kBaseline:
+      return CompileTier::kBaseline;
+    case FunctionTierState::kOptimized:
+      return CompileTier::kOptimized;
+  }
+  JIT_ABORT("Unknown function tier");
+}
+
 } // namespace
 
 AotContext g_aot_ctx;
@@ -340,7 +353,8 @@ void Context::releaseReferences() {
   }
   references_.clear();
   type_deopt_patchers_.clear();
-  last_tier_transitions_.clear();
+  tier_states_.clear();
+  tier_state_funcs_by_qualname_.clear();
 }
 
 LoadAttrCache* Context::allocateLoadAttrCache() {
@@ -443,16 +457,20 @@ void Context::notifyTypeModified(
             : new_type == lookup_type ? "type_modified"
                                       : "instance_type_assigned"};
     tier_dependency_invalidations_.push_back(invalidation);
-    last_dependency_invalidations_[invalidation.func_qualname] =
-        LastTierDependencyInvalidation{
-            invalidation.watched_type,
-            invalidation.patcher_kind,
-            invalidation.description,
-            invalidation.action,
-            invalidation.reason,
-        };
-    if (did_patch) {
-      dependency_invalidated_funcs_.emplace(invalidation.func_qualname);
+    auto func_it =
+        tier_state_funcs_by_qualname_.find(invalidation.func_qualname);
+    if (func_it != tier_state_funcs_by_qualname_.end()) {
+      auto& state = tier_states_[func_it->second];
+      state.last_dependency_invalidation = LastTierDependencyInvalidation{
+          invalidation.watched_type,
+          invalidation.patcher_kind,
+          invalidation.description,
+          invalidation.action,
+          invalidation.reason,
+      };
+      if (did_patch) {
+        state.has_invalidated_dependencies = true;
+      }
     }
     if (!did_patch) {
       remaining_patchers.emplace_back(patcher);
@@ -490,8 +508,11 @@ void Context::finalizeFunc(
   FunctionTierState to_tier = functionTierStateFromCompileTier(compiled.tier());
   std::string fullname = funcFullname(func);
   addCompiledFunc(func);
-  compiled_func_tiers_[func] = compiled.tier();
-  dependency_invalidated_funcs_.erase(fullname);
+  tier_state_funcs_by_qualname_[fullname] = func;
+  auto& state = tier_states_[func];
+  state.active_tier = to_tier;
+  state.is_deopted = false;
+  state.has_invalidated_dependencies = false;
 
   // In case the function had previously been deopted.
   removeDeoptedFunc(func);
@@ -506,7 +527,7 @@ void Context::finalizeFunc(
             : TierTransitionReason::kActivateOptimized);
   }
   if (compiled.tier() == CompileTier::kOptimized) {
-    baseline_tier_call_counts_.erase(func);
+    state.baseline_call_count = 0;
   }
 
   auto* versions = lookupCompiledVersions(CompilationKey{func});
@@ -597,8 +618,10 @@ void jitgen_data_free(PyGenObject* gen) {
 
 void Context::forgetCode(BorrowedRef<PyFunctionObject> func) {
   compiled_codes_.erase(CompilationKey{func});
-  compiled_func_tiers_.erase(func);
-  baseline_tier_call_counts_.erase(func);
+  auto& state = tier_states_[func];
+  state.active_tier = FunctionTierState::kInterp;
+  state.has_invalidated_dependencies = false;
+  state.baseline_call_count = 0;
 }
 
 bool Context::didCompile(BorrowedRef<PyFunctionObject> func) {
@@ -613,9 +636,12 @@ CompiledFunction* Context::lookupFunc(BorrowedRef<PyFunctionObject> func) {
     return nullptr;
   }
 
-  auto it = compiled_func_tiers_.find(func);
-  if (it != compiled_func_tiers_.end()) {
-    return versions->lookup(it->second);
+  auto state_it = tier_states_.find(func);
+  if (state_it != tier_states_.end()) {
+    auto tier = compileTierFromFunctionTierState(state_it->second.active_tier);
+    if (tier.has_value()) {
+      return versions->lookup(*tier);
+    }
   }
   return versions->active();
 }
@@ -650,22 +676,18 @@ FunctionTierInfo Context::lookupFuncTierInfo(BorrowedRef<PyFunctionObject> func)
   ThreadedCompileSerialize guard;
   FunctionTierInfo info;
   info.active_tier = currentFuncTierUnlocked(func);
-  info.is_deopted = deopted_funcs_.contains(func);
+  auto state_it = tier_states_.find(func);
+  if (state_it != tier_states_.end()) {
+    const auto& state = state_it->second;
+    info.is_deopted = state.is_deopted;
+    info.has_invalidated_dependencies = state.has_invalidated_dependencies;
+    info.last_transition = state.last_transition;
+    info.last_dependency_invalidation = state.last_dependency_invalidation;
+  }
   auto* versions = lookupCompiledVersions(CompilationKey{func});
   if (versions != nullptr) {
     info.has_baseline = versions->baseline != nullptr;
     info.has_optimized = versions->optimized != nullptr;
-  }
-  std::string fullname = funcFullname(func);
-  info.has_invalidated_dependencies =
-      dependency_invalidated_funcs_.contains(fullname);
-  if (auto it = last_tier_transitions_.find(func);
-      it != last_tier_transitions_.end()) {
-    info.last_transition = it->second;
-  }
-  if (auto it = last_dependency_invalidations_.find(fullname);
-      it != last_dependency_invalidations_.end()) {
-    info.last_dependency_invalidation = it->second;
   }
   return info;
 }
@@ -717,7 +739,8 @@ void Context::recordTierFallback(
   if (from_tier == FunctionTierState::kInterp) {
     return;
   }
-  dependency_invalidated_funcs_.erase(funcFullname(func));
+  auto& state = tier_states_[func];
+  state.has_invalidated_dependencies = false;
   recordTierTransition(func, from_tier, FunctionTierState::kInterp, reason);
 }
 
@@ -732,7 +755,7 @@ void Context::updateLastTierTransitionReason(
        ++it) {
     if (it->func_qualname == fullname && it->to_tier == to_tier) {
       it->reason = reason;
-      last_tier_transitions_[func] = LastTierTransition{
+      tier_states_[func].last_transition = LastTierTransition{
           it->from_tier,
           it->to_tier,
           reason,
@@ -745,14 +768,14 @@ void Context::updateLastTierTransitionReason(
 std::uint64_t Context::baselineTierCallCount(
     BorrowedRef<PyFunctionObject> func) {
   ThreadedCompileSerialize guard;
-  auto it = baseline_tier_call_counts_.find(func);
-  return it == baseline_tier_call_counts_.end() ? 0 : it->second;
+  auto it = tier_states_.find(func);
+  return it == tier_states_.end() ? 0 : it->second.baseline_call_count;
 }
 
 void Context::incrementBaselineTierCallCount(
     BorrowedRef<PyFunctionObject> func) {
   ThreadedCompileSerialize guard;
-  baseline_tier_call_counts_[func]++;
+  tier_states_[func].baseline_call_count++;
 }
 
 const UnorderedMap<CompilationKey, CompiledFunctionVersions>&
@@ -787,19 +810,19 @@ void Context::clearCache() {
     orphaned_compiled_codes_.emplace_back(std::move(entry.second));
   }
   compiled_codes_.clear();
-  compiled_func_tiers_.clear();
-  baseline_tier_call_counts_.clear();
+  for (auto& [func, state] : tier_states_) {
+    state.active_tier = FunctionTierState::kInterp;
+    state.has_invalidated_dependencies = false;
+    state.baseline_call_count = 0;
+  }
 }
 
 void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
   std::string fullname = funcFullname(func);
   compiled_funcs_.erase(func);
-  compiled_func_tiers_.erase(func);
-  baseline_tier_call_counts_.erase(func);
+  tier_states_.erase(func);
+  tier_state_funcs_by_qualname_.erase(fullname);
   deopted_funcs_.erase(func);
-  last_tier_transitions_.erase(func);
-  dependency_invalidated_funcs_.erase(fullname);
-  last_dependency_invalidations_.erase(fullname);
 
   // This doesn't modify compiled_codes_, so if this is a nested function it can
   // easily be reopted later.
@@ -825,10 +848,12 @@ CompiledFunction* Context::lookupCode(
 }
 
 void Context::addDeoptedFunc(BorrowedRef<PyFunctionObject> func) {
+  tier_states_[func].is_deopted = true;
   deopted_funcs_.emplace(func);
 }
 
 void Context::removeDeoptedFunc(BorrowedRef<PyFunctionObject> func) {
+  tier_states_[func].is_deopted = false;
   deopted_funcs_.erase(func);
 }
 
@@ -837,8 +862,10 @@ bool Context::addCompiledFunc(BorrowedRef<PyFunctionObject> func) {
 }
 
 bool Context::removeCompiledFunc(BorrowedRef<PyFunctionObject> func) {
-  compiled_func_tiers_.erase(func);
-  baseline_tier_call_counts_.erase(func);
+  auto& state = tier_states_[func];
+  state.active_tier = FunctionTierState::kInterp;
+  state.has_invalidated_dependencies = false;
+  state.baseline_call_count = 0;
   return compiled_funcs_.erase(func) == 1;
 }
 
@@ -882,12 +909,12 @@ FunctionTierState Context::currentFuncTierUnlocked(
   if (!compiled_funcs_.contains(func)) {
     return FunctionTierState::kInterp;
   }
-  auto it = compiled_func_tiers_.find(func);
+  auto it = tier_states_.find(func);
   JIT_CHECK(
-      it != compiled_func_tiers_.end(),
+      it != tier_states_.end(),
       "Expected active compiled tier for {}",
       funcFullname(func));
-  return functionTierStateFromCompileTier(it->second);
+  return it->second.active_tier;
 }
 
 void Context::recordTierTransition(
@@ -897,7 +924,9 @@ void Context::recordTierTransition(
     TierTransitionReason reason) {
   tier_transition_events_.push_back(TierTransitionEvent{
       funcFullname(func), from_tier, to_tier, reason});
-  last_tier_transitions_[func] = LastTierTransition{from_tier, to_tier, reason};
+  auto& state = tier_states_[func];
+  state.active_tier = to_tier;
+  state.last_transition = LastTierTransition{from_tier, to_tier, reason};
 }
 
 #ifndef WIN32
