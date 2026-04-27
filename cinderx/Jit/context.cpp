@@ -430,7 +430,19 @@ void Context::notifyTypeModified(
 
   std::vector<TypeDeoptPatcher*> remaining_patchers;
   for (TypeDeoptPatcher* patcher : it->second) {
-    if (!patcher->maybePatch(new_type)) {
+    bool did_patch = patcher->maybePatch(new_type);
+    tier_dependency_invalidations_.push_back(TierDependencyInvalidation{
+        std::string(patcher->ownerFuncQualname()),
+        lookup_type->tp_name,
+        std::string(patcher->kind()),
+        std::string(patcher->description()),
+        did_patch ? TierDependencyInvalidationAction::kPatch
+                  : TierDependencyInvalidationAction::kSkip,
+        new_type == nullptr
+            ? "type_destroyed"
+            : new_type == lookup_type ? "type_modified"
+                                      : "instance_type_assigned"});
+    if (!did_patch) {
       remaining_patchers.emplace_back(patcher);
     }
   }
@@ -655,6 +667,14 @@ Context::getAndClearTierPromotionDecisions() {
   auto decisions = std::move(tier_promotion_decisions_);
   tier_promotion_decisions_.clear();
   return decisions;
+}
+
+std::vector<TierDependencyInvalidation>
+Context::getAndClearTierDependencyInvalidations() {
+  ThreadedCompileSerialize guard;
+  auto invalidations = std::move(tier_dependency_invalidations_);
+  tier_dependency_invalidations_.clear();
+  return invalidations;
 }
 
 void Context::recordTierPromotionDecision(

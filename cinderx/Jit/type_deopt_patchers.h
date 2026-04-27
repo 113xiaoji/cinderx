@@ -5,6 +5,9 @@
 #include "cinderx/Jit/code_patcher.h"
 #include "cinderx/Jit/threaded_compile.h"
 
+#include <string>
+#include <string_view>
+
 namespace jit {
 
 // Patch a DeoptPatchpoint when the given PyTypeObject changes at all. This
@@ -13,12 +16,18 @@ namespace jit {
 // the change to the type happens after PyType_Modified() is called).
 class TypeDeoptPatcher : public JumpPatcher {
  public:
-  explicit TypeDeoptPatcher(BorrowedRef<PyTypeObject> type);
+  TypeDeoptPatcher(
+      BorrowedRef<PyTypeObject> type,
+      std::string owner_func_qualname,
+      std::string description);
 
   virtual bool maybePatch(BorrowedRef<PyTypeObject> new_ty);
 
   // Access the type being watched.
   BorrowedRef<PyTypeObject> type() const;
+  std::string_view ownerFuncQualname() const;
+  virtual std::string_view kind() const;
+  std::string_view description() const;
 
  protected:
   void onUnpatch() override;
@@ -26,6 +35,8 @@ class TypeDeoptPatcher : public JumpPatcher {
   // The type being watched.  It outlives this object because this object will
   // be cleaned up by a type watcher notification.
   BorrowedRef<PyTypeObject> type_;
+  std::string owner_func_qualname_;
+  std::string description_;
 };
 
 // Patch a DeoptPatchpoint when the given PyTypeObject no longer has the given
@@ -35,9 +46,12 @@ class TypeAttrDeoptPatcher : public TypeDeoptPatcher {
   TypeAttrDeoptPatcher(
       BorrowedRef<PyTypeObject> type,
       BorrowedRef<PyUnicodeObject> attr_name,
-      BorrowedRef<> target_object);
+      BorrowedRef<> target_object,
+      std::string owner_func_qualname,
+      std::string description);
 
   bool maybePatch(BorrowedRef<PyTypeObject> new_ty) override;
+  std::string_view kind() const override;
 
  private:
   void onPatch() override;
@@ -51,9 +65,12 @@ class SplitDictDeoptPatcher : public TypeDeoptPatcher {
   SplitDictDeoptPatcher(
       BorrowedRef<PyTypeObject> type,
       BorrowedRef<PyUnicodeObject> attr_name,
-      PyDictKeysObject* keys);
+      PyDictKeysObject* keys,
+      std::string owner_func_qualname,
+      std::string description);
 
   bool maybePatch(BorrowedRef<PyTypeObject> new_ty) override;
+  std::string_view kind() const override;
 
  private:
   void onPatch() override;

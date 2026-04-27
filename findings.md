@@ -6181,3 +6181,92 @@ Conclusion:
     policy-level dependency invalidation remains a deeper follow-up because type
     dependency patchers invalidate future execution rather than synchronously
     deopting the function at modification time
+
+### Dependency invalidation telemetry (`2026-04-27`)
+
+- Goal:
+  - extend tiering stats from "tier switched" to "a dependency was rechecked,
+    and did or did not invalidate compiled code"
+  - keep this slice observational only: no compile policy, fallback policy, or
+    patching policy changes
+
+- Files:
+  - `cinderx/Jit/context.h`
+  - `cinderx/Jit/context.cpp`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/Jit/type_deopt_patchers.h`
+  - `cinderx/Jit/type_deopt_patchers.cpp`
+  - `cinderx/Jit/hir/simplify.cpp`
+  - `cinderx/PythonLib/cinderx/jit.py`
+  - `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - `docs/superpowers/plans/2026-04-27-tiering-promotion-fallback-closure.md`
+
+- Behavior added:
+  - type deopt patchers now carry:
+    - owner function qualname
+    - patcher kind (`type`, `type_attr`, `split_dict`)
+    - patchpoint description
+  - `Context::notifyTypeModified()` records one dependency invalidation/check
+    event for each patcher it evaluates
+  - `jit.get_and_clear_tiering_stats()` now returns:
+    - `events`
+    - `decisions`
+    - `invalidations`
+  - each invalidation event includes:
+    - `func_qualname`
+    - `watched_type`
+    - `patcher_kind`
+    - `description`
+    - `action`
+    - `reason`
+
+- TDD red evidence:
+  - ARM path:
+    - `/root/work/cinderx-richards-fresh-20260414`
+  - test added:
+    - `test_tiering_stats_records_type_dependency_invalidations`
+  - command before implementation:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering.TieringApiTests.test_tiering_stats_records_type_dependency_invalidations`
+  - result before implementation:
+    - failed with `['True', 'False', 'False', 'True']`
+    - interpretation:
+      - real `DeoptPatchpoint` generation was present
+      - no dependency invalidation/check telemetry was available yet
+
+- Verification:
+  - ARM build:
+    - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+    - result:
+      - `Successfully built cinderx-2026.4.27.0-cp314-cp314-linux_aarch64.whl`
+  - ARM targeted test:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering.TieringApiTests.test_tiering_stats_records_type_dependency_invalidations`
+    - result:
+      - `OK`
+  - ARM targeted suite:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+    - result:
+      - `Ran 13 tests in 0.477s`
+      - `OK`
+
+- Direct ARM dependency probe:
+  - `jit.force_compile(Point.dist)`:
+    - `True`
+  - optimized HIR:
+    - `DeoptPatchpoint`: `6`
+  - `PyType_Modified(Point)` emitted six invalidation/check events:
+    - `func_qualname`: `__main__:Point.dist`
+    - `watched_type`: `Point`
+    - `patcher_kind`: `split_dict`
+    - `description`: `SplitDictDeoptPatcher`
+    - `action`: `skip`
+    - `reason`: `type_modified`
+
+- Interpretation:
+  - this closes the first dependency-invalidation observability gap without
+    changing runtime behavior
+  - the telemetry now explains "a dependency was checked and did not force a
+    patch/fallback" for object-heavy workloads where type watchers fire but no
+    tier transition occurs
+  - remaining gap:
+    - connect dependency invalidation outcomes to a stronger unified tier state
+      model and policy-level fallback decisions when a patch actually fires

@@ -279,3 +279,35 @@
   - replacing `helper.__code__` reports `is_deopted=True` and
     `last_transition.reason=function_modified`
 
+## Session Update: 2026-04-27 (dependency invalidation telemetry)
+
+### Task status
+- Extended tiering stats with dependency invalidation/check telemetry.
+- Scope:
+  - observe type dependency patcher checks from `Context::notifyTypeModified()`
+  - expose whether each patcher patched or skipped
+  - keep runtime compile/fallback policy unchanged
+
+### TDD evidence
+- Added `test_tiering_stats_records_type_dependency_invalidations`.
+- ARM red run before implementation:
+  - output: `['True', 'False', 'False', 'True']`
+  - interpretation: `Point.dist` generated real `DeoptPatchpoint` entries, but
+    tiering stats did not yet expose invalidation/check events.
+
+### Verification summary
+- ARM staging workdir:
+  - `/root/work/cinderx-richards-fresh-20260414`
+- ARM build:
+  - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+  - result: wheel built successfully
+- ARM targeted test:
+  - `test_tiering_stats_records_type_dependency_invalidations`: pass
+- ARM targeted suite:
+  - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+  - result: `Ran 13 tests in 0.477s`, `OK`
+- Direct probe:
+  - `Point.dist` compiled with `DeoptPatchpoint=6`
+  - `PyType_Modified(Point)` emitted six `split_dict` invalidation/check events
+  - each event reported `action=skip`, `reason=type_modified`
+

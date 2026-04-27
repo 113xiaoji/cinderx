@@ -81,3 +81,22 @@
 - [x] Store the last tier transition in `Context` independently of the clearable event stream.
 - [x] Expose `is_deopted` and `last_transition` through the public tier info dictionary.
 - [x] Verify both `disable_deopt_all` and `function_modified` paths on ARM.
+
+### Task 7: Record dependency invalidation checks
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/pyjit.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/type_deopt_patchers.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/type_deopt_patchers.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/hir/simplify.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/cinderx/jit.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Add a failing test using real `Point.dist` `DeoptPatchpoint` generation and `PyType_Modified(Point)`.
+- [x] Attach function, kind, and description metadata to type deopt patchers.
+- [x] Record each dependency check as `patch` or `skip` in `Context::notifyTypeModified()`.
+- [x] Expose dependency invalidations through `jit.get_and_clear_tiering_stats()["invalidations"]`.
+- [x] Rebuild on ARM, run the tiering API suite, and capture a direct probe of the event shape.

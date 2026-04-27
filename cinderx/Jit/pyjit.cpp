@@ -313,6 +313,17 @@ std::string_view tierPromotionDecisionReasonName(
   return "unknown";
 }
 
+std::string_view tierDependencyInvalidationActionName(
+    TierDependencyInvalidationAction action) {
+  switch (action) {
+    case TierDependencyInvalidationAction::kPatch:
+      return "patch";
+    case TierDependencyInvalidationAction::kSkip:
+      return "skip";
+  }
+  return "unknown";
+}
+
 PyObject* baselineTieringVectorcall(
     PyObject* func_obj,
     PyObject* const* stack,
@@ -2909,7 +2920,9 @@ PyObject* get_and_clear_tiering_stats(PyObject* /* self */, PyObject*) {
   Ref<> result = Ref<>::steal(PyDict_New());
   Ref<> events = Ref<>::steal(PyList_New(0));
   Ref<> decisions = Ref<>::steal(PyList_New(0));
-  if (result == nullptr || events == nullptr || decisions == nullptr) {
+  Ref<> invalidations = Ref<>::steal(PyList_New(0));
+  if (result == nullptr || events == nullptr || decisions == nullptr ||
+      invalidations == nullptr) {
     return nullptr;
   }
 
@@ -2967,10 +2980,44 @@ PyObject* get_and_clear_tiering_stats(PyObject* /* self */, PyObject*) {
         return nullptr;
       }
     }
+    for (const auto& invalidation :
+         jitCtx()->getAndClearTierDependencyInvalidations()) {
+      Ref<> item = Ref<>::steal(PyDict_New());
+      if (item == nullptr) {
+        return nullptr;
+      }
+      Ref<> func_qualname =
+          Ref<>::steal(PyUnicode_FromString(invalidation.func_qualname.c_str()));
+      Ref<> watched_type =
+          Ref<>::steal(PyUnicode_FromString(invalidation.watched_type.c_str()));
+      Ref<> patcher_kind =
+          Ref<>::steal(PyUnicode_FromString(invalidation.patcher_kind.c_str()));
+      Ref<> description =
+          Ref<>::steal(PyUnicode_FromString(invalidation.description.c_str()));
+      Ref<> action = Ref<>::steal(PyUnicode_FromString(
+          tierDependencyInvalidationActionName(invalidation.action).data()));
+      Ref<> reason =
+          Ref<>::steal(PyUnicode_FromString(invalidation.reason.c_str()));
+      if (func_qualname == nullptr || watched_type == nullptr ||
+          patcher_kind == nullptr || description == nullptr ||
+          action == nullptr || reason == nullptr) {
+        return nullptr;
+      }
+      if (PyDict_SetItemString(item, "func_qualname", func_qualname) < 0 ||
+          PyDict_SetItemString(item, "watched_type", watched_type) < 0 ||
+          PyDict_SetItemString(item, "patcher_kind", patcher_kind) < 0 ||
+          PyDict_SetItemString(item, "description", description) < 0 ||
+          PyDict_SetItemString(item, "action", action) < 0 ||
+          PyDict_SetItemString(item, "reason", reason) < 0 ||
+          PyList_Append(invalidations, item) < 0) {
+        return nullptr;
+      }
+    }
   }
 
   if (PyDict_SetItemString(result, "events", events) < 0 ||
-      PyDict_SetItemString(result, "decisions", decisions) < 0) {
+      PyDict_SetItemString(result, "decisions", decisions) < 0 ||
+      PyDict_SetItemString(result, "invalidations", invalidations) < 0) {
     return nullptr;
   }
   return result.release();

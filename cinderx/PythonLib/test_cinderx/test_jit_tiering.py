@@ -362,3 +362,67 @@ class TieringApiTests(unittest.TestCase):
                 "disable_deopt_all",
             ],
         )
+
+    def test_tiering_stats_records_type_dependency_invalidations(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            import ctypes
+            import math
+            import cinderjit
+
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self, x=0.0, y=0.0, z=0.0):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+
+                def dist(self, other):
+                    return math.sqrt(
+                        (self.x - other.x) ** 2
+                        + (self.y - other.y) ** 2
+                        + (self.z - other.z) ** 2
+                    )
+
+            a = Point(1.0, 2.0, 3.0)
+            b = Point(4.0, 5.0, 6.0)
+            for _ in range(20000):
+                a.dist(b)
+
+            if not jit.force_compile(Point.dist):
+                raise AssertionError("force_compile(Point.dist) failed")
+            counts = cinderjit.get_function_hir_opcode_counts(Point.dist)
+            print(counts.get("DeoptPatchpoint", 0) > 0)
+            jit.get_and_clear_tiering_stats()
+
+            ctypes.pythonapi.PyType_Modified.argtypes = [ctypes.py_object]
+            ctypes.pythonapi.PyType_Modified.restype = None
+            ctypes.pythonapi.PyType_Modified(Point)
+
+            stats = jit.get_and_clear_tiering_stats()
+            invalidations = [
+                item
+                for item in stats.get("invalidations", [])
+                if item["func_qualname"].endswith("Point.dist")
+            ]
+            print(len(invalidations) > 0)
+            print(
+                any(
+                    item["action"] in {"patch", "skip"}
+                    for item in invalidations
+                )
+            )
+            print(
+                len(invalidations) > 0
+                and all(
+                    item["watched_type"].endswith("Point")
+                    and item["patcher_kind"]
+                    and item["description"]
+                    for item in invalidations
+                )
+            )
+            """
+        )
+        self.assertEqual(lines, ["True", "True", "True", "True"])

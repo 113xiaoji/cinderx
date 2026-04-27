@@ -5,6 +5,8 @@
 #include "cinderx/Common/type.h"
 #include "cinderx/Common/util.h"
 
+#include <utility>
+
 namespace jit {
 
 template <typename Body>
@@ -30,8 +32,13 @@ bool shouldPatchForAttr(
   return body(attr) || !PyUnstable_Type_AssignVersionTag(new_ty);
 }
 
-TypeDeoptPatcher::TypeDeoptPatcher(BorrowedRef<PyTypeObject> type)
-    : type_{type} {}
+TypeDeoptPatcher::TypeDeoptPatcher(
+    BorrowedRef<PyTypeObject> type,
+    std::string owner_func_qualname,
+    std::string description)
+    : type_{type},
+      owner_func_qualname_{std::move(owner_func_qualname)},
+      description_{std::move(description)} {}
 
 bool TypeDeoptPatcher::maybePatch(BorrowedRef<PyTypeObject>) {
   patch();
@@ -40,6 +47,18 @@ bool TypeDeoptPatcher::maybePatch(BorrowedRef<PyTypeObject>) {
 
 BorrowedRef<PyTypeObject> TypeDeoptPatcher::type() const {
   return type_;
+}
+
+std::string_view TypeDeoptPatcher::ownerFuncQualname() const {
+  return owner_func_qualname_;
+}
+
+std::string_view TypeDeoptPatcher::kind() const {
+  return "type";
+}
+
+std::string_view TypeDeoptPatcher::description() const {
+  return description_;
 }
 
 void TypeDeoptPatcher::onUnpatch() {
@@ -51,8 +70,13 @@ void TypeDeoptPatcher::onUnpatch() {
 TypeAttrDeoptPatcher::TypeAttrDeoptPatcher(
     BorrowedRef<PyTypeObject> type,
     BorrowedRef<PyUnicodeObject> attr_name,
-    BorrowedRef<> target_object)
-    : TypeDeoptPatcher{type} {
+    BorrowedRef<> target_object,
+    std::string owner_func_qualname,
+    std::string description)
+    : TypeDeoptPatcher{
+          type,
+          std::move(owner_func_qualname),
+          std::move(description)} {
   ThreadedCompileSerialize guard;
   attr_name_.reset(attr_name);
   target_object_.reset(target_object);
@@ -69,6 +93,10 @@ bool TypeAttrDeoptPatcher::maybePatch(BorrowedRef<PyTypeObject> new_ty) {
   return should_patch;
 }
 
+std::string_view TypeAttrDeoptPatcher::kind() const {
+  return "type_attr";
+}
+
 void TypeAttrDeoptPatcher::onPatch() {
   attr_name_.reset();
   target_object_.reset();
@@ -77,8 +105,14 @@ void TypeAttrDeoptPatcher::onPatch() {
 SplitDictDeoptPatcher::SplitDictDeoptPatcher(
     BorrowedRef<PyTypeObject> type,
     BorrowedRef<PyUnicodeObject> attr_name,
-    PyDictKeysObject* keys)
-    : TypeDeoptPatcher{type}, keys_{keys} {
+    PyDictKeysObject* keys,
+    std::string owner_func_qualname,
+    std::string description)
+    : TypeDeoptPatcher{
+          type,
+          std::move(owner_func_qualname),
+          std::move(description)},
+      keys_{keys} {
   ThreadedCompileSerialize guard;
   attr_name_.reset(attr_name);
 }
@@ -104,6 +138,10 @@ bool SplitDictDeoptPatcher::maybePatch(BorrowedRef<PyTypeObject> new_ty) {
     patch();
   }
   return should_patch;
+}
+
+std::string_view SplitDictDeoptPatcher::kind() const {
+  return "split_dict";
 }
 
 void SplitDictDeoptPatcher::onPatch() {

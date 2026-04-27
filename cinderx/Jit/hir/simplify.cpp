@@ -1670,7 +1670,8 @@ Register* simplifyLoadAttrSplitDict(
   // case.
   Register* receiver = load_attr->GetOperand(0);
   auto patchpoint = env.emitInstr<DeoptPatchpoint>(
-      env.func.allocateCodePatcher<SplitDictDeoptPatcher>(type, name, keys));
+      env.func.allocateCodePatcher<SplitDictDeoptPatcher>(
+          type, name, keys, env.func.fullname, "SplitDictDeoptPatcher"));
   patchpoint->setGuiltyReg(receiver);
   patchpoint->setDescr("SplitDictDeoptPatcher");
   env.emit<UseType>(receiver, receiver->type());
@@ -1758,7 +1759,8 @@ Register* simplifyLoadAttrSplitDict(
 
   Register* receiver = load_attr->GetOperand(0);
   auto patchpoint = env.emitInstr<DeoptPatchpoint>(
-      env.func.allocateCodePatcher<SplitDictDeoptPatcher>(type, name, keys));
+      env.func.allocateCodePatcher<SplitDictDeoptPatcher>(
+          type, name, keys, env.func.fullname, "SplitDictDeoptPatcher"));
   patchpoint->setGuiltyReg(receiver);
   patchpoint->setDescr("SplitDictDeoptPatcher");
   env.emit<UseType>(receiver, receiver->type());
@@ -1834,7 +1836,11 @@ void emitTypeAttrDeoptPatcher(
   // object's type.
   auto patchpoint = env.emitInstr<DeoptPatchpoint>(
       env.func.allocateCodePatcher<TypeAttrDeoptPatcher>(
-          info.py_type, info.attr_name, info.descr));
+          info.py_type,
+          info.attr_name,
+          info.descr,
+          env.func.fullname,
+          description));
   patchpoint->setGuiltyReg(info.receiver);
   patchpoint->setDescr(description);
 }
@@ -1919,7 +1925,8 @@ Register* simplifyLoadAttrGenericDescriptor(Env& env, const DescrInfo& info) {
     // patches on any changes to the type, since type_setattro() calls
     // PyType_Modified() before updating tp_descr_{get,set}.
     auto patchpoint = env.emitInstr<DeoptPatchpoint>(
-        env.func.allocateCodePatcher<TypeDeoptPatcher>(descr_type));
+        env.func.allocateCodePatcher<TypeDeoptPatcher>(
+            descr_type, env.func.fullname, "tp_descr_get/tp_descr_set"));
     patchpoint->setGuiltyReg(info.receiver);
     patchpoint->setDescr("tp_descr_get/tp_descr_set");
   }

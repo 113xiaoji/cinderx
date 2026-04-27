@@ -144,6 +144,20 @@ struct TierPromotionDecision {
   TierPromotionDecisionReason reason;
 };
 
+enum class TierDependencyInvalidationAction {
+  kPatch,
+  kSkip,
+};
+
+struct TierDependencyInvalidation {
+  std::string func_qualname;
+  std::string watched_type;
+  std::string patcher_kind;
+  std::string description;
+  TierDependencyInvalidationAction action;
+  std::string reason;
+};
+
 struct LastTierTransition {
   FunctionTierState from_tier;
   FunctionTierState to_tier;
@@ -372,6 +386,8 @@ class Context : public IJitContext {
   bool hasOptimizedTier(BorrowedRef<PyFunctionObject> func);
   std::vector<TierTransitionEvent> getAndClearTierTransitionEvents();
   std::vector<TierPromotionDecision> getAndClearTierPromotionDecisions();
+  std::vector<TierDependencyInvalidation>
+  getAndClearTierDependencyInvalidations();
   void clearTierTransitionEvents();
   void recordTierPromotionDecision(
       BorrowedRef<PyFunctionObject> func,
@@ -701,6 +717,7 @@ class Context : public IJitContext {
   UnorderedMap<BorrowedRef<PyFunctionObject>, CompileTier> compiled_func_tiers_;
   std::vector<TierTransitionEvent> tier_transition_events_;
   std::vector<TierPromotionDecision> tier_promotion_decisions_;
+  std::vector<TierDependencyInvalidation> tier_dependency_invalidations_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, LastTierTransition>
       last_tier_transitions_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, std::uint64_t>

@@ -4,7 +4,8 @@
 Keep the issue31 instance-attr specialization gains while removing the severe raytrace regression introduced by commit `4c14dd10`.
 
 ## Current Phase
-Closeout complete: revalidated on ARM staging and ready for review.
+Tiered-JIT closure: dependency invalidation telemetry verified on ARM staging
+and ready for commit.
 
 ## Phases
 
