@@ -164,12 +164,22 @@ struct LastTierTransition {
   TierTransitionReason reason;
 };
 
+struct LastTierDependencyInvalidation {
+  std::string watched_type;
+  std::string patcher_kind;
+  std::string description;
+  TierDependencyInvalidationAction action;
+  std::string reason;
+};
+
 struct FunctionTierInfo {
   FunctionTierState active_tier{FunctionTierState::kInterp};
   bool has_baseline{false};
   bool has_optimized{false};
   bool is_deopted{false};
+  bool has_invalidated_dependencies{false};
   std::optional<LastTierTransition> last_transition;
+  std::optional<LastTierDependencyInvalidation> last_dependency_invalidation;
 };
 
 struct CompiledFunctionVersions {
@@ -720,6 +730,9 @@ class Context : public IJitContext {
   std::vector<TierDependencyInvalidation> tier_dependency_invalidations_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, LastTierTransition>
       last_tier_transitions_;
+  UnorderedMap<std::string, LastTierDependencyInvalidation>
+      last_dependency_invalidations_;
+  UnorderedSet<std::string> dependency_invalidated_funcs_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, std::uint64_t>
       baseline_tier_call_counts_;
 

@@ -431,7 +431,7 @@ void Context::notifyTypeModified(
   std::vector<TypeDeoptPatcher*> remaining_patchers;
   for (TypeDeoptPatcher* patcher : it->second) {
     bool did_patch = patcher->maybePatch(new_type);
-    tier_dependency_invalidations_.push_back(TierDependencyInvalidation{
+    TierDependencyInvalidation invalidation{
         std::string(patcher->ownerFuncQualname()),
         lookup_type->tp_name,
         std::string(patcher->kind()),
@@ -441,7 +441,19 @@ void Context::notifyTypeModified(
         new_type == nullptr
             ? "type_destroyed"
             : new_type == lookup_type ? "type_modified"
-                                      : "instance_type_assigned"});
+                                      : "instance_type_assigned"};
+    tier_dependency_invalidations_.push_back(invalidation);
+    last_dependency_invalidations_[invalidation.func_qualname] =
+        LastTierDependencyInvalidation{
+            invalidation.watched_type,
+            invalidation.patcher_kind,
+            invalidation.description,
+            invalidation.action,
+            invalidation.reason,
+        };
+    if (did_patch) {
+      dependency_invalidated_funcs_.emplace(invalidation.func_qualname);
+    }
     if (!did_patch) {
       remaining_patchers.emplace_back(patcher);
     }
@@ -476,8 +488,10 @@ void Context::finalizeFunc(
   ThreadedCompileSerialize guard;
   FunctionTierState from_tier = currentFuncTierUnlocked(func);
   FunctionTierState to_tier = functionTierStateFromCompileTier(compiled.tier());
+  std::string fullname = funcFullname(func);
   addCompiledFunc(func);
   compiled_func_tiers_[func] = compiled.tier();
+  dependency_invalidated_funcs_.erase(fullname);
 
   // In case the function had previously been deopted.
   removeDeoptedFunc(func);
@@ -642,9 +656,16 @@ FunctionTierInfo Context::lookupFuncTierInfo(BorrowedRef<PyFunctionObject> func)
     info.has_baseline = versions->baseline != nullptr;
     info.has_optimized = versions->optimized != nullptr;
   }
+  std::string fullname = funcFullname(func);
+  info.has_invalidated_dependencies =
+      dependency_invalidated_funcs_.contains(fullname);
   if (auto it = last_tier_transitions_.find(func);
       it != last_tier_transitions_.end()) {
     info.last_transition = it->second;
+  }
+  if (auto it = last_dependency_invalidations_.find(fullname);
+      it != last_dependency_invalidations_.end()) {
+    info.last_dependency_invalidation = it->second;
   }
   return info;
 }
@@ -696,6 +717,7 @@ void Context::recordTierFallback(
   if (from_tier == FunctionTierState::kInterp) {
     return;
   }
+  dependency_invalidated_funcs_.erase(funcFullname(func));
   recordTierTransition(func, from_tier, FunctionTierState::kInterp, reason);
 }
 
@@ -770,11 +792,14 @@ void Context::clearCache() {
 }
 
 void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
+  std::string fullname = funcFullname(func);
   compiled_funcs_.erase(func);
   compiled_func_tiers_.erase(func);
   baseline_tier_call_counts_.erase(func);
   deopted_funcs_.erase(func);
   last_tier_transitions_.erase(func);
+  dependency_invalidated_funcs_.erase(fullname);
+  last_dependency_invalidations_.erase(fullname);
 
   // This doesn't modify compiled_codes_, so if this is a nested function it can
   // easily be reopted later.

@@ -2342,14 +2342,21 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
   Ref<> has_baseline = Ref<>::steal(PyBool_FromLong(info.has_baseline));
   Ref<> has_optimized = Ref<>::steal(PyBool_FromLong(info.has_optimized));
   Ref<> is_deopted = Ref<>::steal(PyBool_FromLong(info.is_deopted));
+  Ref<> has_invalidated_dependencies =
+      Ref<>::steal(PyBool_FromLong(info.has_invalidated_dependencies));
   if (active_tier == nullptr || has_baseline == nullptr ||
-      has_optimized == nullptr || is_deopted == nullptr) {
+      has_optimized == nullptr || is_deopted == nullptr ||
+      has_invalidated_dependencies == nullptr) {
     return nullptr;
   }
   if (PyDict_SetItemString(result, "active_tier", active_tier) < 0 ||
       PyDict_SetItemString(result, "has_baseline", has_baseline) < 0 ||
       PyDict_SetItemString(result, "has_optimized", has_optimized) < 0 ||
-      PyDict_SetItemString(result, "is_deopted", is_deopted) < 0) {
+      PyDict_SetItemString(result, "is_deopted", is_deopted) < 0 ||
+      PyDict_SetItemString(
+          result,
+          "has_invalidated_dependencies",
+          has_invalidated_dependencies) < 0) {
     return nullptr;
   }
   if (info.last_transition.has_value()) {
@@ -2375,6 +2382,47 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
       return nullptr;
     }
   } else if (PyDict_SetItemString(result, "last_transition", Py_None) < 0) {
+    return nullptr;
+  }
+  if (info.last_dependency_invalidation.has_value()) {
+    Ref<> last_dependency_invalidation = Ref<>::steal(PyDict_New());
+    if (last_dependency_invalidation == nullptr) {
+      return nullptr;
+    }
+    const auto& invalidation = *info.last_dependency_invalidation;
+    Ref<> watched_type =
+        Ref<>::steal(PyUnicode_FromString(invalidation.watched_type.c_str()));
+    Ref<> patcher_kind =
+        Ref<>::steal(PyUnicode_FromString(invalidation.patcher_kind.c_str()));
+    Ref<> description =
+        Ref<>::steal(PyUnicode_FromString(invalidation.description.c_str()));
+    Ref<> action = Ref<>::steal(PyUnicode_FromString(
+        tierDependencyInvalidationActionName(invalidation.action).data()));
+    Ref<> reason =
+        Ref<>::steal(PyUnicode_FromString(invalidation.reason.c_str()));
+    if (watched_type == nullptr || patcher_kind == nullptr ||
+        description == nullptr || action == nullptr || reason == nullptr) {
+      return nullptr;
+    }
+    if (PyDict_SetItemString(
+            last_dependency_invalidation, "watched_type", watched_type) < 0 ||
+        PyDict_SetItemString(
+            last_dependency_invalidation, "patcher_kind", patcher_kind) < 0 ||
+        PyDict_SetItemString(
+            last_dependency_invalidation, "description", description) < 0 ||
+        PyDict_SetItemString(last_dependency_invalidation, "action", action) <
+            0 ||
+        PyDict_SetItemString(last_dependency_invalidation, "reason", reason) <
+            0 ||
+        PyDict_SetItemString(
+            result,
+            "last_dependency_invalidation",
+            last_dependency_invalidation) < 0) {
+      return nullptr;
+    }
+  } else if (
+      PyDict_SetItemString(result, "last_dependency_invalidation", Py_None) <
+      0) {
     return nullptr;
   }
   return result.release();

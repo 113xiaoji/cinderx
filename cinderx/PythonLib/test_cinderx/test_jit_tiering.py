@@ -426,3 +426,66 @@ class TieringApiTests(unittest.TestCase):
             """
         )
         self.assertEqual(lines, ["True", "True", "True", "True"])
+
+    def test_function_tier_info_records_patched_dependency_state(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            import cinderjit
+
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self):
+                    self.x = 42
+
+                def getx(self):
+                    return self.x
+
+            class Other:
+                def __init__(self):
+                    self.x = 99
+
+            p = Point()
+            for _ in range(20000):
+                p.getx()
+
+            if not jit.force_compile(Point.getx):
+                raise AssertionError("force_compile(Point.getx) failed")
+            counts = cinderjit.get_function_hir_opcode_counts(Point.getx)
+            print(counts.get("DeoptPatchpoint", 0) > 0)
+            jit.get_and_clear_tiering_stats()
+
+            p.__class__ = Other
+
+            stats = jit.get_and_clear_tiering_stats()
+            invalidations = [
+                item
+                for item in stats.get("invalidations", [])
+                if item["func_qualname"].endswith("Point.getx")
+            ]
+            print(any(item["action"] == "patch" for item in invalidations))
+
+            info = jit.get_function_tier_info(Point.getx)
+            last = info.get("last_dependency_invalidation") or {}
+            print(info["active_tier"])
+            print(info["is_deopted"])
+            print(info.get("has_invalidated_dependencies"))
+            print(last.get("action"))
+            print(last.get("reason"))
+            print(last.get("patcher_kind"))
+            """
+        )
+        self.assertEqual(
+            lines,
+            [
+                "True",
+                "True",
+                "optimized",
+                "False",
+                "True",
+                "patch",
+                "instance_type_assigned",
+                "split_dict",
+            ],
+        )

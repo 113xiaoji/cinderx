@@ -185,7 +185,9 @@ except ImportError:
             "has_baseline": False,
             "has_optimized": False,
             "is_deopted": False,
+            "has_invalidated_dependencies": False,
             "last_transition": None,
+            "last_dependency_invalidation": None,
         }
 
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:
