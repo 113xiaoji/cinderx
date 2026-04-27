@@ -178,3 +178,20 @@
 - [x] Move summary parsing into a testable helper.
 - [x] Confirm a remote smoke run produces a non-empty summary JSON.
 - [x] Re-run the pyperformance guardrail matrix after the parser fix.
+
+### Task 13: Add optimized promotion failure suppression
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/pyjit.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Write a failing test showing repeated optimized compile failures stop retrying after the failure budget.
+- [x] Write a failing recovery test showing `jit_unsuppress()` clears the failure/suppression policy state.
+- [x] Add an `optimized_compile_suppressed` bit to stable per-function tier state and tier info.
+- [x] Record `skip:optimized_compile_suppressed` promotion decisions while the function is suppressed.
+- [x] Keep the function on baseline tier while optimized promotion is policy-suppressed.
+- [x] Rebuild on ARM and run the tiering suite.
+- [x] Run the promotion failure microbenchmark and record fail/cooldown/suppressed decision counts.

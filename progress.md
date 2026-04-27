@@ -366,3 +366,68 @@
   - pyperformance matrix is the guardrail that the tier-state/policy work did
     not destabilize object-heavy workloads
 
+## Session Update: 2026-04-27 (promotion failure suppression)
+
+### Task status
+- Added a failure-budget state to optimized promotion policy.
+- Repeated optimized compile failures now enter
+  `optimized_compile_suppressed` instead of cycling through cooldown forever.
+- `jit_unsuppress(func)` now clears optimized promotion failure/cooldown/
+  suppression state so an explicitly unsuppressed function can promote again.
+
+### TDD evidence
+- Added `test_repeated_optimized_promotion_failures_are_suppressed`.
+- ARM red run before implementation:
+  - actual:
+    `['4', 'False', 'baseline', '4', 'None', '35', 'optimized_compile_cooldown']`
+  - expected:
+    `['3', 'True', 'baseline', '3', 'True', '0', 'optimized_compile_suppressed']`
+- Added `test_jit_unsuppress_clears_optimized_promotion_suppression`.
+- ARM red run before implementation:
+  - actual:
+    `['None', 'baseline', 'None', '4', '34', 'baseline']`
+  - expected:
+    `['True', 'baseline', 'False', '0', '0', 'optimized']`
+
+### Verification summary
+- ARM build:
+  - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+  - result: wheel built successfully
+- ARM targeted tests:
+  - `test_repeated_optimized_promotion_failures_are_suppressed`: pass
+  - `test_jit_unsuppress_clears_optimized_promotion_suppression`: pass
+- ARM full tiering suite:
+  - `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+  - result: `Ran 18 tests in 1.843s`, `OK`
+
+### Performance / policy evidence
+- Compared against previous ownerfix microbenchmark:
+  - previous fail decisions: `28`
+  - current fail decisions: `21`
+  - previous cooldown decisions: `525`
+  - current cooldown decisions: `168`
+  - current suppressed decisions: `364`
+- Median stayed effectively flat in this tiny micro path:
+  - previous: `0.00004339299994171597s`
+  - current: `0.000043993000872433186s`
+- Interpretation:
+  - this slice is a policy correctness / wasted retry avoidance improvement
+  - it reduces repeated failed compile attempts but does not claim a new broad
+    pyperformance speedup
+
+### Errors / recoveries
+- A first remote microbenchmark compare command produced valid JSON but exited
+  non-zero because of a malformed heredoc terminator.
+- A second one-liner attempt was parsed by local PowerShell.
+- Final verification used a PowerShell here-string piped to remote Python and
+  exited cleanly.
+- Subagent review found a P2 where `forgetCode()`, `clearCache()`, and
+  `removeCompiledFunc()` cleared suppressed/cooldown but not failure count.
+- The fix now routes all promotion failure-budget resets through
+  `resetOptimizedPromotionFailureState(TierState&)`.
+- First ARM rebuild after that fix failed because the helper originally shared
+  the same name as `Context::clearOptimizedPromotionFailures(func)`, causing
+  overload resolution to choose the member function with a `TierState` argument.
+- Renamed the helper to `resetOptimizedPromotionFailureState()`; ARM rebuild and
+  tiering suite then passed.
+

@@ -327,6 +327,92 @@ class TieringApiTests(unittest.TestCase):
             ],
         )
 
+    def test_repeated_optimized_promotion_failures_are_suppressed(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            if not jit.force_compile_baseline(helper):
+                raise AssertionError("force_compile_baseline() failed")
+            jit.compile_after_n_calls(1)
+            jit.jit_suppress(helper)
+            jit.get_and_clear_tiering_stats()
+
+            for _ in range(90):
+                helper(7)
+
+            stats = jit.get_and_clear_tiering_stats()
+            decisions = [
+                f"{item['action']}:{item['reason']}"
+                for item in stats["decisions"]
+                if item["func_qualname"].endswith("helper")
+            ]
+            print(decisions.count("fail:optimized_compile_failed"))
+            print("skip:optimized_compile_suppressed" in decisions)
+
+            info = jit.get_function_tier_info(helper)
+            print(info["active_tier"])
+            print(info.get("optimized_compile_failures"))
+            print(info.get("optimized_compile_suppressed"))
+            print(info.get("optimized_compile_cooldown_calls_remaining"))
+            last = info.get("last_promotion_decision") or {}
+            print(last.get("reason"))
+            """
+        )
+        self.assertEqual(
+            lines,
+            [
+                "3",
+                "True",
+                "baseline",
+                "3",
+                "True",
+                "0",
+                "optimized_compile_suppressed",
+            ],
+        )
+
+    def test_jit_unsuppress_clears_optimized_promotion_suppression(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            if not jit.force_compile_baseline(helper):
+                raise AssertionError("force_compile_baseline() failed")
+            jit.compile_after_n_calls(1)
+            jit.jit_suppress(helper)
+
+            for _ in range(90):
+                helper(7)
+
+            info = jit.get_function_tier_info(helper)
+            print(info.get("optimized_compile_suppressed"))
+            print(info["active_tier"])
+
+            jit.jit_unsuppress(helper)
+            helper(7)
+
+            info = jit.get_function_tier_info(helper)
+            print(info.get("optimized_compile_suppressed"))
+            print(info.get("optimized_compile_failures"))
+            print(info.get("optimized_compile_cooldown_calls_remaining"))
+            print(info["active_tier"])
+            """
+        )
+        self.assertEqual(
+            lines,
+            [
+                "True",
+                "baseline",
+                "False",
+                "0",
+                "0",
+                "optimized",
+            ],
+        )
+
     def test_force_uncompile_records_fallback_transition(self) -> None:
         lines = self._run_tiering_script(
             """

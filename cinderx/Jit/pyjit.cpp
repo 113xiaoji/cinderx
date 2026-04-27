@@ -311,6 +311,8 @@ std::string_view tierPromotionDecisionReasonName(
       return "optimized_compile_failed";
     case TierPromotionDecisionReason::kOptimizedCompileCooldown:
       return "optimized_compile_cooldown";
+    case TierPromotionDecisionReason::kOptimizedCompileSuppressed:
+      return "optimized_compile_suppressed";
   }
   return "unknown";
 }
@@ -388,7 +390,14 @@ PyObject* baselineTieringVectorcall(
       optimize_limit.has_value()) {
     auto const calls = countCalls(code) + ctx->baselineTierCallCount(func);
     if (calls >= *optimize_limit) {
-      if (ctx->consumeOptimizedPromotionCooldown(func)) {
+      if (ctx->isOptimizedPromotionSuppressed(func)) {
+        ctx->recordTierPromotionDecision(
+            func,
+            FunctionTierState::kBaseline,
+            FunctionTierState::kOptimized,
+            TierPromotionDecisionAction::kSkip,
+            TierPromotionDecisionReason::kOptimizedCompileSuppressed);
+      } else if (ctx->consumeOptimizedPromotionCooldown(func)) {
         ctx->recordTierPromotionDecision(
             func,
             FunctionTierState::kBaseline,
@@ -2356,6 +2365,8 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
   Ref<> is_deopted = Ref<>::steal(PyBool_FromLong(info.is_deopted));
   Ref<> has_invalidated_dependencies =
       Ref<>::steal(PyBool_FromLong(info.has_invalidated_dependencies));
+  Ref<> optimized_compile_suppressed =
+      Ref<>::steal(PyBool_FromLong(info.optimized_compile_suppressed));
   Ref<> optimized_compile_failures =
       Ref<>::steal(PyLong_FromUnsignedLong(info.optimized_compile_failures));
   Ref<> optimized_compile_cooldown_calls_remaining = Ref<>::steal(
@@ -2364,6 +2375,7 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
   if (active_tier == nullptr || has_baseline == nullptr ||
       has_optimized == nullptr || is_deopted == nullptr ||
       has_invalidated_dependencies == nullptr ||
+      optimized_compile_suppressed == nullptr ||
       optimized_compile_failures == nullptr ||
       optimized_compile_cooldown_calls_remaining == nullptr) {
     return nullptr;
@@ -2376,6 +2388,9 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
           result,
           "has_invalidated_dependencies",
           has_invalidated_dependencies) < 0 ||
+      PyDict_SetItemString(
+          result, "optimized_compile_suppressed", optimized_compile_suppressed) <
+          0 ||
       PyDict_SetItemString(
           result, "optimized_compile_failures", optimized_compile_failures) <
           0 ||
@@ -3389,6 +3404,9 @@ PyObject* jit_unsuppress(PyObject* /* self */, PyObject* arg) {
 
   BorrowedRef<PyCodeObject> code{func->func_code};
   code->co_flags &= ~CI_CO_SUPPRESS_JIT;
+  if (jitCtx() != nullptr) {
+    jitCtx()->clearOptimizedPromotionFailures(func);
+  }
 
   Py_INCREF(arg);
   return arg;

@@ -6,8 +6,10 @@ Keep the issue31 instance-attr specialization gains while removing the severe ra
 ## Current Phase
 Tiered-JIT closure: invalidation is now connected into stable tier state,
 per-function `TierState` consolidation is in place, and promotion-policy
-cooldown/backoff has ARM evidence. Current closeout focus is final verification,
-benchmark evidence, and documentation.
+cooldown/backoff has ARM evidence. Current active slice adds an optimized
+promotion failure budget so repeated compile failures become a stable
+`optimized_compile_suppressed` state with an explicit recovery path through
+`jit_unsuppress()`.
 
 ## Phases
 

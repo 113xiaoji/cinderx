@@ -6467,3 +6467,129 @@ Conclusion:
     - no broad pyperformance speedup is claimed from tier-state bookkeeping
       itself
     - the material speedup is the policy failure-path microbenchmark above
+
+### Optimized promotion failure suppression (`2026-04-27`)
+
+- Goal:
+  - move the promotion policy MVP from cooldown-only backoff to an explicit
+    failure-budget state
+  - avoid repeated optimized compile attempts for functions that have already
+    failed enough times to prove promotion is not currently useful
+  - keep an explicit recovery path so suppression is not an irreversible state
+
+- Files:
+  - `cinderx/Jit/context.h`
+  - `cinderx/Jit/context.cpp`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - `docs/superpowers/plans/2026-04-27-tiering-promotion-fallback-closure.md`
+
+- Behavior added:
+  - `TierState` now stores:
+    - `optimized_compile_suppressed`
+  - `FunctionTierInfo` / `jit.get_function_tier_info(func)` now expose:
+    - `optimized_compile_suppressed`
+  - after three optimized promotion compile failures:
+    - the function remains active at baseline tier
+    - optimized promotion attempts stop
+    - decisions report `skip:optimized_compile_suppressed`
+    - cooldown remaining is reset to `0`
+  - `jit_unsuppress(func)` clears:
+    - `optimized_compile_failures`
+    - `optimized_compile_cooldown_calls_remaining`
+    - `optimized_compile_suppressed`
+  - after `jit_unsuppress(func)`, a previously suppressed baseline function can
+    promote to optimized again if the next optimized compile succeeds
+
+- TDD red evidence:
+  - test:
+    - `test_repeated_optimized_promotion_failures_are_suppressed`
+  - old output:
+    - `['4', 'False', 'baseline', '4', 'None', '35', 'optimized_compile_cooldown']`
+  - expected:
+    - `['3', 'True', 'baseline', '3', 'True', '0', 'optimized_compile_suppressed']`
+  - interpretation:
+    - old code kept retrying after cooldown and exposed no durable suppressed
+      state
+  - test:
+    - `test_jit_unsuppress_clears_optimized_promotion_suppression`
+  - old output:
+    - `['None', 'baseline', 'None', '4', '34', 'baseline']`
+  - expected:
+    - `['True', 'baseline', 'False', '0', '0', 'optimized']`
+  - interpretation:
+    - old code had no suppression bit and `jit_unsuppress()` did not clear the
+      existing cooldown/failure policy state
+
+- ARM verification:
+  - workdir:
+    - `/root/work/cinderx-richards-fresh-20260414`
+  - build:
+    - command:
+      `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+    - result:
+      `Successfully built cinderx-2026.4.27.0-cp314-cp314-linux_aarch64.whl`
+  - targeted tests:
+    - command:
+      `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering.TieringApiTests.test_repeated_optimized_promotion_failures_are_suppressed test_cinderx.test_jit_tiering.TieringApiTests.test_jit_unsuppress_clears_optimized_promotion_suppression`
+    - result:
+      `Ran 2 tests in 0.076s`, `OK`
+  - full tiering suite:
+    - command:
+      `PYTHONPATH=scratch/lib.linux-aarch64-cpython-314:cinderx/PythonLib /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+    - result:
+      `Ran 18 tests in 1.843s`, `OK`
+
+- Policy microbenchmark:
+  - artifacts:
+    - previous:
+      `/root/work/arm-sync/policy_micro_current_ownerfix.json`
+    - current:
+      `/root/work/arm-sync/policy_micro_current_suppressed.json`
+  - previous ownerfix build:
+    - `median_sec`: `0.00004339299994171597`
+    - `total_fail_decisions`: `28`
+    - `total_cooldown_decisions`: `525`
+  - current suppression build:
+    - `median_sec`: `0.000043993000872433186`
+    - `total_fail_decisions`: `21`
+    - `total_cooldown_decisions`: `168`
+    - `total_suppressed_decisions`: `364`
+  - interpretation:
+    - the new policy reduces failed compile attempts and cooldown churn
+    - elapsed time is effectively flat in this tiny microbenchmark compared
+      with the previous ownerfix build
+    - the larger existing speedup against the pre-cooldown baseline remains
+      from the previous policy slice
+
+- Validation-chain note:
+  - a first remote compare command wrote valid JSON but exited non-zero due to
+    a malformed nested heredoc terminator
+  - a second one-liner was parsed by local PowerShell before reaching SSH
+  - final JSON confirmation used a PowerShell here-string piped into remote
+    Python and exited with status `0`
+
+- Review follow-up:
+  - subagent review found a P2 in the first implementation:
+    - `forgetCode()`, `clearCache()`, and `removeCompiledFunc()` reset
+      `optimized_compile_suppressed` and cooldown but left
+      `optimized_compile_failures` intact
+    - that could expose `suppressed=false` with failures already at or above
+      the suppression threshold
+  - fix:
+    - added `resetOptimizedPromotionFailureState(TierState&)`
+    - all failure-budget reset paths now clear failures, cooldown, and
+      suppressed state together
+  - build recovery note:
+    - the helper was first named `clearOptimizedPromotionFailures`, which
+      collided with the `Context::clearOptimizedPromotionFailures(func)` member
+      during unqualified lookup inside member functions
+    - ARM build failed with `no viable conversion from TierState to
+      BorrowedRef<PyFunctionObject>`
+    - renaming the helper to `resetOptimizedPromotionFailureState()` fixed the
+      compile error
+  - post-review verification:
+    - ARM build:
+      `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+    - ARM tiering suite:
+      `Ran 18 tests in 1.834s`, `OK`

@@ -135,6 +135,7 @@ enum class TierPromotionDecisionReason {
   kOptimizedThresholdReached,
   kOptimizedCompileFailed,
   kOptimizedCompileCooldown,
+  kOptimizedCompileSuppressed,
 };
 
 struct TierPromotionDecision {
@@ -186,6 +187,7 @@ struct FunctionTierInfo {
   bool has_optimized{false};
   bool is_deopted{false};
   bool has_invalidated_dependencies{false};
+  bool optimized_compile_suppressed{false};
   std::uint32_t optimized_compile_failures{0};
   std::uint64_t optimized_compile_cooldown_calls_remaining{0};
   std::optional<LastTierTransition> last_transition;
@@ -203,6 +205,7 @@ struct TierState {
   std::uint64_t baseline_call_count{0};
   std::uint32_t optimized_compile_failures{0};
   std::uint64_t optimized_compile_cooldown_calls_remaining{0};
+  bool optimized_compile_suppressed{false};
 };
 
 struct CompiledFunctionVersions {
@@ -428,8 +431,10 @@ class Context : public IJitContext {
       FunctionTierState target_tier,
       TierPromotionDecisionAction action,
       TierPromotionDecisionReason reason);
+  bool isOptimizedPromotionSuppressed(BorrowedRef<PyFunctionObject> func);
   bool consumeOptimizedPromotionCooldown(BorrowedRef<PyFunctionObject> func);
   void recordOptimizedPromotionFailure(BorrowedRef<PyFunctionObject> func);
+  void clearOptimizedPromotionFailures(BorrowedRef<PyFunctionObject> func);
   void recordTierFallback(
       BorrowedRef<PyFunctionObject> func,
       TierTransitionReason reason);
