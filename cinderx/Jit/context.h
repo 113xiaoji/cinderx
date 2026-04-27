@@ -25,6 +25,7 @@
 #include "cinderx/Jit/pyjit_result.h"
 #include "cinderx/Jit/type_deopt_patchers.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -105,6 +106,11 @@ enum class FunctionTierState {
 enum class TierTransitionReason {
   kActivateBaseline,
   kActivateOptimized,
+  kAutoThresholdBaseline,
+  kAutoThresholdOptimized,
+  kForceBaseline,
+  kForceOptimized,
+  kForceUncompile,
 };
 
 struct TierTransitionEvent {
@@ -112,6 +118,27 @@ struct TierTransitionEvent {
   FunctionTierState from_tier;
   FunctionTierState to_tier;
   TierTransitionReason reason;
+};
+
+enum class TierPromotionDecisionAction {
+  kSkip,
+  kPromote,
+  kFail,
+};
+
+enum class TierPromotionDecisionReason {
+  kNoOptimizedThreshold,
+  kOptimizedThresholdNotReached,
+  kOptimizedThresholdReached,
+  kOptimizedCompileFailed,
+};
+
+struct TierPromotionDecision {
+  std::string func_qualname;
+  FunctionTierState current_tier;
+  FunctionTierState target_tier;
+  TierPromotionDecisionAction action;
+  TierPromotionDecisionReason reason;
 };
 
 struct FunctionTierInfo {
@@ -333,7 +360,23 @@ class Context : public IJitContext {
   FunctionTierInfo lookupFuncTierInfo(BorrowedRef<PyFunctionObject> func);
   bool hasOptimizedTier(BorrowedRef<PyFunctionObject> func);
   std::vector<TierTransitionEvent> getAndClearTierTransitionEvents();
+  std::vector<TierPromotionDecision> getAndClearTierPromotionDecisions();
   void clearTierTransitionEvents();
+  void recordTierPromotionDecision(
+      BorrowedRef<PyFunctionObject> func,
+      FunctionTierState current_tier,
+      FunctionTierState target_tier,
+      TierPromotionDecisionAction action,
+      TierPromotionDecisionReason reason);
+  void recordTierFallback(
+      BorrowedRef<PyFunctionObject> func,
+      TierTransitionReason reason);
+  void updateLastTierTransitionReason(
+      BorrowedRef<PyFunctionObject> func,
+      FunctionTierState to_tier,
+      TierTransitionReason reason);
+  std::uint64_t baselineTierCallCount(BorrowedRef<PyFunctionObject> func);
+  void incrementBaselineTierCallCount(BorrowedRef<PyFunctionObject> func);
 
   /*
    * Get the map of all compiled code objects, keyed by their address and also
@@ -646,6 +689,9 @@ class Context : public IJitContext {
   UnorderedSet<BorrowedRef<PyFunctionObject>> compiled_funcs_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, CompileTier> compiled_func_tiers_;
   std::vector<TierTransitionEvent> tier_transition_events_;
+  std::vector<TierPromotionDecision> tier_promotion_decisions_;
+  UnorderedMap<BorrowedRef<PyFunctionObject>, std::uint64_t>
+      baseline_tier_call_counts_;
 
   /* Set of which functions were JIT-compiled but have since been deopted. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> deopted_funcs_;

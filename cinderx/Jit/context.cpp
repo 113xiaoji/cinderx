@@ -478,6 +478,9 @@ void Context::finalizeFunc(
             ? TierTransitionReason::kActivateBaseline
             : TierTransitionReason::kActivateOptimized);
   }
+  if (compiled.tier() == CompileTier::kOptimized) {
+    baseline_tier_call_counts_.erase(func);
+  }
 
   auto* versions = lookupCompiledVersions(CompilationKey{func});
   JIT_CHECK(versions != nullptr, "Expected compiled tiers for {}", funcFullname(func));
@@ -568,6 +571,7 @@ void jitgen_data_free(PyGenObject* gen) {
 void Context::forgetCode(BorrowedRef<PyFunctionObject> func) {
   compiled_codes_.erase(CompilationKey{func});
   compiled_func_tiers_.erase(func);
+  baseline_tier_call_counts_.erase(func);
 }
 
 bool Context::didCompile(BorrowedRef<PyFunctionObject> func) {
@@ -639,6 +643,65 @@ void Context::clearTierTransitionEvents() {
   tier_transition_events_.clear();
 }
 
+std::vector<TierPromotionDecision>
+Context::getAndClearTierPromotionDecisions() {
+  ThreadedCompileSerialize guard;
+  auto decisions = std::move(tier_promotion_decisions_);
+  tier_promotion_decisions_.clear();
+  return decisions;
+}
+
+void Context::recordTierPromotionDecision(
+    BorrowedRef<PyFunctionObject> func,
+    FunctionTierState current_tier,
+    FunctionTierState target_tier,
+    TierPromotionDecisionAction action,
+    TierPromotionDecisionReason reason) {
+  ThreadedCompileSerialize guard;
+  tier_promotion_decisions_.push_back(TierPromotionDecision{
+      funcFullname(func), current_tier, target_tier, action, reason});
+}
+
+void Context::recordTierFallback(
+    BorrowedRef<PyFunctionObject> func,
+    TierTransitionReason reason) {
+  ThreadedCompileSerialize guard;
+  FunctionTierState from_tier = currentFuncTierUnlocked(func);
+  if (from_tier == FunctionTierState::kInterp) {
+    return;
+  }
+  recordTierTransition(func, from_tier, FunctionTierState::kInterp, reason);
+}
+
+void Context::updateLastTierTransitionReason(
+    BorrowedRef<PyFunctionObject> func,
+    FunctionTierState to_tier,
+    TierTransitionReason reason) {
+  ThreadedCompileSerialize guard;
+  std::string fullname = funcFullname(func);
+  for (auto it = tier_transition_events_.rbegin();
+       it != tier_transition_events_.rend();
+       ++it) {
+    if (it->func_qualname == fullname && it->to_tier == to_tier) {
+      it->reason = reason;
+      return;
+    }
+  }
+}
+
+std::uint64_t Context::baselineTierCallCount(
+    BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  auto it = baseline_tier_call_counts_.find(func);
+  return it == baseline_tier_call_counts_.end() ? 0 : it->second;
+}
+
+void Context::incrementBaselineTierCallCount(
+    BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  baseline_tier_call_counts_[func]++;
+}
+
 const UnorderedMap<CompilationKey, CompiledFunctionVersions>&
 Context::compiledCodes() const {
   return compiled_codes_;
@@ -672,11 +735,13 @@ void Context::clearCache() {
   }
   compiled_codes_.clear();
   compiled_func_tiers_.clear();
+  baseline_tier_call_counts_.clear();
 }
 
 void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
   compiled_funcs_.erase(func);
   compiled_func_tiers_.erase(func);
+  baseline_tier_call_counts_.erase(func);
   deopted_funcs_.erase(func);
 
   // This doesn't modify compiled_codes_, so if this is a nested function it can
@@ -716,6 +781,7 @@ bool Context::addCompiledFunc(BorrowedRef<PyFunctionObject> func) {
 
 bool Context::removeCompiledFunc(BorrowedRef<PyFunctionObject> func) {
   compiled_func_tiers_.erase(func);
+  baseline_tier_call_counts_.erase(func);
   return compiled_funcs_.erase(func) == 1;
 }
 

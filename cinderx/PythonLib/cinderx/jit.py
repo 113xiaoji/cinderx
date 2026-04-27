@@ -190,7 +190,7 @@ except ImportError:
         return {}
 
     def get_and_clear_tiering_stats() -> dict[str, object]:
-        return {"events": []}
+        return {"events": [], "decisions": []}
 
     def get_inlined_functions_stats(func: FuncAny) -> dict[str, object]:
         return {}

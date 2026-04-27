@@ -249,19 +249,81 @@ std::string_view functionTierStateName(FunctionTierState tier) {
   return "unknown";
 }
 
+FunctionTierState functionTierStateForCompileTier(CompileTier tier) {
+  switch (tier) {
+    case CompileTier::kBaseline:
+      return FunctionTierState::kBaseline;
+    case CompileTier::kOptimized:
+      return FunctionTierState::kOptimized;
+  }
+  JIT_ABORT("Unknown compile tier {}", tierName(tier));
+}
+
 std::string_view tierTransitionReasonName(TierTransitionReason reason) {
   switch (reason) {
     case TierTransitionReason::kActivateBaseline:
       return "activate_baseline";
     case TierTransitionReason::kActivateOptimized:
       return "activate_optimized";
+    case TierTransitionReason::kAutoThresholdBaseline:
+      return "auto_threshold_baseline";
+    case TierTransitionReason::kAutoThresholdOptimized:
+      return "auto_threshold_optimized";
+    case TierTransitionReason::kForceBaseline:
+      return "force_baseline";
+    case TierTransitionReason::kForceOptimized:
+      return "force_optimized";
+    case TierTransitionReason::kForceUncompile:
+      return "force_uncompile";
   }
   return "unknown";
 }
 
+std::string_view tierPromotionDecisionActionName(
+    TierPromotionDecisionAction action) {
+  switch (action) {
+    case TierPromotionDecisionAction::kSkip:
+      return "skip";
+    case TierPromotionDecisionAction::kPromote:
+      return "promote";
+    case TierPromotionDecisionAction::kFail:
+      return "fail";
+  }
+  return "unknown";
+}
+
+std::string_view tierPromotionDecisionReasonName(
+    TierPromotionDecisionReason reason) {
+  switch (reason) {
+    case TierPromotionDecisionReason::kNoOptimizedThreshold:
+      return "no_optimized_threshold";
+    case TierPromotionDecisionReason::kOptimizedThresholdNotReached:
+      return "optimized_threshold_not_reached";
+    case TierPromotionDecisionReason::kOptimizedThresholdReached:
+      return "optimized_threshold_reached";
+    case TierPromotionDecisionReason::kOptimizedCompileFailed:
+      return "optimized_compile_failed";
+  }
+  return "unknown";
+}
+
+PyObject* baselineTieringVectorcall(
+    PyObject* func_obj,
+    PyObject* const* stack,
+    size_t nargsf,
+    PyObject* kwnames);
+
+bool isTierManaged(BorrowedRef<PyFunctionObject> func) {
+  return isJitCompiled(func) ||
+      (jitCtx() != nullptr &&
+       jitCtx()->lookupFuncTier(func) != FunctionTierState::kInterp);
+}
+
 Result compileFunctionAtTier(
     BorrowedRef<PyFunctionObject> func,
-    CompileTier tier) {
+    CompileTier tier,
+    TierTransitionReason transition_reason =
+        TierTransitionReason::kActivateOptimized) {
   if (!isJitInitialized()) {
     return Result::NOT_INITIALIZED;
   }
@@ -274,7 +336,82 @@ Result compileFunctionAtTier(
 
   auto& jit_reg_units = cinderx::getModuleState()->registered_compilation_units;
   jit_reg_units.erase(func);
-  return compile_func(func, tier);
+  auto result = compile_func(func, tier);
+  if (result == Result::OK && tier == CompileTier::kBaseline) {
+    setVectorcall(func, baselineTieringVectorcall);
+  }
+  if (result == Result::OK) {
+    jitCtx()->updateLastTierTransitionReason(
+        func, functionTierStateForCompileTier(tier), transition_reason);
+  }
+  return result;
+}
+
+PyObject* baselineTieringVectorcall(
+    PyObject* func_obj,
+    PyObject* const* stack,
+    size_t nargsf,
+    PyObject* kwnames) {
+  JIT_DCHECK(
+      PyFunction_Check(func_obj),
+      "Called baseline tiering wrapper with {} object instead of a function",
+      Py_TYPE(func_obj)->tp_name);
+  BorrowedRef<PyFunctionObject> func{func_obj};
+  BorrowedRef<PyCodeObject> code{func->func_code};
+
+  CompilerContext<Compiler>* ctx = jitCtx();
+  if (ctx == nullptr) {
+    auto entry = getInterpretedVectorcall(func);
+    return entry(func_obj, stack, nargsf, kwnames);
+  }
+
+  if (auto optimize_limit = getConfig().compile_after_n_calls;
+      optimize_limit.has_value()) {
+    auto const calls = countCalls(code) + ctx->baselineTierCallCount(func);
+    if (calls >= *optimize_limit) {
+      ctx->recordTierPromotionDecision(
+          func,
+          FunctionTierState::kBaseline,
+          FunctionTierState::kOptimized,
+          TierPromotionDecisionAction::kPromote,
+          TierPromotionDecisionReason::kOptimizedThresholdReached);
+      auto result = compileFunctionAtTier(
+          func,
+          CompileTier::kOptimized,
+          TierTransitionReason::kAutoThresholdOptimized);
+      if (result == Result::OK) {
+        return func->vectorcall(func_obj, stack, nargsf, kwnames);
+      }
+      ctx->recordTierPromotionDecision(
+          func,
+          FunctionTierState::kBaseline,
+          FunctionTierState::kOptimized,
+          TierPromotionDecisionAction::kFail,
+          TierPromotionDecisionReason::kOptimizedCompileFailed);
+    } else {
+      ctx->recordTierPromotionDecision(
+          func,
+          FunctionTierState::kBaseline,
+          FunctionTierState::kOptimized,
+          TierPromotionDecisionAction::kSkip,
+          TierPromotionDecisionReason::kOptimizedThresholdNotReached);
+      ctx->incrementBaselineTierCallCount(func);
+    }
+  } else {
+    ctx->recordTierPromotionDecision(
+        func,
+        FunctionTierState::kBaseline,
+        FunctionTierState::kOptimized,
+        TierPromotionDecisionAction::kSkip,
+        TierPromotionDecisionReason::kNoOptimizedThreshold);
+  }
+
+  CompiledFunction* compiled = ctx->lookupFunc(func, CompileTier::kBaseline);
+  if (compiled == nullptr) {
+    auto entry = getInterpretedVectorcall(func);
+    return entry(func_obj, stack, nargsf, kwnames);
+  }
+  return compiled->vectorcallEntry()(func_obj, stack, nargsf, kwnames);
 }
 
 // Like jitVectorcall(), but ignores any call count requirements.
@@ -283,7 +420,9 @@ PyObject* forcedTierJitVectorcall(
     PyObject* const* stack,
     size_t nargsf,
     PyObject* kwnames,
-    CompileTier tier) {
+    CompileTier tier,
+    TierTransitionReason transition_reason =
+        TierTransitionReason::kActivateOptimized) {
   JIT_DCHECK(
       PyFunction_Check(func_obj),
       "Called JIT wrapper with {} object instead of a function",
@@ -291,7 +430,7 @@ PyObject* forcedTierJitVectorcall(
   BorrowedRef<PyFunctionObject> func{func_obj};
   BorrowedRef<PyCodeObject> code{func->func_code};
 
-  auto result = compileFunctionAtTier(func, tier);
+  auto result = compileFunctionAtTier(func, tier, transition_reason);
   if (result == Result::OK) {
     JIT_DCHECK(
         isJitCompiled(func),
@@ -349,12 +488,23 @@ PyObject* jitVectorcall(
     if (auto baseline_limit = getConfig().baseline_compile_after_n_calls;
         baseline_limit.has_value() && calls >= *baseline_limit) {
       return forcedTierJitVectorcall(
-          func_obj, stack, nargsf, kwnames, CompileTier::kBaseline);
+          func_obj,
+          stack,
+          nargsf,
+          kwnames,
+          CompileTier::kBaseline,
+          TierTransitionReason::kAutoThresholdBaseline);
     }
 
     if (auto optimize_limit = getConfig().compile_after_n_calls;
         optimize_limit.has_value() && calls >= *optimize_limit) {
-      return forcedJitVectorcall(func_obj, stack, nargsf, kwnames);
+      return forcedTierJitVectorcall(
+          func_obj,
+          stack,
+          nargsf,
+          kwnames,
+          CompileTier::kOptimized,
+          TierTransitionReason::kAutoThresholdOptimized);
     }
 
     if (!getConfig().baseline_compile_after_n_calls.has_value() &&
@@ -1856,7 +2006,7 @@ PyObject* force_compile_baseline(PyObject* /* self */, PyObject* arg) {
   if (func == nullptr) {
     return nullptr;
   }
-  if (!isJitUsable() || isJitCompiled(func)) {
+  if (!isJitUsable() || isTierManaged(func)) {
     Py_RETURN_FALSE;
   }
 
@@ -1864,7 +2014,8 @@ PyObject* force_compile_baseline(PyObject* /* self */, PyObject* arg) {
     return nullptr;
   }
 
-  auto result = compileFunctionAtTier(func, CompileTier::kBaseline);
+  auto result = compileFunctionAtTier(
+      func, CompileTier::kBaseline, TierTransitionReason::kForceBaseline);
   switch (result) {
     case Result::OK:
       Py_RETURN_TRUE;
@@ -1921,7 +2072,8 @@ PyObject* force_compile(PyObject* /* self */, PyObject* arg) {
     return nullptr;
   }
 
-  auto result = compileFunctionAtTier(func, CompileTier::kOptimized);
+  auto result = compileFunctionAtTier(
+      func, CompileTier::kOptimized, TierTransitionReason::kForceOptimized);
   switch (result) {
     case Result::OK:
       Py_RETURN_TRUE;
@@ -1993,13 +2145,16 @@ PyObject* force_uncompile(PyObject* /* self */, PyObject* arg) {
     return nullptr;
   }
 
-  if (!isJitCompiled(func)) {
+  if (!isTierManaged(func)) {
     Py_RETURN_FALSE;
   }
 
   // Replace the function entrypoint with the interpreter entrypoint, so that it
   // can properly be called again.
   setVectorcall(func, getInterpretedVectorcall(func));
+  if (jitCtx() != nullptr) {
+    jitCtx()->recordTierFallback(func, TierTransitionReason::kForceUncompile);
+  }
 
   // "Destroy" the function from the perspective of the JIT, effectively erasing
   // all traces of it from the metadata.
@@ -2712,7 +2867,8 @@ PyObject* clear_runtime_stats(PyObject* /* self */, PyObject*) {
 PyObject* get_and_clear_tiering_stats(PyObject* /* self */, PyObject*) {
   Ref<> result = Ref<>::steal(PyDict_New());
   Ref<> events = Ref<>::steal(PyList_New(0));
-  if (result == nullptr || events == nullptr) {
+  Ref<> decisions = Ref<>::steal(PyList_New(0));
+  if (result == nullptr || events == nullptr || decisions == nullptr) {
     return nullptr;
   }
 
@@ -2742,9 +2898,38 @@ PyObject* get_and_clear_tiering_stats(PyObject* /* self */, PyObject*) {
         return nullptr;
       }
     }
+    for (const auto& decision : jitCtx()->getAndClearTierPromotionDecisions()) {
+      Ref<> item = Ref<>::steal(PyDict_New());
+      if (item == nullptr) {
+        return nullptr;
+      }
+      Ref<> func_qualname =
+          Ref<>::steal(PyUnicode_FromString(decision.func_qualname.c_str()));
+      Ref<> current_tier = Ref<>::steal(PyUnicode_FromString(
+          functionTierStateName(decision.current_tier).data()));
+      Ref<> target_tier = Ref<>::steal(PyUnicode_FromString(
+          functionTierStateName(decision.target_tier).data()));
+      Ref<> action = Ref<>::steal(PyUnicode_FromString(
+          tierPromotionDecisionActionName(decision.action).data()));
+      Ref<> reason = Ref<>::steal(PyUnicode_FromString(
+          tierPromotionDecisionReasonName(decision.reason).data()));
+      if (func_qualname == nullptr || current_tier == nullptr ||
+          target_tier == nullptr || action == nullptr || reason == nullptr) {
+        return nullptr;
+      }
+      if (PyDict_SetItemString(item, "func_qualname", func_qualname) < 0 ||
+          PyDict_SetItemString(item, "current_tier", current_tier) < 0 ||
+          PyDict_SetItemString(item, "target_tier", target_tier) < 0 ||
+          PyDict_SetItemString(item, "action", action) < 0 ||
+          PyDict_SetItemString(item, "reason", reason) < 0 ||
+          PyList_Append(decisions, item) < 0) {
+        return nullptr;
+      }
+    }
   }
 
-  if (PyDict_SetItemString(result, "events", events) < 0) {
+  if (PyDict_SetItemString(result, "events", events) < 0 ||
+      PyDict_SetItemString(result, "decisions", decisions) < 0) {
     return nullptr;
   }
   return result.release();

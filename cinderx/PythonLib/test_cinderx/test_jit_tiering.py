@@ -216,3 +216,91 @@ class TieringApiTests(unittest.TestCase):
             lines,
             ["0", "2", "interp", "baseline", "baseline", "optimized", "0"],
         )
+
+    def test_baseline_auto_promotes_to_optimized_after_optimized_threshold(
+        self,
+    ) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            jit.baseline_compile_after_n_calls(1)
+            jit.compile_after_n_calls(3)
+
+            print(jit.get_function_tier(helper))
+            helper(7)
+            print(jit.get_function_tier(helper))
+            helper(7)
+            print(jit.get_function_tier(helper))
+            helper(7)
+            print(jit.get_function_tier(helper))
+            helper(7)
+            print(jit.get_function_tier(helper))
+            helper(7)
+            print(jit.get_function_tier(helper))
+            """
+        )
+        self.assertEqual(
+            lines,
+            ["interp", "interp", "baseline", "baseline", "optimized", "optimized"],
+        )
+
+    def test_tiering_stats_records_skipped_and_promoted_baseline_decisions(
+        self,
+    ) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            jit.baseline_compile_after_n_calls(1)
+            jit.compile_after_n_calls(3)
+            jit.get_and_clear_tiering_stats()
+
+            helper(7)
+            helper(7)
+            helper(7)
+            helper(7)
+            helper(7)
+
+            stats = jit.get_and_clear_tiering_stats()
+            decisions = [
+                f"{item['action']}:{item['reason']}"
+                for item in stats["decisions"]
+                if item["func_qualname"].endswith("helper")
+            ]
+            event_reasons = [
+                item["reason"]
+                for item in stats["events"]
+                if item["func_qualname"].endswith("helper")
+            ]
+            print("skip:optimized_threshold_not_reached" in decisions)
+            print("promote:optimized_threshold_reached" in decisions)
+            print("auto_threshold_baseline" in event_reasons)
+            print("auto_threshold_optimized" in event_reasons)
+            """
+        )
+        self.assertEqual(lines, ["True", "True", "True", "True"])
+
+    def test_force_uncompile_records_fallback_transition(self) -> None:
+        lines = self._run_tiering_script(
+            """
+            def helper(x):
+                return x + 1
+
+            if not jit.force_compile_baseline(helper):
+                raise AssertionError("force_compile_baseline() failed")
+            jit.get_and_clear_tiering_stats()
+            if not jit.force_uncompile(helper):
+                raise AssertionError("force_uncompile() failed")
+
+            stats = jit.get_and_clear_tiering_stats()
+            for event in stats["events"]:
+                if event["func_qualname"].endswith("helper"):
+                    print(event["from_tier"])
+                    print(event["to_tier"])
+                    print(event["reason"])
+            """
+        )
+        self.assertEqual(lines, ["baseline", "interp", "force_uncompile"])

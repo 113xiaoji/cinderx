@@ -5913,3 +5913,112 @@ Conclusion:
       baseline+optimized code, and which tier activation transitions occurred
   - this should make subsequent promotion/fallback work measurable instead of
     inferred indirectly from benchmark artifacts
+
+### Tier promotion and fallback closure (`2026-04-27`)
+
+- Goal:
+  - extend the tiering telemetry slice from "what tier transition happened" to
+    "why promotion happened, why it did not happen yet, and when a function
+    explicitly fell back to the interpreter"
+  - add the first real baseline -> optimized automatic promotion loop for
+    baseline-tier functions
+
+- Files:
+  - `cinderx/Jit/context.h`
+  - `cinderx/Jit/context.cpp`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/PythonLib/cinderx/jit.py`
+  - `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - `docs/superpowers/plans/2026-04-27-tiering-promotion-fallback-closure.md`
+
+- Behavior added:
+  - baseline functions now stay behind a lightweight tiering vectorcall wrapper
+    until they promote to optimized tier
+  - the wrapper maintains baseline-side call counts, because shadowcode's
+    interpreter call count no longer naturally advances once baseline code is
+    running
+  - when the optimized threshold is not configured or has not been reached,
+    `jit.get_and_clear_tiering_stats()["decisions"]` records a skipped
+    promotion decision
+  - when the optimized threshold is reached, the wrapper compiles or attaches
+    optimized code, records a promoted decision, and then leaves the function on
+    the raw optimized entry
+  - `force_uncompile()` records a fallback transition to `interp`
+
+- Telemetry shape:
+  - `events` still records transitions:
+    - `func_qualname`
+    - `from_tier`
+    - `to_tier`
+    - `reason`
+  - new event reasons include:
+    - `auto_threshold_baseline`
+    - `auto_threshold_optimized`
+    - `force_baseline`
+    - `force_optimized`
+    - `force_uncompile`
+  - `decisions` records promotion decisions:
+    - `func_qualname`
+    - `current_tier`
+    - `target_tier`
+    - `action`
+    - `reason`
+  - decision reasons currently include:
+    - `no_optimized_threshold`
+    - `optimized_threshold_not_reached`
+    - `optimized_threshold_reached`
+    - `optimized_compile_failed`
+
+- TDD red evidence:
+  - ARM path:
+    - `/root/work/cinderx-richards-fresh-20260414`
+  - command:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+  - result before implementation:
+    - `test_baseline_auto_promotes_to_optimized_after_optimized_threshold`
+      failed because the function stayed at `baseline`
+    - `test_force_uncompile_records_fallback_transition` failed because no
+      fallback event was recorded
+    - `test_tiering_stats_records_skipped_and_promoted_baseline_decisions`
+      failed because promotion decisions were not available
+
+- Verification:
+  - local harness:
+    - `python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+    - result:
+      - `OK (skipped=10)` when no local JIT extension is present
+  - ARM build:
+    - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+    - result:
+      - `Successfully built cinderx-2026.4.27.0-cp314-cp314-linux_aarch64.whl`
+  - ARM targeted tests:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+    - result:
+      - `Ran 10 tests in 0.350s`
+      - `OK`
+
+- Direct ARM promotion probe:
+  - final tier:
+    - `optimized`
+  - events:
+    - `('interp', 'baseline', 'auto_threshold_baseline')`
+    - `('baseline', 'optimized', 'auto_threshold_optimized')`
+  - decisions:
+    - `('skip', 'optimized_threshold_not_reached')`
+    - `('skip', 'optimized_threshold_not_reached')`
+    - `('promote', 'optimized_threshold_reached')`
+
+- Direct ARM fallback probe:
+  - final tier:
+    - `interp`
+  - events:
+    - `('baseline', 'interp', 'force_uncompile')`
+
+- Interpretation:
+  - this closes the next mainline slice after basic transition telemetry:
+    baseline-tier functions can now actually promote to optimized tier under an
+    optimized threshold, and both skipped and successful promotion decisions are
+    visible through the public stats API
+  - this is still not a full production-grade tier controller:
+    deopt-driven fallback, dependency invalidation, and richer promotion policy
+    remain future mainline work
