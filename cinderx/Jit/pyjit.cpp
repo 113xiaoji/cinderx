@@ -2330,12 +2330,40 @@ PyObject* get_function_tier_info(PyObject* /* self */, PyObject* arg) {
       PyUnicode_FromString(functionTierStateName(info.active_tier).data()));
   Ref<> has_baseline = Ref<>::steal(PyBool_FromLong(info.has_baseline));
   Ref<> has_optimized = Ref<>::steal(PyBool_FromLong(info.has_optimized));
-  if (active_tier == nullptr || has_baseline == nullptr || has_optimized == nullptr) {
+  Ref<> is_deopted = Ref<>::steal(PyBool_FromLong(info.is_deopted));
+  if (active_tier == nullptr || has_baseline == nullptr ||
+      has_optimized == nullptr || is_deopted == nullptr) {
     return nullptr;
   }
   if (PyDict_SetItemString(result, "active_tier", active_tier) < 0 ||
       PyDict_SetItemString(result, "has_baseline", has_baseline) < 0 ||
-      PyDict_SetItemString(result, "has_optimized", has_optimized) < 0) {
+      PyDict_SetItemString(result, "has_optimized", has_optimized) < 0 ||
+      PyDict_SetItemString(result, "is_deopted", is_deopted) < 0) {
+    return nullptr;
+  }
+  if (info.last_transition.has_value()) {
+    Ref<> last_transition = Ref<>::steal(PyDict_New());
+    if (last_transition == nullptr) {
+      return nullptr;
+    }
+    Ref<> from_tier = Ref<>::steal(PyUnicode_FromString(
+        functionTierStateName(info.last_transition->from_tier).data()));
+    Ref<> to_tier = Ref<>::steal(PyUnicode_FromString(
+        functionTierStateName(info.last_transition->to_tier).data()));
+    Ref<> reason = Ref<>::steal(PyUnicode_FromString(
+        tierTransitionReasonName(info.last_transition->reason).data()));
+    if (from_tier == nullptr || to_tier == nullptr || reason == nullptr) {
+      return nullptr;
+    }
+    if (PyDict_SetItemString(last_transition, "from_tier", from_tier) < 0 ||
+        PyDict_SetItemString(last_transition, "to_tier", to_tier) < 0 ||
+        PyDict_SetItemString(last_transition, "reason", reason) < 0) {
+      return nullptr;
+    }
+    if (PyDict_SetItemString(result, "last_transition", last_transition) < 0) {
+      return nullptr;
+    }
+  } else if (PyDict_SetItemString(result, "last_transition", Py_None) < 0) {
     return nullptr;
   }
   return result.release();

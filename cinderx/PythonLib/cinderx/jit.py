@@ -184,6 +184,8 @@ except ImportError:
             "active_tier": "interp",
             "has_baseline": False,
             "has_optimized": False,
+            "is_deopted": False,
+            "last_transition": None,
         }
 
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:

@@ -245,3 +245,37 @@
   - final tiers: `interp`, `interp`
   - events recorded for both `helper_a` and `helper_b`
 
+## Session Update: 2026-04-27 (unified tier info state)
+
+### Task status
+- Extended the tier-state API so `get_function_tier_info()` reports deopted
+  state and the last tier transition.
+- Scope:
+  - preserve the existing clearable event stream
+  - add a stable per-function state surface for active tier, cached tiers,
+    deopt state, and last fallback reason
+
+### TDD evidence
+- Added `test_function_tier_info_reports_deopt_state`.
+- ARM red run before implementation:
+  - failed with `KeyError: 'is_deopted'`
+  - old tier info only exposed `active_tier`, `has_baseline`, and
+    `has_optimized`
+
+### Verification summary
+- ARM staging workdir:
+  - `/root/work/cinderx-richards-fresh-20260414`
+- ARM build:
+  - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+  - result: wheel built successfully
+- ARM targeted tests:
+  - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+  - result: `Ran 12 tests in 0.420s`, `OK`
+- Direct probes:
+  - `disable(deopt_all=True)` reports `is_deopted=True` and
+    `last_transition.reason=disable_deopt_all`
+  - clearing tiering events before reading tier info still preserves the last
+    transition in the state surface
+  - replacing `helper.__code__` reports `is_deopted=True` and
+    `last_transition.reason=function_modified`
+

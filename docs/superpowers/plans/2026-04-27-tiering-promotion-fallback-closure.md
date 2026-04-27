@@ -66,3 +66,18 @@
 - [x] Preserve existing `force_uncompile()` fallback telemetry.
 - [x] Rebuild on ARM and run the full targeted tiering API suite.
 - [x] Run a direct ARM probe for the public event shape and update `findings.md`.
+
+### Task 6: Fold deopt state into unified tier info
+
+**Files:**
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.h`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/context.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/Jit/pyjit.cpp`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/cinderx/jit.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+- Modify: `C:/work/code/cinderx5/.worktrees/baseline-tier-fastmode-mvp/findings.md`
+
+- [x] Add a failing test showing that `get_function_tier_info()` exposes deopted state and the last fallback reason.
+- [x] Store the last tier transition in `Context` independently of the clearable event stream.
+- [x] Expose `is_deopted` and `last_transition` through the public tier info dictionary.
+- [x] Verify both `disable_deopt_all` and `function_modified` paths on ARM.

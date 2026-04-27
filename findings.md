@@ -6091,3 +6091,93 @@ Conclusion:
   - this is another step toward a unified tier state model, but dependency
     invalidation and policy-level fallback accounting still need dedicated
     follow-up slices
+
+### Unified tier info deopt state (`2026-04-27`)
+
+- Goal:
+  - fold fallback/deopt state into the stable per-function tier info surface
+    instead of requiring callers to correlate active tier, compiled tiers, and
+    clearable transition events by hand
+  - keep `get_and_clear_tiering_stats()` as an event stream, but make
+    `get_function_tier_info()` answer the current tier-state question directly
+
+- Files:
+  - `cinderx/Jit/context.h`
+  - `cinderx/Jit/context.cpp`
+  - `cinderx/Jit/pyjit.cpp`
+  - `cinderx/PythonLib/cinderx/jit.py`
+  - `cinderx/PythonLib/test_cinderx/test_jit_tiering.py`
+  - `docs/superpowers/plans/2026-04-27-tiering-promotion-fallback-closure.md`
+
+- Behavior added:
+  - `Context` now stores each function's last tier transition separately from
+    the clearable telemetry event vector
+  - `jit.get_function_tier_info(func)` now returns:
+    - `active_tier`
+    - `has_baseline`
+    - `has_optimized`
+    - `is_deopted`
+    - `last_transition`
+  - `last_transition` is either `None` or a dictionary containing:
+    - `from_tier`
+    - `to_tier`
+    - `reason`
+
+- TDD red evidence:
+  - ARM path:
+    - `/root/work/cinderx-richards-fresh-20260414`
+  - test added:
+    - `test_function_tier_info_reports_deopt_state`
+  - command before production implementation:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering.TieringApiTests.test_function_tier_info_reports_deopt_state`
+  - result before implementation:
+    - failed with `KeyError: 'is_deopted'`
+    - the old API only returned `active_tier`, `has_baseline`, and
+      `has_optimized`
+
+- Verification:
+  - local harness:
+    - `python -m unittest cinderx.PythonLib.test_cinderx.test_jit_tiering -v`
+    - result:
+      - `OK (skipped=12)` when no local JIT extension is present
+  - ARM build:
+    - `CINDERX_DISABLE=1 /root/venv-cinderx314/bin/python -m build --wheel -n`
+    - result:
+      - `Successfully built cinderx-2026.4.27.0-cp314-cp314-linux_aarch64.whl`
+  - ARM targeted tests:
+    - `cd cinderx/PythonLib && /root/venv-cinderx314/bin/python -m unittest -v test_cinderx.test_jit_tiering`
+    - result:
+      - `Ran 12 tests in 0.420s`
+      - `OK`
+
+- Direct ARM deopt-all tier-info probe:
+  - cleared events before reading tier info:
+    - `1`
+  - info:
+    - `active_tier`: `interp`
+    - `has_baseline`: `True`
+    - `has_optimized`: `False`
+    - `is_deopted`: `True`
+    - `last_transition`: `baseline -> interp`, reason `disable_deopt_all`
+  - events:
+    - `('baseline', 'interp', 'disable_deopt_all')`
+
+- Direct ARM function-modified tier-info probe:
+  - result after replacing `helper.__code__`:
+    - `11`
+  - info:
+    - `active_tier`: `interp`
+    - `has_baseline`: `False`
+    - `has_optimized`: `False`
+    - `is_deopted`: `True`
+    - `last_transition`: `baseline -> interp`, reason `function_modified`
+  - events:
+    - `('baseline', 'interp', 'function_modified')`
+
+- Interpretation:
+  - the tier state surface now connects active tier, cached compiled tiers,
+    fallback/deopt status, and last transition reason in one API
+  - this materially advances the "tier state unified management" mainline, but
+    policy-level dependency invalidation remains a deeper follow-up because type
+    dependency patchers invalidate future execution rather than synchronously
+    deopting the function at modification time

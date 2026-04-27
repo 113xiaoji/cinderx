@@ -340,6 +340,7 @@ void Context::releaseReferences() {
   }
   references_.clear();
   type_deopt_patchers_.clear();
+  last_tier_transitions_.clear();
 }
 
 LoadAttrCache* Context::allocateLoadAttrCache() {
@@ -623,10 +624,15 @@ FunctionTierInfo Context::lookupFuncTierInfo(BorrowedRef<PyFunctionObject> func)
   ThreadedCompileSerialize guard;
   FunctionTierInfo info;
   info.active_tier = currentFuncTierUnlocked(func);
+  info.is_deopted = deopted_funcs_.contains(func);
   auto* versions = lookupCompiledVersions(CompilationKey{func});
   if (versions != nullptr) {
     info.has_baseline = versions->baseline != nullptr;
     info.has_optimized = versions->optimized != nullptr;
+  }
+  if (auto it = last_tier_transitions_.find(func);
+      it != last_tier_transitions_.end()) {
+    info.last_transition = it->second;
   }
   return info;
 }
@@ -684,6 +690,11 @@ void Context::updateLastTierTransitionReason(
        ++it) {
     if (it->func_qualname == fullname && it->to_tier == to_tier) {
       it->reason = reason;
+      last_tier_transitions_[func] = LastTierTransition{
+          it->from_tier,
+          it->to_tier,
+          reason,
+      };
       return;
     }
   }
@@ -743,6 +754,7 @@ void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
   compiled_func_tiers_.erase(func);
   baseline_tier_call_counts_.erase(func);
   deopted_funcs_.erase(func);
+  last_tier_transitions_.erase(func);
 
   // This doesn't modify compiled_codes_, so if this is a nested function it can
   // easily be reopted later.
@@ -840,6 +852,7 @@ void Context::recordTierTransition(
     TierTransitionReason reason) {
   tier_transition_events_.push_back(TierTransitionEvent{
       funcFullname(func), from_tier, to_tier, reason});
+  last_tier_transitions_[func] = LastTierTransition{from_tier, to_tier, reason};
 }
 
 #ifndef WIN32

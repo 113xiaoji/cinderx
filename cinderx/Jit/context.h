@@ -144,10 +144,18 @@ struct TierPromotionDecision {
   TierPromotionDecisionReason reason;
 };
 
+struct LastTierTransition {
+  FunctionTierState from_tier;
+  FunctionTierState to_tier;
+  TierTransitionReason reason;
+};
+
 struct FunctionTierInfo {
   FunctionTierState active_tier{FunctionTierState::kInterp};
   bool has_baseline{false};
   bool has_optimized{false};
+  bool is_deopted{false};
+  std::optional<LastTierTransition> last_transition;
 };
 
 struct CompiledFunctionVersions {
@@ -693,6 +701,8 @@ class Context : public IJitContext {
   UnorderedMap<BorrowedRef<PyFunctionObject>, CompileTier> compiled_func_tiers_;
   std::vector<TierTransitionEvent> tier_transition_events_;
   std::vector<TierPromotionDecision> tier_promotion_decisions_;
+  UnorderedMap<BorrowedRef<PyFunctionObject>, LastTierTransition>
+      last_tier_transitions_;
   UnorderedMap<BorrowedRef<PyFunctionObject>, std::uint64_t>
       baseline_tier_call_counts_;
 
