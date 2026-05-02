@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/preload.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "cinderx/Common/code.h"
 #include "cinderx/Common/dict.h"
@@ -36,13 +37,13 @@ static std::optional<OwnedType> infer_method_self_type_candidate(
   }
   const char* arg0_name = PyUnicode_AsUTF8(arg0_name_obj);
   if (arg0_name == nullptr || std::strcmp(arg0_name, "self") != 0) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return std::nullopt;
   }
 
   const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
   if (qualname == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return std::nullopt;
   }
   std::string_view qualname_view{qualname};
@@ -66,7 +67,7 @@ static std::optional<OwnedType> infer_method_self_type_candidate(
   if (owner_type->tp_flags & _Py_TPFLAGS_STATIC_BUILTIN) {
     PyInterpreterState* interp = PyInterpreterState_Get();
     if (interp == nullptr) {
-      PyErr_Clear();
+      clearPyErrIfPresent();
       return std::nullopt;
     }
     managed_static_type_state* state =
@@ -96,7 +97,7 @@ static bool is_named_other_arg(BorrowedRef<PyCodeObject> code, int arg_idx) {
   }
   const char* arg_name = PyUnicode_AsUTF8(arg_name_obj);
   if (arg_name == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   return std::strcmp(arg_name, "other") == 0;
@@ -186,6 +187,46 @@ static bool has_local_method_style_load_attr(BorrowedRef<PyCodeObject> code) {
     }
   }
   return false;
+}
+
+static bool is_small_one_arg_method_value_inline_candidate(
+    BorrowedRef<PyFunctionObject> func) {
+  BorrowedRef<PyCodeObject> code{func->func_code};
+  if (
+      code->co_argcount != 2 || code->co_kwonlyargcount != 0 ||
+      (code->co_flags & (CO_VARARGS | CO_VARKEYWORDS | kCoFlagsAnyGenerator)) !=
+          0) {
+    return false;
+  }
+
+  BorrowedRef<> arg0_name_obj{jit::getVarname(code, 0)};
+  if (!PyUnicode_CheckExact(arg0_name_obj)) {
+    return false;
+  }
+  const char* arg0_name = PyUnicode_AsUTF8(arg0_name_obj);
+  if (arg0_name == nullptr || std::strcmp(arg0_name, "self") != 0) {
+    clearPyErrIfPresent();
+    return false;
+  }
+
+  size_t opcodes = 0;
+  for ([[maybe_unused]] auto bc_instr : BytecodeInstructionBlock{code}) {
+    if (bc_instr.opcode() == RESUME) {
+      continue;
+    }
+#if PY_VERSION_HEX >= 0x030E0000
+    if (
+        bc_instr.opcode() == NOT_TAKEN ||
+        bc_instr.specializedOpcode() == NOT_TAKEN) {
+      continue;
+    }
+#endif
+    opcodes++;
+    if (opcodes > 16) {
+      return false;
+    }
+  }
+  return opcodes > 0;
 }
 
 static OwnedType resolve_type_descr(BorrowedRef<> descr) {
@@ -565,6 +606,24 @@ bool Preloader::preload() {
         }
         break;
       }
+#if PY_VERSION_HEX >= 0x030E0000
+      case LOAD_ATTR: {
+        if (bc_instr.specializedOpcode() != LOAD_ATTR_METHOD_WITH_VALUES) {
+          break;
+        }
+        PyObject* descr = bc_instr.cacheObj(6);
+        if (descr == nullptr || !PyFunction_Check(descr)) {
+          break;
+        }
+        BorrowedRef<PyFunctionObject> func{
+            reinterpret_cast<PyFunctionObject*>(descr)};
+        if (!is_small_one_arg_method_value_inline_candidate(func)) {
+          break;
+        }
+        method_value_functions_.emplace_back(func);
+        break;
+      }
+#endif
       case BUILD_CHECKED_LIST:
       case BUILD_CHECKED_MAP: {
         BorrowedRef<> descr = PyTuple_GetItem(constArg(bc_instr), 0);

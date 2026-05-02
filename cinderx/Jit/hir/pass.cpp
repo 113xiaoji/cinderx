@@ -95,6 +95,9 @@ Type returnType(Type callable) {
 }
 
 BorrowedRef<PyFunctionObject> sendCalleeFunction(const Send& send) {
+  if (send.NumOperands() == 0) {
+    return nullptr;
+  }
   Register* iterable = chaseAssignOperand(send.GetOperand(0));
   if (iterable == nullptr) {
     return nullptr;
@@ -205,6 +208,9 @@ std::optional<Type> inferSelfRecursiveCoroutineResultType(Function& func) {
 }
 
 std::optional<Type> sendResultType(const Send& send) {
+  if (send.NumOperands() == 0) {
+    return std::nullopt;
+  }
   Register* iterable = chaseAssignOperand(send.GetOperand(0));
   if (iterable == nullptr) {
     return std::nullopt;
@@ -246,7 +252,7 @@ std::optional<Type> sendResultType(const Send& send) {
 } // namespace
 
 Register* chaseAssignOperand(Register* value) {
-  while (value->instr()->IsAssign()) {
+  while (value != nullptr && value->instr()->IsAssign()) {
     value = value->instr()->GetOperand(0);
   }
   return value;

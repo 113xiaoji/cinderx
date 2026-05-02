@@ -21,6 +21,52 @@ namespace jit {
 
 AotContext g_aot_ctx;
 
+constexpr std::size_t kDefaultDeoptBudget = 16;
+constexpr std::size_t kCompileFailureBackoffThreshold = 1;
+
+const char* functionTierName(FunctionTier tier) {
+  switch (tier) {
+    case FunctionTier::kInterp:
+      return "interp";
+    case FunctionTier::kBaseline:
+      return "baseline";
+    case FunctionTier::kOptimized:
+      return "optimized";
+  }
+  JIT_ABORT("Unknown function tier {}", static_cast<int>(tier));
+}
+
+const char* tierPolicyStateName(TierPolicyState state) {
+  switch (state) {
+    case TierPolicyState::kReady:
+      return "ready";
+    case TierPolicyState::kCompileFailureCooldown:
+      return "compile_failure_cooldown";
+    case TierPolicyState::kDeoptBudgetExhausted:
+      return "deopt_budget_exhausted";
+  }
+  JIT_ABORT("Unknown tier policy state {}", static_cast<int>(state));
+}
+
+namespace {
+
+void clearPromotionBlock(FunctionTierState& state) {
+  state.promotion_blocked = false;
+  state.promotion_blocked_reason = "none";
+  state.policy_state = TierPolicyState::kReady;
+}
+
+void blockPromotion(
+    FunctionTierState& state,
+    TierPolicyState policy_state,
+    const char* reason) {
+  state.promotion_blocked = true;
+  state.promotion_blocked_reason = reason;
+  state.policy_state = policy_state;
+}
+
+} // namespace
+
 PyObject* yieldFromValue(
     GenDataFooter* gen_footer,
     const GenYieldPoint* yield_point) {
@@ -325,6 +371,8 @@ void Context::releaseReferences() {
   }
   references_.clear();
   type_deopt_patchers_.clear();
+  type_deopt_patcher_runtimes_.clear();
+  code_runtime_funcs_.clear();
 }
 
 LoadAttrCache* Context::allocateLoadAttrCache() {
@@ -366,9 +414,13 @@ const Builtins& Context::builtins() {
 
 void Context::watchType(
     BorrowedRef<PyTypeObject> type,
-    TypeDeoptPatcher* patcher) {
+    TypeDeoptPatcher* patcher,
+    CodeRuntime* code_runtime) {
   ThreadedCompileSerialize guard;
   type_deopt_patchers_[type].emplace_back(patcher);
+  if (code_runtime != nullptr) {
+    type_deopt_patcher_runtimes_[patcher] = code_runtime;
+  }
   if constexpr (PY_VERSION_HEX >= 0x030C0000) {
     // In 3.12 we require the interpreter state in order to watch types
     if (getThreadedCompileContext().compileRunning()) {
@@ -414,9 +466,18 @@ void Context::notifyTypeModified(
 
   std::vector<TypeDeoptPatcher*> remaining_patchers;
   for (TypeDeoptPatcher* patcher : it->second) {
+    bool was_patched = patcher->isPatched();
     if (!patcher->maybePatch(new_type)) {
       remaining_patchers.emplace_back(patcher);
+      continue;
     }
+
+    auto runtime_it = type_deopt_patcher_runtimes_.find(patcher);
+    if (!was_patched && patcher->isPatched() &&
+        runtime_it != type_deopt_patcher_runtimes_.end()) {
+      recordTypeInvalidation(runtime_it->second, "type_modified");
+    }
+    type_deopt_patcher_runtimes_.erase(patcher);
   }
 
   if (remaining_patchers.empty()) {
@@ -446,6 +507,7 @@ void Context::finalizeFunc(
     BorrowedRef<PyFunctionObject> func,
     const CompiledFunction& compiled) {
   ThreadedCompileSerialize guard;
+  bool was_baseline = baseline_funcs_.contains(func);
   if (!addCompiledFunc(func)) {
     // Someone else compiled the function between when our caller checked and
     // called us.
@@ -454,6 +516,17 @@ void Context::finalizeFunc(
 
   // In case the function had previously been deopted.
   removeDeoptedFunc(func);
+  FunctionTierState& state = tierStateFor(func);
+  state.active_tier = FunctionTier::kOptimized;
+  state.compiled = true;
+  state.deopted = false;
+  state.baseline_scheduled = false;
+  state.deopt_budget = kDefaultDeoptBudget;
+  clearPromotionBlock(state);
+  state.last_transition = was_baseline ? "baseline_to_optimized" : "optimized";
+  code_runtime_funcs_[compiled.runtime()].emplace(func);
+  baseline_funcs_.erase(func);
+  baseline_scheduled_funcs_.erase(func);
 
   setVectorcall(func, compiled.vectorcallEntry());
   if (hasFunctionEntryCache(func)) {
@@ -570,6 +643,15 @@ const UnorderedSet<BorrowedRef<PyFunctionObject>>& Context::deoptedFuncs() {
   return deopted_funcs_;
 }
 
+const UnorderedSet<BorrowedRef<PyFunctionObject>>& Context::baselineFuncs() {
+  return baseline_funcs_;
+}
+
+const UnorderedSet<BorrowedRef<PyFunctionObject>>&
+Context::baselineScheduledFuncs() {
+  return baseline_scheduled_funcs_;
+}
+
 void Context::addCompileTime(std::chrono::nanoseconds time) {
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(time);
   total_compile_time_ms_.fetch_add(ms.count(), std::memory_order_relaxed);
@@ -594,6 +676,12 @@ void Context::clearCache() {
 void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
   compiled_funcs_.erase(func);
   deopted_funcs_.erase(func);
+  baseline_funcs_.erase(func);
+  baseline_scheduled_funcs_.erase(func);
+  tier_states_.erase(func);
+  for (const CodeRuntime* runtime : forgetCodeRuntimeOwner(func)) {
+    forgetTypeDeoptPatchersForRuntime(runtime);
+  }
 
   // This doesn't modify compiled_codes_, so if this is a nested function it can
   // easily be reopted later.
@@ -610,18 +698,320 @@ CompiledFunction* Context::lookupCode(
 
 void Context::addDeoptedFunc(BorrowedRef<PyFunctionObject> func) {
   deopted_funcs_.emplace(func);
+  FunctionTierState& state = tierStateFor(func);
+  state.active_tier = FunctionTier::kInterp;
+  state.compiled = false;
+  state.deopted = true;
+  state.baseline_scheduled = false;
+  state.last_transition = "deopt";
 }
 
 void Context::removeDeoptedFunc(BorrowedRef<PyFunctionObject> func) {
   deopted_funcs_.erase(func);
+  tierStateFor(func).deopted = false;
+}
+
+bool Context::addBaselineFunc(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  if (compiled_funcs_.contains(func)) {
+    return false;
+  }
+  baseline_scheduled_funcs_.erase(func);
+  bool inserted = baseline_funcs_.emplace(func).second;
+  FunctionTierState& state = tierStateFor(func);
+  state.active_tier = FunctionTier::kBaseline;
+  state.baseline_scheduled = false;
+  state.compiled = false;
+  state.deopted = false;
+  state.last_transition = "baseline";
+  return inserted;
+}
+
+bool Context::removeBaselineFunc(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  bool removed = baseline_funcs_.erase(func) == 1;
+  if (removed) {
+    FunctionTierState& state = tierStateFor(func);
+    state.active_tier = FunctionTier::kInterp;
+    state.last_transition = "baseline_removed";
+  }
+  return removed;
+}
+
+bool Context::isBaselineFunc(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  return baseline_funcs_.contains(func);
+}
+
+bool Context::addBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  if (compiled_funcs_.contains(func) || baseline_funcs_.contains(func)) {
+    return false;
+  }
+  bool inserted = baseline_scheduled_funcs_.emplace(func).second;
+  FunctionTierState& state = tierStateFor(func);
+  state.active_tier = FunctionTier::kInterp;
+  state.baseline_scheduled = true;
+  state.compiled = false;
+  state.last_transition = "baseline_scheduled";
+  return inserted;
+}
+
+bool Context::removeBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  bool removed = baseline_scheduled_funcs_.erase(func) == 1;
+  if (removed) {
+    FunctionTierState& state = tierStateFor(func);
+    state.baseline_scheduled = false;
+    if (state.active_tier == FunctionTier::kInterp) {
+      state.last_transition = "baseline_unscheduled";
+    }
+  }
+  return removed;
+}
+
+bool Context::isBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  return baseline_scheduled_funcs_.contains(func);
+}
+
+void Context::clearBaselineScheduledTierState(const char* reason) {
+  ThreadedCompileSerialize guard;
+  for (BorrowedRef<PyFunctionObject> func : baseline_scheduled_funcs_) {
+    FunctionTierState& state = tierStateFor(func);
+    state.baseline_scheduled = false;
+    if (state.active_tier == FunctionTier::kInterp) {
+      state.last_transition = reason;
+    }
+  }
+  baseline_scheduled_funcs_.clear();
+}
+
+void Context::noteUncompiledFunc(
+    BorrowedRef<PyFunctionObject> func,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  compiled_funcs_.erase(func);
+  deopted_funcs_.erase(func);
+  baseline_funcs_.erase(func);
+  baseline_scheduled_funcs_.erase(func);
+  FunctionTierState& state = tierStateFor(func);
+  state.active_tier = FunctionTier::kInterp;
+  state.baseline_scheduled = false;
+  state.compiled = false;
+  state.deopted = false;
+  state.last_transition = reason;
+  for (const CodeRuntime* runtime : forgetCodeRuntimeOwner(func)) {
+    forgetTypeDeoptPatchersForRuntime(runtime);
+  }
+}
+
+void Context::clearBaselineTierState(const char* reason) {
+  ThreadedCompileSerialize guard;
+  for (BorrowedRef<PyFunctionObject> func : baseline_funcs_) {
+    FunctionTierState& state = tierStateFor(func);
+    state.active_tier = FunctionTier::kInterp;
+    state.baseline_scheduled = false;
+    state.compiled = false;
+    state.deopted = false;
+    state.last_transition = reason;
+  }
+  for (BorrowedRef<PyFunctionObject> func : baseline_scheduled_funcs_) {
+    FunctionTierState& state = tierStateFor(func);
+    state.baseline_scheduled = false;
+    if (state.active_tier == FunctionTier::kInterp) {
+      state.last_transition = reason;
+    }
+  }
+  baseline_funcs_.clear();
+  baseline_scheduled_funcs_.clear();
+}
+
+void Context::recordCompileFailure(
+    BorrowedRef<PyFunctionObject> func,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  FunctionTierState& state = tierStateFor(func);
+  state.compile_failures++;
+  state.last_compile_failure = reason;
+  state.last_fallback_reason = reason;
+  state.last_transition = "compile_failed";
+  if (state.compile_failures >= kCompileFailureBackoffThreshold) {
+    blockPromotion(
+        state,
+        TierPolicyState::kCompileFailureCooldown,
+        "compile_failure_cooldown");
+  }
+}
+
+bool Context::shouldAttemptOptimizedPromotion(
+    BorrowedRef<PyFunctionObject> func,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  FunctionTierState& state = tierStateFor(func);
+  state.last_promotion_reason = reason;
+  if (state.deopt_budget == 0 && !state.promotion_blocked) {
+    blockPromotion(
+        state,
+        TierPolicyState::kDeoptBudgetExhausted,
+        "deopt_budget_exhausted");
+  }
+  if (state.promotion_blocked) {
+    state.last_transition = "promotion_blocked";
+    return false;
+  }
+  return true;
+}
+
+void Context::recordPromotionAttempt(
+    BorrowedRef<PyFunctionObject> func,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  FunctionTierState& state = tierStateFor(func);
+  state.promotion_attempts++;
+  state.last_promotion_reason = reason;
+  state.last_transition = "promotion_attempt";
+}
+
+void Context::recordRuntimeFallback(
+    CodeRuntime* code_runtime,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  auto owners_it = code_runtime_funcs_.find(code_runtime);
+  if (owners_it == code_runtime_funcs_.end()) {
+    return;
+  }
+  for (BorrowedRef<PyFunctionObject> func : owners_it->second) {
+    FunctionTierState& state = tierStateFor(func);
+    state.runtime_fallbacks++;
+    state.last_fallback_reason = reason;
+    if (state.deopt_budget > 0) {
+      state.deopt_budget--;
+    }
+    if (state.deopt_budget == 0) {
+      blockPromotion(
+          state,
+          TierPolicyState::kDeoptBudgetExhausted,
+          "deopt_budget_exhausted");
+    }
+    state.last_transition = "runtime_fallback";
+  }
+}
+
+void Context::recordTypeInvalidation(
+    CodeRuntime* code_runtime,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  auto owners_it = code_runtime_funcs_.find(code_runtime);
+  if (owners_it == code_runtime_funcs_.end()) {
+    return;
+  }
+  for (BorrowedRef<PyFunctionObject> func : owners_it->second) {
+    FunctionTierState& state = tierStateFor(func);
+    state.invalidations++;
+    state.last_invalidation_reason = reason;
+    state.last_fallback_reason = reason;
+    state.last_transition = "type_invalidation";
+  }
+}
+
+bool Context::hasCodeRuntimeOwners(const CodeRuntime* code_runtime) {
+  ThreadedCompileSerialize guard;
+  auto owners_it = code_runtime_funcs_.find(code_runtime);
+  return owners_it != code_runtime_funcs_.end() && !owners_it->second.empty();
+}
+
+FunctionTierState Context::getFunctionTierState(
+    BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  FunctionTierState state;
+  auto state_it = tier_states_.find(func);
+  if (state_it != tier_states_.end()) {
+    state = state_it->second;
+  }
+  state.compiled = compiled_funcs_.contains(func);
+  state.deopted = deopted_funcs_.contains(func);
+  state.baseline_scheduled = baseline_scheduled_funcs_.contains(func);
+  if (state.compiled) {
+    state.active_tier = FunctionTier::kOptimized;
+  } else if (baseline_funcs_.contains(func)) {
+    state.active_tier = FunctionTier::kBaseline;
+  } else {
+    state.active_tier = FunctionTier::kInterp;
+  }
+  return state;
 }
 
 bool Context::addCompiledFunc(BorrowedRef<PyFunctionObject> func) {
-  return compiled_funcs_.emplace(func).second;
+  bool inserted = compiled_funcs_.emplace(func).second;
+  if (inserted) {
+    FunctionTierState& state = tierStateFor(func);
+    state.active_tier = FunctionTier::kOptimized;
+    state.compiled = true;
+    state.deopted = false;
+    state.baseline_scheduled = false;
+    state.last_transition = "optimized";
+  }
+  return inserted;
 }
 
 bool Context::removeCompiledFunc(BorrowedRef<PyFunctionObject> func) {
-  return compiled_funcs_.erase(func) == 1;
+  bool removed = compiled_funcs_.erase(func) == 1;
+  if (removed) {
+    FunctionTierState& state = tierStateFor(func);
+    state.compiled = false;
+    if (!baseline_funcs_.contains(func)) {
+      state.active_tier = FunctionTier::kInterp;
+    }
+    for (const CodeRuntime* runtime : forgetCodeRuntimeOwner(func)) {
+      forgetTypeDeoptPatchersForRuntime(runtime);
+    }
+  }
+  return removed;
+}
+
+FunctionTierState& Context::tierStateFor(BorrowedRef<PyFunctionObject> func) {
+  return tier_states_[func];
+}
+
+std::vector<const CodeRuntime*> Context::forgetCodeRuntimeOwner(
+    BorrowedRef<PyFunctionObject> func) {
+  std::vector<const CodeRuntime*> orphaned_runtimes;
+  for (auto it = code_runtime_funcs_.begin(); it != code_runtime_funcs_.end();) {
+    it->second.erase(func);
+    if (it->second.empty()) {
+      orphaned_runtimes.emplace_back(it->first);
+      it = code_runtime_funcs_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return orphaned_runtimes;
+}
+
+void Context::forgetTypeDeoptPatchersForRuntime(const CodeRuntime* runtime) {
+  if (runtime == nullptr) {
+    return;
+  }
+  for (auto it = type_deopt_patchers_.begin();
+       it != type_deopt_patchers_.end();) {
+    auto& patchers = it->second;
+    for (auto patcher_it = patchers.begin(); patcher_it != patchers.end();) {
+      auto runtime_it = type_deopt_patcher_runtimes_.find(*patcher_it);
+      if (runtime_it != type_deopt_patcher_runtimes_.end() &&
+          runtime_it->second == runtime) {
+        type_deopt_patcher_runtimes_.erase(runtime_it);
+        patcher_it = patchers.erase(patcher_it);
+      } else {
+        ++patcher_it;
+      }
+    }
+    if (patchers.empty()) {
+      it = type_deopt_patchers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 bool Context::addActiveCompile(CompilationKey& key) {

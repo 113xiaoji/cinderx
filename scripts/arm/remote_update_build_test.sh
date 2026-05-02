@@ -17,7 +17,9 @@ SMOKE_AUTOJIT="${SMOKE_AUTOJIT:-10}"
 PARALLEL="${PARALLEL:-1}"
 SKIP_PYPERF="${SKIP_PYPERF:-0}"
 SKIP_DEFAULT_PYPERF_GATES="${SKIP_DEFAULT_PYPERF_GATES:-0}"
+SKIP_PYPERF_SETUP="${SKIP_PYPERF_SETUP:-0}"
 RECREATE_PYPERF_VENV="${RECREATE_PYPERF_VENV:-0}"
+CLEAN_BUILD="${CLEAN_BUILD:-0}"
 AUTOJIT_GATE="${AUTOJIT_GATE:-$AUTOJIT}"
 AUTOJIT_USE_JITLIST_FILTER="${AUTOJIT_USE_JITLIST_FILTER:-1}"
 AUTOJIT_EXTRA_JITLIST="${AUTOJIT_EXTRA_JITLIST:-}"
@@ -49,6 +51,14 @@ if [[ "$SKIP_DEFAULT_PYPERF_GATES" != "0" && "$SKIP_DEFAULT_PYPERF_GATES" != "1"
   echo "ERROR: SKIP_DEFAULT_PYPERF_GATES must be 0 or 1, got '$SKIP_DEFAULT_PYPERF_GATES'"
   exit 1
 fi
+if [[ "$SKIP_PYPERF_SETUP" != "0" && "$SKIP_PYPERF_SETUP" != "1" ]]; then
+  echo "ERROR: SKIP_PYPERF_SETUP must be 0 or 1, got '$SKIP_PYPERF_SETUP'"
+  exit 1
+fi
+if [[ "$CLEAN_BUILD" != "0" && "$CLEAN_BUILD" != "1" ]]; then
+  echo "ERROR: CLEAN_BUILD must be 0 or 1, got '$CLEAN_BUILD'"
+  exit 1
+fi
 
 mkdir -p "$WORKDIR" "$INCOMING_DIR" /root/work/arm-sync
 
@@ -75,6 +85,11 @@ rm -rf "$stage" "$INCOMING_DIR/cinderx-update.tar"
 
 cd "$WORKDIR"
 export CMAKE_BUILD_PARALLEL_LEVEL="$PARALLEL"
+
+if [[ "$CLEAN_BUILD" == "1" ]]; then
+  echo ">> clean build artifacts"
+  rm -rf scratch/temp.linux-*-cpython-* scratch/lib.linux-*-cpython-* build
+fi
 
 echo ">> build wheel (CMAKE_BUILD_PARALLEL_LEVEL=$CMAKE_BUILD_PARALLEL_LEVEL)"
 "$PY" -m build --wheel
@@ -206,6 +221,11 @@ PY
 deactivate
 
 run_extra_cmd "extra verification command" "$EXTRA_VERIFY_CMD"
+
+if [[ "$SKIP_PYPERF_SETUP" == "1" ]]; then
+  echo "SKIP_PYPERF_SETUP=1 set; done before pyperformance venv setup."
+  exit 0
+fi
 
 echo ">> ensure pyperformance venv exists"
 . "$DRIVER_VENV/bin/activate"

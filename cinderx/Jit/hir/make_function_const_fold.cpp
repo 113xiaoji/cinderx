@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/make_function_const_fold.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "cinderx/Jit/deopt.h"
 #include "cinderx/Jit/hir/copy_propagation.h"
@@ -108,7 +109,7 @@ bool isConstFoldableGenexpr(const MakeFunction& make_func) {
   }
   const char* name = PyUnicode_AsUTF8(code->co_name);
   if (name == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   return std::strcmp(name, "<genexpr>") == 0 && isNullQualname(make_func);
@@ -138,7 +139,7 @@ void MakeFunctionConstFold::Run(Function& irfunc) {
       auto code = getMakeFunctionCode(make_func);
       auto func_obj = Ref<>::steal(PyFunction_New(code, make_func.frameState()->globals));
       if (func_obj == nullptr) {
-        PyErr_Clear();
+        clearPyErrIfPresent();
         continue;
       }
 

@@ -9,6 +9,8 @@ AUTOJIT="${AUTOJIT:-50}"
 OUTPUT="${OUTPUT:-/root/work/arm-sync/pyperf_subset.json}"
 CINDERX_ENABLE_SPECIALIZED_OPCODES="${CINDERX_ENABLE_SPECIALIZED_OPCODES:-1}"
 CINDERX_JITLIST_ENTRIES="${CINDERX_JITLIST_ENTRIES:-}"
+PYTHONJITINSTANCEVALUEMINLOCALS="${PYTHONJITINSTANCEVALUEMINLOCALS:-}"
+PYTHONJITEXACTMETHODCACHESPLIT="${PYTHONJITEXACTMETHODCACHESPLIT:-}"
 
 if [[ -z "$BENCHMARKS" ]]; then
   echo "ERROR: BENCHMARKS must be set"
@@ -35,13 +37,36 @@ PYVENV_PATH="$(
     sed -n 's/^Virtual environment path: \([^ ]*\).*$/\1/p'
 )"
 if [[ -z "$PYVENV_PATH" || ! -x "$PYVENV_PATH/bin/python" ]]; then
-  echo "ERROR: failed to resolve pyperformance venv path"
-  exit 2
+  fallback_path=""
+  if [[ -n "$PYVENV_PATH" ]]; then
+    fallback_path="/root/venv/$(basename "$PYVENV_PATH")"
+  fi
+  if [[ -n "$fallback_path" && -x "$fallback_path/bin/python" ]]; then
+    echo "pyperf_subset_venv_fallback=$fallback_path"
+    PYVENV_PATH="$fallback_path"
+  else
+    echo "ERROR: failed to resolve pyperformance venv path"
+    exit 2
+  fi
 fi
 
 echo "pyperf_subset_benchmarks=$BENCHMARKS"
 echo "pyperf_subset_samples=$SAMPLES"
 echo "pyperf_subset_output=$OUTPUT"
+
+inherit_env="PYTHONPATH,CINDERX_WORKER_PYTHONJITAUTO,CINDERX_ENABLE_SPECIALIZED_OPCODES,CINDERX_JITLIST_ENTRIES"
+extra_env=()
+add_optional_env() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ -n "$value" ]]; then
+    extra_env+=("$name=$value")
+    inherit_env+=",$name"
+  fi
+}
+
+add_optional_env PYTHONJITINSTANCEVALUEMINLOCALS
+add_optional_env PYTHONJITEXACTMETHODCACHESPLIT
 
 for ((i = 1; i <= SAMPLES; i++)); do
   out="$TMPDIR/run_${i}.json"
@@ -52,8 +77,9 @@ for ((i = 1; i <= SAMPLES; i++)); do
     PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" \
     CINDERX_ENABLE_SPECIALIZED_OPCODES="$CINDERX_ENABLE_SPECIALIZED_OPCODES" \
     CINDERX_JITLIST_ENTRIES="$CINDERX_JITLIST_ENTRIES" \
+    "${extra_env[@]}" \
     "$DRIVER_PY" -m pyperformance run --debug-single-value -b "$BENCHMARKS" \
-      --inherit-environ PYTHONPATH,CINDERX_WORKER_PYTHONJITAUTO,CINDERX_ENABLE_SPECIALIZED_OPCODES,CINDERX_JITLIST_ENTRIES \
+      --inherit-environ "$inherit_env" \
       -o "$out"
 done
 
@@ -73,8 +99,12 @@ rows = {}
 for path in sorted(tmpdir.glob("run_*.json")):
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
-    for bench in data.get("benchmarks", []):
+    for idx, bench in enumerate(data.get("benchmarks", [])):
         name = bench.get("metadata", {}).get("name")
+        if name is None and len(benchmarks) == 1:
+            # pyperformance may omit per-benchmark metadata for a single
+            # -b entry, even though the raw value is present.
+            name = benchmarks[0]
         if name is None:
             continue
         value = bench["runs"][0]["values"][0]

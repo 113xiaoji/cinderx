@@ -29,6 +29,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -95,6 +96,42 @@ using OSRStats =
 
 using InlineCacheStats = std::vector<CacheStats>;
 
+enum class FunctionTier {
+  kInterp,
+  kBaseline,
+  kOptimized,
+};
+
+const char* functionTierName(FunctionTier tier);
+
+enum class TierPolicyState {
+  kReady,
+  kCompileFailureCooldown,
+  kDeoptBudgetExhausted,
+};
+
+const char* tierPolicyStateName(TierPolicyState state);
+
+struct FunctionTierState {
+  FunctionTier active_tier{FunctionTier::kInterp};
+  TierPolicyState policy_state{TierPolicyState::kReady};
+  bool baseline_scheduled{false};
+  bool compiled{false};
+  bool deopted{false};
+  std::string last_transition{"none"};
+  std::size_t runtime_fallbacks{0};
+  std::string last_fallback_reason{"none"};
+  std::size_t deopt_budget{16};
+  std::size_t compile_failures{0};
+  std::string last_compile_failure{"none"};
+  std::size_t invalidations{0};
+  std::string last_invalidation_reason{"none"};
+  std::size_t promotion_attempts{0};
+  std::string last_promotion_reason{"none"};
+  bool promotion_blocked{false};
+  std::string promotion_blocked_reason{"none"};
+};
+
 class Builtins {
  public:
   void init();
@@ -160,6 +197,36 @@ class Context : public IJitContext {
    * Removes a function from the deopted functions set.
    */
   void removeDeoptedFunc(BorrowedRef<PyFunctionObject> func);
+
+  /*
+   * Track functions whose active tier is the baseline tier.  The current MVP
+   * baseline tier keeps execution on the interpreter entrypoint but gives the
+   * tier policy a per-function state to promote from.
+   */
+  bool addBaselineFunc(BorrowedRef<PyFunctionObject> func);
+  bool removeBaselineFunc(BorrowedRef<PyFunctionObject> func);
+  bool isBaselineFunc(BorrowedRef<PyFunctionObject> func);
+  bool addBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func);
+  bool removeBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func);
+  bool isBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func);
+  void clearBaselineScheduledTierState(const char* reason);
+  void noteUncompiledFunc(
+      BorrowedRef<PyFunctionObject> func,
+      const char* reason);
+  void clearBaselineTierState(const char* reason);
+  void recordCompileFailure(
+      BorrowedRef<PyFunctionObject> func,
+      const char* reason);
+  bool shouldAttemptOptimizedPromotion(
+      BorrowedRef<PyFunctionObject> func,
+      const char* reason);
+  void recordPromotionAttempt(
+      BorrowedRef<PyFunctionObject> func,
+      const char* reason);
+  void recordRuntimeFallback(CodeRuntime* code_runtime, const char* reason);
+  void recordTypeInvalidation(CodeRuntime* code_runtime, const char* reason);
+  bool hasCodeRuntimeOwners(const CodeRuntime* code_runtime);
+  FunctionTierState getFunctionTierState(BorrowedRef<PyFunctionObject> func);
 
   /*
    * Fully remove all effects of compilation from a function.
@@ -253,6 +320,12 @@ class Context : public IJitContext {
    * deopted.
    */
   const UnorderedSet<BorrowedRef<PyFunctionObject>>& deoptedFuncs();
+
+  /*
+   * Get a range over all function objects currently in the baseline tier.
+   */
+  const UnorderedSet<BorrowedRef<PyFunctionObject>>& baselineFuncs();
+  const UnorderedSet<BorrowedRef<PyFunctionObject>>& baselineScheduledFuncs();
 
   /*
    * Get the total time spent compiling functions thus far.
@@ -400,7 +473,10 @@ class Context : public IJitContext {
 
   // When type is modified or an instance of type has __class__ assigned to,
   // call patcher->maybePatch(new_ty).
-  void watchType(BorrowedRef<PyTypeObject> type, TypeDeoptPatcher* patcher);
+  void watchType(
+      BorrowedRef<PyTypeObject> type,
+      TypeDeoptPatcher* patcher,
+      CodeRuntime* code_runtime = nullptr);
 
   // Callback for when a type is modified or destroyed. lookup_type should be
   // the type that triggered the call (the type that's being
@@ -515,6 +591,8 @@ class Context : public IJitContext {
 
   std::unordered_map<BorrowedRef<PyTypeObject>, std::vector<TypeDeoptPatcher*>>
       type_deopt_patchers_;
+  std::unordered_map<TypeDeoptPatcher*, CodeRuntime*>
+      type_deopt_patcher_runtimes_;
 
   Ref<> zero_;
   Ref<> str_build_class_;
@@ -538,6 +616,33 @@ class Context : public IJitContext {
 
   /* Set of which functions were JIT-compiled but have since been deopted. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> deopted_funcs_;
+
+  /* Set of which functions are currently active in the baseline tier. */
+  UnorderedSet<BorrowedRef<PyFunctionObject>> baseline_funcs_;
+
+  /* Set of functions scheduled only for a future baseline-tier transition. */
+  UnorderedSet<BorrowedRef<PyFunctionObject>> baseline_scheduled_funcs_;
+
+  /*
+   * Per-function tier policy state. This intentionally mirrors the legacy sets
+   * during the migration so callers can observe one coherent lifecycle model
+   * without forcing a risky wholesale rewrite of tiering internals.
+   */
+  UnorderedMap<BorrowedRef<PyFunctionObject>, FunctionTierState> tier_states_;
+
+  /*
+   * Runtime deopt/invalidation events are keyed by CodeRuntime; keep best
+   * effort owner functions so they can update per-function tier state. A
+   * CodeRuntime can be re-attached to more than one function with the same code
+   * object, so telemetry fans out to all currently attached owners.
+   */
+  UnorderedMap<const CodeRuntime*, UnorderedSet<BorrowedRef<PyFunctionObject>>>
+      code_runtime_funcs_;
+
+  FunctionTierState& tierStateFor(BorrowedRef<PyFunctionObject> func);
+  std::vector<const CodeRuntime*> forgetCodeRuntimeOwner(
+      BorrowedRef<PyFunctionObject> func);
+  void forgetTypeDeoptPatchersForRuntime(const CodeRuntime* runtime);
 
   /*
    * Set of compilations that are currently active, across all threads.

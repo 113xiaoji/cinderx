@@ -1543,7 +1543,8 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         auto instr = static_cast<const FillTypeMethodCache*>(&i);
         Instruction* name = getNameFromIdx(bbb, instr);
         auto cache_entry = load_type_method_caches_.at(instr->cache_id());
-        if (getConfig().collect_attr_cache_stats) {
+        if (getConfig().collect_attr_cache_stats &&
+            !getThreadedCompileContext().compileRunning()) {
           BorrowedRef<PyCodeObject> code = instr->frameState()->code;
           cache_entry->initCacheStats(
               PyUnicode_AsUTF8(code->co_filename),
@@ -1564,7 +1565,8 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         auto instr = static_cast<const FillMethodCache*>(&i);
         Instruction* name = getNameFromIdx(bbb, instr);
         auto cache_entry = load_method_caches_.at(instr->cache_id());
-        if (getConfig().collect_attr_cache_stats) {
+        if (getConfig().collect_attr_cache_stats &&
+            !getThreadedCompileContext().compileRunning()) {
           BorrowedRef<PyCodeObject> code = instr->frameState()->code;
           cache_entry->initCacheStats(
               PyUnicode_AsUTF8(code->co_filename),
@@ -1644,7 +1646,8 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         hir::Register* base = instr->receiver();
         Instruction* name = getNameFromIdx(bbb, instr);
         auto cache = getContext()->allocateLoadMethodCache();
-        if (getConfig().collect_attr_cache_stats) {
+        if (getConfig().collect_attr_cache_stats &&
+            !getThreadedCompileContext().compileRunning()) {
           BorrowedRef<PyCodeObject> code = instr->frameState()->code;
           cache->initCacheStats(
               PyUnicode_AsUTF8(code->co_filename),

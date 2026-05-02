@@ -19,6 +19,7 @@ try:
         _deopt_gen,
         append_jit_list,
         auto,
+        baseline_compile_after_n_calls,
         clear_runtime_stats,
         compile_after_n_calls,
         count_interpreted_calls,
@@ -31,10 +32,12 @@ try:
         enable_hir_inliner,
         enable_specialized_opcodes,
         force_compile,
+        force_compile_baseline,
         force_uncompile,
         get_allocator_stats,
         get_and_clear_inline_cache_stats,
         get_and_clear_runtime_stats,
+        get_baseline_compile_after_n_calls,
         get_compilation_time,
         get_compile_after_n_calls,
         get_compiled_functions,
@@ -44,6 +47,8 @@ try:
         get_compiled_spill_stack_size,
         get_compiled_stack_size,
         get_function_compilation_time,
+        get_function_tier_state,
+        get_function_tier,
         get_function_hir_opcode_counts,
         get_inlined_functions_stats,
         get_jit_list,
@@ -88,6 +93,9 @@ except ImportError:
     def compile_after_n_calls(calls: int) -> None:
         return None
 
+    def baseline_compile_after_n_calls(calls: int | None) -> None:
+        return None
+
     def count_interpreted_calls(func: FuncAny) -> int:
         return 0
 
@@ -122,6 +130,9 @@ except ImportError:
     def force_compile(func: FuncAny) -> bool:
         return False
 
+    def force_compile_baseline(func: FuncAny) -> bool:
+        return False
+
     def force_uncompile(func: FuncAny) -> bool:
         return False
 
@@ -138,6 +149,9 @@ except ImportError:
         return 0
 
     def get_compile_after_n_calls() -> int | None:
+        return None
+
+    def get_baseline_compile_after_n_calls() -> int | None:
         return None
 
     def get_compiled_functions() -> list[FuncAny]:
@@ -160,6 +174,30 @@ except ImportError:
 
     def get_function_compilation_time(func: FuncAny) -> int:
         return 0
+
+    def get_function_tier_state(func: FuncAny) -> dict[str, object]:
+        return {
+            "active_tier": "interp",
+            "policy_state": "ready",
+            "baseline_scheduled": False,
+            "compiled": False,
+            "deopted": False,
+            "last_transition": "none",
+            "runtime_fallbacks": 0,
+            "last_fallback_reason": "none",
+            "deopt_budget": 16,
+            "compile_failures": 0,
+            "last_compile_failure": "none",
+            "invalidations": 0,
+            "last_invalidation_reason": "none",
+            "promotion_attempts": 0,
+            "last_promotion_reason": "none",
+            "promotion_blocked": False,
+            "promotion_blocked_reason": "none",
+        }
+
+    def get_function_tier(func: FuncAny) -> str:
+        return "interp"
 
     def get_function_hir_opcode_counts(func: FuncAny) -> dict[str, int] | None:
         return {}

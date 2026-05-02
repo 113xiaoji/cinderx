@@ -190,6 +190,14 @@ PyObject* JITRT_ListSlice(PyObject* list, PyObject* start, PyObject* stop);
  */
 int JITRT_ListPrefixReverseAssign(PyObject* list, PyObject* index);
 
+/*
+ * Fast path for `list[int_index] = value` on exact lists.
+ *
+ * Falls back to generic item assignment when operand types are not exact
+ * fast-path shapes. Returns 0 on success and -1 on error.
+ */
+int JITRT_SetListItemExactInt(PyObject* list, PyObject* index, PyObject* value);
+
 #if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
 /*
  * Exact-dict item lookup for try/except KeyError lowering.

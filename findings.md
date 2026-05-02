@@ -1658,13 +1658,13 @@ Interpretation:
   - `artifacts/arm/jit_api_probe/cpython_help_xoptions.txt`
 
 ### Runs executed
-- CinderX env (default):  
+- CinderX env (default):
   `/root/venv-cinderx314/bin/python /root/work/cinderx-main/scripts/arm/probe_jit_apis.py --label cinderx_default`
-- CinderX env (JIT vars):  
+- CinderX env (JIT vars):
   `PYTHONJIT=1 PYTHONJITAUTO=1 /root/venv-cinderx314/bin/python ... --label cinderx_jit_env`
-- CPython native (default):  
+- CPython native (default):
   `/opt/python-3.14/bin/python3.14 ... --label cpython_default`
-- CPython native (`PYTHON_JIT=1`):  
+- CPython native (`PYTHON_JIT=1`):
   `PYTHON_JIT=1 /opt/python-3.14/bin/python3.14 ... --label cpython_python_jit_1`
 
 ### Result summary
@@ -3062,8 +3062,6 @@ Interpretation:
 ### 为什么 meta 版本“看起来能生效”
 - 基于开源代码的推断：meta 环境通常在更热阶段编译，或默认统一开启 specialized-opcodes；因此更容易在编译时拿到已专门化字节码与类型守卫，触发 `DoubleBinaryOp` 下沉。
 - 当前分支若在编译时机或 specialized-opcode 开关上不满足条件，就会退回 helper 路径，看起来像“快路径没生效”。
- 
-
 ## 2026-03-03 richards LWF A/B (remote)
 - host: root@124.70.162.35
 - out_dir: /root/work/arm-sync/20260303_richards_lwf_compare
@@ -4024,7 +4022,6 @@ Conclusion:
   worker-startup verification problem (`jit was not enabled in the worker`)
   after the targeted tests and benchmark commands have already completed.
 
-<<<<<<< HEAD
 ## 2026-03-19 Issue 48: tomli_loads handled-subscript deopt loop
 
 ### Scope
@@ -4350,3 +4347,1365 @@ Conclusion:
     - final trust for this regression round comes from:
       - the clean `scratch/lib...` direct probes
       - the clean `scratch/lib...` benchmark reproduction
+## 2026-04-29 object-heavy performance slice: remote clean-build blocker
+
+- Trigger:
+  - remote entrypoint:
+    - `/root/work/incoming/remote_update_build_test.sh`
+  - attempted matrix:
+    - `richards`
+    - `go`
+    - `deltablue`
+    - `raytrace`
+  - command used `POST_PYPERF_CMD='BENCHMARKS=richards,go,deltablue,raytrace SAMPLES=3 AUTOJIT=50 OUTPUT=/root/work/arm-sync/object_matrix_current_20260429_1.json bash scripts/arm/run_pyperf_subset.sh'`
+- Result:
+  - CMake build completed
+  - wheel install completed far enough to reach import
+  - `_cinderx` import failed before tests/benchmark:
+    - `undefined symbol: _ZN3jit16TypeDeoptPatcherC1E11BorrowedRefI11_typeobjectE`
+- Root-cause evidence:
+  - source file exists remotely:
+    - `/root/work/cinderx-main/cinderx/Jit/type_deopt_patchers.cpp`
+  - build metadata includes it:
+    - `CMakeFiles/jit.dir/DependInfo.cmake`
+  - `nm -C scratch/temp.linux-aarch64-cpython-314/libjit.a` showed:
+    - unresolved old constructor:
+      - `U jit::TypeDeoptPatcher::TypeDeoptPatcher(BorrowedRef<_typeobject>)`
+    - stale object-defined different constructor:
+      - `T jit::TypeDeoptPatcher::TypeDeoptPatcher(BorrowedRef<_typeobject>, BorrowedRef<PyCodeObject>, BorrowedRef<PyDictObject>, BorrowedRef<PyDictObject>, std::string, std::string)`
+- Interpretation:
+  - this was not a benchmark result
+  - remote incremental build reused a stale object file whose source timestamp did not force recompilation after rsync
+- Follow-up action:
+  - add `CLEAN_BUILD=1` support to the standard remote entrypoint
+  - rerun the same validation through the entrypoint with clean build artifacts
+
+## 2026-04-29 object-heavy performance slice: pyperformance worker OSR crash
+
+- Trigger:
+  - standard remote entrypoint:
+    - `/root/work/incoming/remote_update_build_test.sh`
+  - pyperformance-style worker startup:
+    - `PYPERFORMANCE_RUNID=pyperf-probe`
+    - `CINDERX_WORKER_PYTHONJITAUTO=10`
+    - `PYTHONPATH=scripts/arm/pyperf_env_hook:...`
+- RED evidence:
+  - focused remote test:
+    - `ArmRuntimeTests.test_phase1_loop_osr_skips_pyperformance_startup_imports`
+  - pre-fix result:
+    - subprocess exited with return code `-11`
+  - faulthandler stack from direct worker probe:
+    - stdlib import path reached `typing.py`
+    - JIT stack included `hir::reflowTypes`, `hir::SSAify::Run`, `Compiler::runPasses`, `compilePreloaderImpl`, and `_PyJIT_TryHotLoopOSR`
+- Root cause:
+  - phase-1 same-activation hot-loop OSR was allowed to compile import-time stdlib loops during pyperformance worker startup
+  - that surface is outside the MVP support envelope and can crash before the benchmark itself starts
+- Fix:
+  - `_PyJIT_TryHotLoopOSR` now checks the function globals `__name__`
+  - phase-1 hot-loop OSR only attempts functions from `__main__`
+  - library/import-time loops return `0` and stay on the interpreter/non-OSR path
+- GREEN evidence:
+  - same focused test through the same remote entrypoint:
+    - `test_phase1_loop_osr_skips_pyperformance_startup_imports ... ok`
+    - `Ran 1 test in 0.094s`
+    - `OK`
+- Interpretation:
+  - this is a stability unblocker, not a throughput claim
+  - benchmark/user scripts still need positive OSR regression coverage and pyperformance matrix rerun before any performance conclusion
+- Follow-up positive OSR regression:
+  - focused remote tests:
+    - `test_phase1_once_call_hot_loop_enters_jit_same_activation`
+    - `test_phase1_loop_osr_skips_active_exception_shape`
+  - result:
+    - `Ran 2 tests in 0.077s`
+    - `OK`
+  - interpretation:
+    - top-level benchmark/user-code same-activation OSR still works after the `__main__` gate
+    - the active-exception-shape guard remains intact
+
+## 2026-04-29 object-heavy performance slice: Richards method-loop OSR crash
+
+- Trigger:
+  - object-workload matrix through `/root/work/incoming/remote_update_build_test.sh`
+  - first benchmark worker:
+    - `bm_richards`
+  - pyperf worker exited with:
+    - `exit code -11`
+- Diagnostic reproduction:
+  - direct diagnostic rerun with `PYTHONFAULTHANDLER=1`
+  - failing stack:
+    - `run_benchmark.py:364 in schedule`
+    - `run_benchmark.py:369 in schedule`
+    - `run_benchmark.py:408 in run`
+    - C stack entered `_Py_HandlePending` from generated code
+- Root-cause evidence:
+  - `schedule()` compiled OSR metadata:
+    - `bc_offset = 34`
+    - one live local:
+      - `local_index = 0`
+      - `location = 20` (`X20`)
+  - HIR opcode counts for `schedule()` include method/object-heavy operations:
+    - `CallMethod = 2`
+    - `LoadAttr = 1`
+    - `LoadAttrCached = 1`
+    - `LoadMethodCached = 2`
+    - `DeoptPatchpoint = 1`
+  - phase-1 same-activation OSR currently invokes the phase-0 test entry, which restores Python locals but does not have metadata for all non-Python live internal values such as pinned `tstate`
+- RED evidence:
+  - added focused remote regression:
+    - `ArmRuntimeTests.test_phase1_loop_osr_richards_method_loop_does_not_crash`
+  - pre-fix result:
+    - failed with `AssertionError: -11 != 0`
+    - stderr contained the same `schedule()` / `_Py_HandlePending` segfault stack
+- Fix:
+  - added a `supportsPhase1HotLoopOSR()` policy gate
+  - same-activation OSR remains enabled for leaf loops
+  - call/method/attr/deopt-patchpoint functions now return `0` from `_PyJIT_TryHotLoopOSR` and continue safely without the fragile OSR adapter
+- GREEN evidence:
+  - focused Richards regression:
+    - `test_phase1_loop_osr_richards_method_loop_does_not_crash ... ok`
+    - `Ran 1 test in 0.240s`
+    - `OK`
+  - combined phase-1 OSR set:
+    - `test_phase1_once_call_hot_loop_enters_jit_same_activation ... ok`
+    - `test_phase1_loop_osr_skips_active_exception_shape ... ok`
+    - `test_phase1_loop_osr_skips_pyperformance_startup_imports ... ok`
+    - `test_phase1_loop_osr_richards_method_loop_does_not_crash ... ok`
+    - `Ran 4 tests in 0.413s`
+    - `OK`
+- Interpretation:
+  - this is a correctness/stability fallback, not a performance win
+  - it clarifies that phase-1 OSR MVP is safe for leaf loops but not yet a general object-loop OSR adapter
+  - object workload performance work should continue with non-OSR optimizations until full OSR live-state metadata exists
+
+## 2026-04-29 object-heavy performance slice: low-local instance-value attempt
+
+- Goal:
+  - test whether lowering the `LOAD_ATTR_INSTANCE_VALUE` local-count gate can improve object-heavy pyperformance workloads by specializing more instance attribute reads
+  - candidate knob:
+    - `PYTHONJITINSTANCEVALUEMINLOCALS=1`
+- First RED evidence:
+  - object matrix with the knob aborted before producing benchmark numbers
+  - pyperformance workers hit:
+    - `JIT: ... cinderx/Jit/stack.h:19 -- Assertion failed: !stack_.empty()`
+    - `Can't pop from empty stack`
+    - exit code `-6`
+- Root cause:
+  - Python 3.14 `LOAD_ATTR` uses the low bit of the oparg for method-call stack shape
+  - the `LOAD_ATTR_INSTANCE_VALUE` lowering ignored `is_method` and pushed only one plain attribute value
+  - following `CALL` lowering expected the existing two-value `LoadMethod + GetSecondOutput` stack shape
+- Regression test:
+  - `ArmRuntimeTests.test_instance_value_method_attr_shape_falls_back`
+  - RED through `/root/work/incoming/remote_update_build_test.sh`:
+    - failed with subprocess return code `-6`
+    - stderr contained `Can't pop from empty stack`
+- Fix:
+  - `LOAD_ATTR_INSTANCE_VALUE` now falls back to the generic method path when `is_method` is true
+  - plain attribute reads can still use the instance-value fast path
+- GREEN evidence:
+  - focused remote entrypoint run:
+    - `test_instance_value_method_attr_shape_falls_back ... ok`
+    - `Ran 1 test in 0.358s`
+    - `OK`
+- Matrix evidence after the fix:
+  - baseline file:
+    - `/root/work/arm-sync/object_matrix_current_after_osr_leaf_gate_20260429_1.json`
+  - candidate file:
+    - `/root/work/arm-sync/object_matrix_iv_minlocals1_after_method_fallback_20260429_1.json`
+  - `AUTOJIT=50`, `SAMPLES=3`, benchmarks:
+    - `deltablue`: baseline median `0.09192227599851321s`, candidate `0.10004417100572027s`, about `8.8%` slower
+    - `go`: baseline median `0.18278077200011467s`, candidate `0.18882352900254773s`, about `3.3%` slower
+    - `raytrace`: baseline median `0.5886780619985075s`, candidate `0.5699919469989254s`, about `3.2%` faster
+    - `richards`: baseline median `0.11665852400255972s`, candidate `0.22533620600006543s`, about `93.2%` slower
+- Decision:
+  - keep the method-shape correctness fix and benchmark env pass-through
+  - do not change the default instance-value local-count threshold based on this data
+  - lowering the threshold broadly specializes too many low-local object loops and creates severe regressions, especially Richards
+
+## 2026-04-29 object-heavy performance slice: exact method cache split matrix
+
+- Goal:
+  - re-check the existing env-gated exact managed-dict method-cache split on the full object-heavy matrix, not just Richards
+  - candidate knob:
+    - `PYTHONJITEXACTMETHODCACHESPLIT=1`
+- Harness change:
+  - `scripts/arm/run_pyperf_subset.sh` now passes through optional pyperformance worker env vars via a small `add_optional_env` helper
+  - this lets matrix runs inherit:
+    - `PYTHONJITINSTANCEVALUEMINLOCALS`
+    - `PYTHONJITEXACTMETHODCACHESPLIT`
+- Correctness evidence:
+  - focused remote entrypoint run:
+    - `test_exact_method_cache_split_respects_instance_shadowing ... ok`
+    - `Ran 1 test in 3.271s`
+    - `OK`
+- Matrix evidence:
+  - baseline file:
+    - `/root/work/arm-sync/object_matrix_current_after_osr_leaf_gate_20260429_1.json`
+  - candidate file:
+    - `/root/work/arm-sync/object_matrix_exactmethodsplit_20260429_1.json`
+  - `AUTOJIT=50`, `SAMPLES=3`, benchmarks:
+    - `deltablue`: baseline median `0.09192227599851321s`, candidate `0.09500566499627894s`, about `3.4%` slower
+    - `go`: baseline median `0.18278077200011467s`, candidate `0.19336685499729356s`, about `5.8%` slower
+    - `raytrace`: baseline median `0.5886780619985075s`, candidate `0.5885913480015006s`, effectively neutral
+    - `richards`: baseline median `0.11665852400255972s`, candidate `0.11878468000213616s`, about `1.8%` slower
+- Decision:
+  - do not enable exact method cache split by default for this object workload slice
+  - the added benchmark env pass-through is useful for controlled experiments, but the feature itself is not a throughput-positive default
+  - next search should focus on narrower state-update shapes such as safe existing-field `STORE_ATTR`, where deltablue/richards have more direct object-state churn
+
+## 2026-05-01 object-heavy performance slice: instance-value STORE_ATTR direct field lowering
+
+- Goal:
+  - optimize the state-update side of object-heavy workloads after broad instance-value read specialization and exact-method cache split were both rejected
+  - target specialized opcode:
+    - `STORE_ATTR_INSTANCE_VALUE`
+- Rejected first implementation:
+  - candidate lowered `STORE_ATTR_INSTANCE_VALUE` to a new runtime helper opcode
+  - focused correctness passed, but object matrix regressed overall against the 2026-04-29 baseline:
+    - result file:
+      - `/root/work/arm-sync/object_matrix_storeattr_instance_value_20260501_1.json`
+    - `deltablue`: `0.09192227599851321s` -> `0.09222283500002959s`, about `0.3%` slower
+    - `go`: `0.18278077200011467s` -> `0.1879958429999533s`, about `2.9%` slower
+    - `raytrace`: `0.5886780619985075s` -> `0.5657368749998568s`, about `3.9%` faster
+    - `richards`: `0.11665852400255972s` -> `0.12119885800029806s`, about `3.9%` slower
+  - decision:
+    - do not keep the helper path as a default optimization
+    - replacing an inline field store with a runtime helper call is the wrong direction for throughput
+- TDD RED for the replacement design:
+  - changed `ArmRuntimeTests.test_instance_value_specialized_opcodes_lower_to_field_ops` to require:
+    - at least one `LoadField`
+    - at least one `StoreField`
+    - zero `StoreAttrInstanceValue`
+    - zero attr-cache fallback ops
+  - RED through `/root/work/incoming/remote_update_build_test.sh`:
+    - failed with `AssertionError: 0 not greater than or equal to 1`
+    - observed counts showed `LoadField=4`, `StoreField=0`, `StoreAttrInstanceValue=1`
+- Production fix:
+  - `STORE_ATTR_INSTANCE_VALUE` now lowers to the existing direct field store shape:
+    - type-version guard on `tp_version_tag`
+    - split-dict inline-values-valid guard
+    - `LoadField` of the previous value
+    - `CheckField` to deopt on missing/null previous value
+    - `StoreField` with previous-value refcount handling
+  - the new helper opcode/runtime plumbing was removed
+  - an unused `builder.cpp` lambda left by this slice was removed after the compiler warning surfaced in remote logs
+- GREEN evidence:
+  - focused remote entrypoint run after the direct-field change and warning cleanup:
+    - `test_slot_specialized_opcodes_lower_to_field_ops ... ok`
+    - `test_instance_value_specialized_opcodes_lower_to_field_ops ... ok`
+    - `Ran 2 tests in 9.854s`
+    - `OK`
+- Harness fix:
+  - `scripts/arm/run_pyperf_subset.sh` now falls back from a missing workdir pyperformance venv path to the matching `/root/venv/<name>` path when available
+  - this unblocked `SKIP_PYPERF_SETUP=1` matrix runs through the standard remote entrypoint
+- Matrix evidence, current code / current harness:
+  - specialized-opcodes on:
+    - result file:
+      - `/root/work/arm-sync/object_matrix_storeattr_direct_field_20260501_1.json`
+    - `deltablue`: median `0.0037161250002100132s`
+    - `go`: median `0.1261159489995407s`
+    - `raytrace`: median `0.3556534240005931s`
+    - `richards`: median `0.0524159390006389s`
+  - specialized-opcodes off:
+    - result file:
+      - `/root/work/arm-sync/object_matrix_storeattr_direct_field_nospec_20260501_1.json`
+    - `deltablue`: median `0.0037337559997467906s`
+    - `go`: median `0.12635677300022508s`
+    - `raytrace`: median `0.35613121000005776s`
+    - `richards`: median `0.05176167399986298s`
+  - same-harness comparison:
+    - `deltablue`: specialized on is about `0.47%` faster
+    - `go`: specialized on is about `0.19%` faster
+    - `raytrace`: specialized on is about `0.13%` faster
+    - `richards`: specialized on is about `1.26%` slower
+- Interpretation:
+  - direct field lowering is correctness-clean and avoids the rejected helper-call overhead
+  - the current specialized-opcode stack shows small same-harness gains on three of four object-heavy benchmarks, but not enough to claim a large standalone win for this single STORE_ATTR change
+  - old 2026-04-29 medians are not used for causal performance claims here because code state and pyperformance venv behavior changed substantially
+- Next:
+  - continue the search with a higher-leverage hot path than existing-value `STORE_ATTR_INSTANCE_VALUE`
+  - prioritize candidates that affect method calls, Python-call overhead, or richards/go loop bodies rather than adding more tiny attr-access micro-optimizations
+
+## 2026-05-01 object-heavy performance slice: exact list append direct lowering
+
+- Goal:
+  - remove a remaining generic `CallMethod` shape for Python 3.14's exact `list.append` bytecode pair
+  - target specialized opcode:
+    - `CALL_LIST_APPEND`
+- Baseline HIR evidence:
+  - a focused `append_once(todo, value)` probe on an exact builtin list lowered to:
+    - `CallMethod = 1`
+    - `ListAppend = 0`
+    - `LoadMethodCached = 1`
+  - a direct `go` hotspot probe showed `UCTNode.play` still had list-append-shaped call overhead:
+    - `ListAppend = 0`
+    - `CallMethod = 7`
+- TDD RED:
+  - added `ArmRuntimeTests.test_exact_list_append_eliminates_callmethod`
+  - RED through `/root/work/incoming/remote_update_build_test.sh` failed as expected:
+    - `AssertionError: 1 != 0 : 1 0 10001`
+    - meaning `CallMethod = 1`, `ListAppend = 0`, result correctness intact
+- Production fix:
+  - `CALL_LIST_APPEND` now lowers in `HIRBuilder::emitAnyCall` when specialized opcodes are enabled, `oparg == 1`, and the call is not keyword-shaped
+  - the lowering:
+    - pops the append item and list receiver
+    - discards the cached `list.append` callable stack entry
+    - refines the receiver to `TList`
+    - emits `ListAppend`
+    - pushes `None` to preserve the Python call result shape for following `POP_TOP`
+- GREEN evidence:
+  - focused remote entrypoint run:
+    - `test_exact_list_append_eliminates_callmethod ... ok`
+    - `test_list_subclass_append_eliminates_callmethod ... ok`
+    - `Ran 2 tests in 0.476s`
+    - `OK`
+  - direct `go:UCTNode.play` HIR probe after the change:
+    - `ListAppend = 2`
+    - `CallMethod = 5`
+    - `VectorCall = 6`
+    - `LoadMethodCached = 7`
+  - interpretation:
+    - the two exact-list appends in that function now hit the existing `ListAppend` opcode instead of generic `CallMethod`
+- Matrix evidence:
+  - result file:
+    - `/root/work/arm-sync/object_matrix_listappend_direct_20260501_1.json`
+  - `AUTOJIT=50`, `SAMPLES=3`, benchmarks:
+    - `deltablue`: median `0.003721944000062649s`
+    - `go`: median `0.12631890500051668s`
+    - `raytrace`: median `0.3556532749998951s`
+    - `richards`: median `0.05191665300026216s`
+  - compared to `/root/work/arm-sync/object_matrix_storeattr_direct_field_20260501_1.json`:
+    - `deltablue`: about `0.16%` slower
+    - `go`: about `0.16%` slower
+    - `raytrace`: effectively neutral
+    - `richards`: about `0.95%` faster
+- Decision:
+  - keep the shape/correctness improvement under consideration, but do not treat it as a standalone benchmark win
+  - continue searching for a hotter method-call or Python-call path because this optimization improves HIR shape but only produces a mixed/noisy pyperformance signal
+
+## 2026-05-01 object-heavy performance slice: tiny bool predicate method lowering
+
+- Goal:
+  - remove Python method-call overhead for Richards-style tiny zero-arg state predicates:
+    - `self.packet_pending and self.task_waiting and not self.task_holding`
+    - `self.task_holding or (not self.packet_pending and self.task_waiting)`
+- TDD RED:
+  - `ArmRuntimeTests.test_tiny_bool_predicate_method_eliminates_branch_callmethod`
+  - focused remote run initially failed with `CallMethod = 1` in both hot callers, proving the new test was detecting the missing optimization.
+- Root causes found during implementation:
+  - Python 3.14 `RESUME_CHECK` can appear with the extended-opcode bit, so the tiny-method classifier initially failed to skip it.
+  - The actual hot HIR shape was not simply `CondBranch(IsTruthy(CallMethod))`; it was a profiled method fast path using `VectorCall` plus a fallback `CallMethod`, joined through a `Phi`.
+  - A first recursive conditional CFG emitter produced invalid `Phi` predecessors and failed during compilation.
+  - Generated fast/miss blocks needed `Snapshot(frame)` so guard/refcount insertion could bind frame state safely.
+- Production fix:
+  - classify exact tiny bool predicate bytecode patterns in `cinderx/Jit/hir/simplify.cpp`
+  - guard exact receiver types, split-dict keys, and bool field values
+  - lower matching profiled `VectorCall` and fallback `CallMethod` shapes to direct field reads and a boxed boolean result
+- Regression evidence:
+  - remote ARM entrypoint command used `/root/work/incoming/remote_update_build_test.sh`
+  - 13 targeted tests passed:
+    - `Ran 13 tests in 18.357s`
+    - `OK`
+- Benchmark evidence:
+  - result file:
+    - `/root/work/arm-sync/object_matrix_tiny_bool_predicate_20260501_1.json`
+  - `AUTOJIT=50`, `SAMPLES=3`
+  - medians:
+    - `deltablue`: `0.0037095240004418883s`
+    - `go`: `0.12683104900133912s`
+    - `raytrace`: `0.3541596559989557s`
+    - `richards`: `0.052140922998660244s`
+  - compared with `/root/work/arm-sync/object_matrix_storeattr_direct_field_20260501_1.json`:
+    - `deltablue`: about `0.18%` faster
+    - `go`: about `0.57%` slower
+    - `raytrace`: about `0.42%` faster
+    - `richards`: about `0.53%` faster
+  - compared with `/root/work/arm-sync/object_matrix_listappend_direct_20260501_1.json`:
+    - `deltablue`: about `0.33%` faster
+    - `go`: about `0.41%` slower
+    - `raytrace`: about `0.42%` faster
+    - `richards`: about `0.43%` slower
+- Verification-chain note:
+  - a first matrix attempt failed before build because `/root/work/incoming/cinderx-update.tar` was missing
+  - the corrected run re-uploaded the tarball and entrypoint before invoking the same remote entrypoint
+- Decision:
+  - this is a correctness-clean HIR-shape improvement, but it is still a small/mixed throughput signal
+  - do not stop here; continue looking for a hotter object method/call optimization, especially in `go` and `richards`
+
+## 2026-05-01 object-heavy performance slice: exact list/int STORE_SUBSCR lowering
+
+- Goal:
+  - optimize `go`-like state-graph updates where exact builtin lists are updated with exact integer indexes
+  - target specialized opcode:
+    - `STORE_SUBSCR_LIST_INT`
+- TDD RED:
+  - added `ArmRuntimeTests.test_list_int_store_subscr_lowers_to_callstatic_helper`
+  - remote focused run through `/root/work/incoming/remote_update_build_test.sh` failed as expected before production support:
+    - `AssertionError: 2 != 0`
+    - observed counts:
+      - `StoreSubscr = 2`
+      - `CallStatic = 0`
+    - correctness probes still returned the expected values, proving the failure was about the missing lowering
+- Production fix:
+  - `BytecodeInstruction::specializedOpcode()` now preserves `STORE_SUBSCR_LIST_INT`
+  - `HIRBuilder::emitStoreSubscr` guards list/int store-subscript specialized forms with:
+    - `TListExact`
+    - `TLongExact`
+  - `simplifyStoreSubscr` rewrites guarded exact list/int stores to:
+    - `CallStatic(JITRT_SetListItemExactInt)`
+    - `Snapshot`
+    - `CheckNeg`
+  - `JITRT_SetListItemExactInt` handles exact-list exact-long assignment, negative indexes, out-of-range `IndexError`, and previous-value refcount replacement
+- Crash/root-cause evidence:
+  - after enabling the bytecode whitelist, the focused test crashed at `jit.force_compile(set_pair)` with return code `-11`
+  - faulthandler/C-stack pointed at:
+    - `RefcountInsertion::Run`
+    - `DeoptBase::setFrameState`
+    - `FrameState copy`
+  - HIR diagnostics showed array slow-path blocks beginning with `GuardType` without a same-block `Snapshot`
+  - root cause:
+    - the slow-path block created in `HIRBuilder::emitStoreSubscr` did not emit a snapshot before specialized guards, so guard/deopt binding could not attach a valid frame state
+  - fix:
+    - emit `Snapshot(tc.frame)` immediately after entering the array slow-path block
+    - emit snapshots before `CheckNeg` for non-replayable store-subscript helper calls in `simplifyStoreSubscr`
+- GREEN evidence:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`
+  - focused test:
+    - `test_list_int_store_subscr_lowers_to_callstatic_helper ... ok`
+    - `Ran 1 test in 0.050s`
+    - `OK`
+- Broader regression evidence:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`
+  - object/JIT focused suite covered:
+    - `STORE_SUBSCR_LIST_INT`
+    - exact list append lowering
+    - instance-value direct field lowering
+    - tiny bool/getter/return-self method lowering
+    - phase-1 OSR safety gates
+  - result:
+    - `Ran 14 tests in 18.404s`
+    - `OK`
+- Matrix evidence:
+  - result file:
+    - `/root/work/arm-sync/object_matrix_list_store_int_20260501_1.json`
+  - `AUTOJIT=50`, `SAMPLES=3`
+  - medians:
+    - `deltablue`: `0.0037232350005069748s`
+    - `go`: `0.12654143699910492s`
+    - `raytrace`: `0.3543507650028914s`
+    - `richards`: `0.05217049199927715s`
+  - compared with `/root/work/arm-sync/object_matrix_tiny_bool_predicate_20260501_1.json`:
+    - `deltablue`: about `0.37%` slower
+    - `go`: about `0.23%` faster
+    - `raytrace`: about `0.05%` slower
+    - `richards`: about `0.06%` slower
+  - compared with `/root/work/arm-sync/object_matrix_listappend_direct_20260501_1.json`:
+    - `deltablue`: about `0.04%` slower
+    - `go`: about `0.18%` slower
+    - `raytrace`: about `0.37%` faster
+    - `richards`: about `0.49%` slower
+  - compared with `/root/work/arm-sync/object_matrix_storeattr_direct_field_20260501_1.json`:
+    - `deltablue`: about `0.19%` slower
+    - `go`: about `0.34%` slower
+    - `raytrace`: about `0.37%` faster
+    - `richards`: about `0.47%` faster
+- Current decision:
+  - correctness and crash root-cause are addressed for the focused shape
+  - do not claim a material performance win from this lowering alone
+  - the next optimization should target higher-frequency Python method/function-call overhead rather than another narrow store-subscript micro-path
+
+## 2026-05-01 object-heavy performance slice: tiny bool state-mutator return-self lowering
+
+- Goal:
+  - remove Python method-call overhead for Richards-style state transitions:
+    - `self.task_waiting = True; return self`
+    - `self.packet_pending = True; self.task_waiting = False; self.task_holding = False; return self`
+    - `self.packet_pending = False; self.task_waiting = False; self.task_holding = False; return self`
+- Design:
+  - only match zero-arg methods that store exact bool constants to split-dict instance fields and return `self`
+  - guard method identity, receiver type dispatch, split-dict keys version, inline-values validity, and existing field presence before emitting direct `StoreField`
+  - keep instance method shadowing semantics through split-dict shadow/key invalidation checks
+- TDD RED:
+  - added `ArmRuntimeTests.test_tiny_bool_state_mutator_eliminates_callmethod`
+  - remote focused run through `/root/work/incoming/remote_update_build_test.sh` failed as expected:
+    - `AssertionError: 3 != 0`
+    - observed test output:
+      - `CallMethod = 3`
+      - `StoreField = 0`
+      - correctness outputs still `0`, `4`, `6`, `4`
+- Implementation note:
+  - first GREEN attempt failed at C++ compile time because `unicodeAsString()` returns `std::string`, not `const char*`
+  - fixed the type mismatch and reran the same remote entrypoint
+- GREEN evidence:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`
+  - focused test:
+    - `test_tiny_bool_state_mutator_eliminates_callmethod ... ok`
+    - `Ran 1 test in 0.756s`
+    - `OK`
+- Broader regression evidence:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`
+  - object/JIT focused suite included the new mutator test plus list-store, list-append, direct-field, tiny predicate/getter/return-self, and OSR safety tests
+  - result:
+    - `Ran 15 tests in 19.117s`
+    - `OK`
+- Harness fix:
+  - a first Richards-only benchmark wrote an empty summary:
+    - `/root/work/arm-sync/richards_tiny_bool_mutator_20260501_1.json`
+    - `benchmarks: []`
+  - root cause:
+    - pyperformance may omit per-benchmark `metadata.name` for a single `-b richards` raw output
+    - `scripts/arm/run_pyperf_subset.sh` previously skipped unnamed raw entries
+  - fix:
+    - if `BENCHMARKS` contains exactly one benchmark and `metadata.name` is missing, use the requested benchmark name while summarizing
+- Richards-first benchmark evidence:
+  - result file:
+    - `/root/work/arm-sync/richards_tiny_bool_mutator_20260501_2.json`
+  - `AUTOJIT=50`, `SAMPLES=5`
+  - samples:
+    - `0.05213113099671318`
+    - `0.05266620600013994`
+    - `0.052575110999896424`
+    - `0.05166409099911107`
+    - `0.05198106100215227`
+  - median:
+    - `0.05213113099671318s`
+  - comparison notes:
+    - about `0.08%` faster than `/root/work/arm-sync/object_matrix_list_store_int_20260501_1.json`
+    - about `0.02%` faster than `/root/work/arm-sync/object_matrix_tiny_bool_predicate_20260501_1.json`
+    - about `0.41%` slower than `/root/work/arm-sync/object_matrix_listappend_direct_20260501_1.json`
+    - about `0.54%` faster than `/root/work/arm-sync/object_matrix_storeattr_direct_field_20260501_1.json`
+- Current decision:
+  - focused correctness and the intended HIR shape are green
+  - Richards-only timing is still too close to noise to claim a material win
+  - run the full object-heavy matrix to check combined signal and side effects
+
+## 2026-05-01 object-heavy performance slice: tiny bool mutator full matrix
+
+- Full matrix result file:
+  - `/root/work/arm-sync/object_matrix_tiny_bool_mutator_20260501_1.json`
+- Remote entrypoint:
+  - `/root/work/incoming/remote_update_build_test.sh`
+- Matrix settings:
+  - `AUTOJIT=50`
+  - `SAMPLES=3`
+  - benchmarks: `deltablue`, `go`, `raytrace`, `richards`
+- Medians:
+  - `deltablue`: `0.0037431960008689202s`
+  - `go`: `0.12771624699962558s`
+  - `raytrace`: `0.3545897559997684s`
+  - `richards`: `0.05264104700108874s`
+- Compared with `/root/work/arm-sync/object_matrix_list_store_int_20260501_1.json`:
+  - `deltablue`: about `0.54%` slower
+  - `go`: about `0.93%` slower
+  - `raytrace`: about `0.07%` slower
+  - `richards`: about `0.90%` slower
+- Compared with `/root/work/arm-sync/object_matrix_tiny_bool_predicate_20260501_1.json`:
+  - `deltablue`: about `0.91%` slower
+  - `go`: about `0.70%` slower
+  - `raytrace`: about `0.12%` slower
+  - `richards`: about `0.96%` slower
+- Compared with `/root/work/arm-sync/object_matrix_listappend_direct_20260501_1.json`:
+  - `deltablue`: about `0.57%` slower
+  - `go`: about `1.11%` slower
+  - `raytrace`: about `0.30%` faster
+  - `richards`: about `1.40%` slower
+- Compared with `/root/work/arm-sync/object_matrix_storeattr_direct_field_20260501_1.json`:
+  - `deltablue`: about `0.73%` slower
+  - `go`: about `1.27%` slower
+  - `raytrace`: about `0.30%` faster
+  - `richards`: about `0.43%` slower
+- Current interpretation:
+  - the mutator lowering is correctness-clean but not performance-positive in the current form
+  - likely cause is that the emitted method identity/type/split-dict/keys/field guards and CFG dispatch cost exceed the saved Python method call for these tiny methods
+  - do not use this matrix as evidence of a performance win
+- Decision:
+  - keep the RED/GREEN evidence as a useful shape test, but treat the production lowering as a candidate needing either stricter gating or rollback before a performance-focused push
+  - next optimization should target a hotter call/path with a lower guard-to-work ratio
+
+## 2026-05-01 object-heavy performance slice: disable negative tiny mutator lowering
+
+- Root cause:
+  - the tiny bool mutator lowering removed `CallMethod`, but kept the `LoadMethodCached` / `LoadMethod` result alive for a method-target `GuardIs`
+  - focused HIR evidence before disabling:
+    - `CallMethod = 0`
+    - `LoadMethodCached + LoadMethod = 3`
+    - `StoreField = 7`
+  - the lowering also added type-dispatch CFG, snapshots, split-dict key guards, inline-values guards, `CheckField`, and direct `StoreField`s
+  - this matches the full-matrix negative signal: method-call overhead was not fully removed, while extra guard/CFG/store overhead was added
+- TDD RED:
+  - renamed and retargeted the focused regression to:
+    - `ArmRuntimeTests.test_tiny_bool_state_mutator_keeps_callmethod_until_lookup_is_removed`
+  - remote entrypoint result before the production change failed as expected:
+    - `AssertionError: 0 not greater than 0`
+    - stdout:
+      - `CallMethod = 0`
+      - `LoadMethodCached + LoadMethod = 3`
+      - `StoreField = 7`
+- Production fix:
+  - disabled the `simplifyCallMethodTinyBoolMutator()` hook in `simplifyCallMethod`
+  - left the classifier/lowering implementation in place as experimental code, with a comment documenting that it should remain disabled until method lookup can be guarded without preserving `LoadMethod*` overhead
+- GREEN evidence:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`
+  - focused test:
+    - `test_tiny_bool_state_mutator_keeps_callmethod_until_lookup_is_removed`
+    - `Ran 1 test in 0.812s`
+    - `OK`
+- Next verification:
+  - rerun the object/JIT focused regression suite with the renamed mutator test
+  - rerun the object-heavy matrix to confirm the mutator regression is recovered
+
+### Focused regression after disabling
+- Remote command used `/root/work/incoming/remote_update_build_test.sh`
+- Focused object/JIT suite covered:
+  - disabled tiny bool mutator guard
+  - list/int store-subscript lowering
+  - exact list append lowering
+  - direct instance-value field lowering
+  - tiny predicate/getter/return-self paths
+  - phase-1 OSR safety gates
+- Result:
+  - `Ran 15 tests in 19.170s`
+  - `OK`
+
+### Object-heavy matrix after disabling
+- Result file:
+  - `/root/work/arm-sync/object_matrix_mutator_disabled_20260501_1.json`
+- Remote command used `/root/work/incoming/remote_update_build_test.sh`
+- Settings:
+  - `AUTOJIT=50`
+  - `SAMPLES=3`
+- Medians:
+  - `deltablue`: `0.0037334650041884743s`
+  - `go`: `0.12676655300310813s`
+  - `raytrace`: `0.35641779599973233s`
+  - `richards`: `0.05190802599827293s`
+- Compared with the negative mutator matrix:
+  - `deltablue`: about `0.26%` faster
+  - `go`: about `0.74%` faster
+  - `raytrace`: about `0.52%` slower
+  - `richards`: about `1.39%` faster
+- Compared with the previous list-store matrix:
+  - `deltablue`: about `0.28%` slower
+  - `go`: about `0.18%` slower
+  - `raytrace`: about `0.58%` slower
+  - `richards`: about `0.50%` faster
+- Interpretation:
+  - disabling the mutator hook recovers the clearest `richards` / `go` regression from the mutator experiment
+  - the total matrix is still mixed and noise-sized, not a material throughput win
+  - the next candidate should be a hotter one-arg call path such as `Task.findtcb`
+
+## 2026-05-01 object-heavy performance slice: exact list/int subscript read fast path
+
+- Goal:
+  - target `Task.findtcb()`-style reads and `bm_go` exact-list/int-index access by removing the runtime `JITRT_CheckSequenceBounds` helper from the hot non-negative, in-bounds path.
+- Design:
+  - keep the existing specialized opcode guards for exact list/tuple plus exact int.
+  - after `IndexUnbox`, guard `index >= 0` and `index < Py_SIZE(sequence)`.
+  - on guard failure, deopt to the interpreter at the original frame state so negative indexing, out-of-range exceptions, and subclass fallback semantics are preserved.
+- TDD RED:
+  - added `ArmRuntimeTests.test_exact_list_int_subscr_uses_guarded_array_fast_path`.
+  - remote entrypoint result before production change failed as expected:
+    - `AssertionError: 2 != 0`
+    - stdout showed `CheckSequenceBounds = 2`, `LoadArrayItem = 2`, and correct semantic fallback outputs.
+- Production change in progress:
+  - replaced the exact list/tuple int subscript `CheckSequenceBounds` helper emission in `simplifyLoadSubscr()` with non-negative and in-bounds guards plus direct `LoadArrayItem`.
+- Focused GREEN:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - build/install/JIT smoke completed, then the extra focused test ran:
+    - `Ran 1 test in 0.045s`
+    - `OK`
+- Next:
+  - broader focused object/JIT regression suite through the same remote entrypoint:
+    - `Ran 16 tests in 14.446s`
+    - `OK`
+  - object-heavy pyperformance matrix:
+    - result file: `/root/work/arm-sync/object_matrix_list_read_bounds_20260501_1.json`
+    - `AUTOJIT=50`, `SAMPLES=3`
+    - medians:
+      - `deltablue`: `0.0037166830006754026s`
+      - `go`: `0.12654863199713873s`
+      - `raytrace`: `0.3568251210017479s`
+      - `richards`: `0.05177505699975882s`
+    - compared with `/root/work/arm-sync/object_matrix_mutator_disabled_20260501_1.json`:
+      - `deltablue`: about `0.45%` faster
+      - `go`: about `0.17%` faster
+      - `raytrace`: about `0.11%` slower
+      - `richards`: about `0.26%` faster
+- Interpretation:
+  - removing the runtime sequence-bounds helper gives a small positive signal on `richards`, `go`, and `deltablue`, but it is still noise-sized and regresses `raytrace` slightly.
+  - next refinement is to reduce the fast-path guard count by combining `index >= 0` and `index < size` into one unsigned bounds guard.
+- Guard-count TDD RED:
+  - tightened `ArmRuntimeTests.test_exact_list_int_subscr_uses_guarded_array_fast_path` to require at most two ordinary `Guard` ops for the two exact list/int reads.
+  - remote entrypoint failed as expected before the production refinement:
+    - `AssertionError: 4 not less than or equal to 2`
+    - stdout: `CheckSequenceBounds = 0`, `Guard = 4`, `LoadArrayItem = 2`.
+- Production refinement in progress:
+  - replaced the separate non-negative and signed in-bounds guards with one unsigned `<` guard against `Py_SIZE(sequence)`.
+  - negative indexes and positive out-of-range indexes should now both deopt through the same bounds guard.
+- Guard-count GREEN:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - tightened focused test result:
+    - `Ran 1 test in 0.047s`
+    - `OK`
+- Next:
+  - rerun the focused object/JIT/OSR regression suite.
+  - rerun the object-heavy matrix as `object_matrix_list_read_unsigned_bounds_20260501_1.json`.
+- Focused regression after unsigned-bounds refinement:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - object/JIT/OSR focused suite result:
+    - `Ran 16 tests in 14.408s`
+    - `OK`
+- Unsigned-bounds matrix:
+  - result file: `/root/work/arm-sync/object_matrix_list_read_unsigned_bounds_20260501_1.json`
+  - medians:
+    - `deltablue`: `0.0037338530019042082s`
+    - `go`: `0.12772780600062106s`
+    - `raytrace`: `0.35630999699787935s`
+    - `richards`: `0.052564787001756486s`
+  - compared with the two-guard fast path:
+    - `deltablue`: about `0.46%` slower
+    - `go`: about `0.93%` slower
+    - `raytrace`: about `0.14%` faster
+    - `richards`: about `1.53%` slower
+- Decision:
+  - reject the unsigned single-guard refinement despite the smaller HIR shape.
+  - restore the previous two-guard implementation and the original shape test; that version has the better `richards`/`go` matrix signal.
+- Restored two-guard regression evidence:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - object/JIT/OSR focused suite result after restoring the two-guard implementation:
+    - `Ran 16 tests in 14.378s`
+    - `OK`
+- Next:
+  - rerun the object-heavy matrix on the restored two-guard code as `object_matrix_list_read_restored_20260501_1.json` to confirm the final checked-in shape has the expected small positive signal.
+- Restored two-guard matrix:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - result file: `/root/work/arm-sync/object_matrix_list_read_restored_20260501_1.json`.
+  - medians:
+    - `deltablue`: `0.0037174040044192225s`
+    - `go`: `0.12667208800121443s`
+    - `raytrace`: `0.3546217519979109s`
+    - `richards`: `0.05186034399957862s`
+  - compared with `/root/work/arm-sync/object_matrix_mutator_disabled_20260501_1.json`:
+    - `deltablue`: about `0.43%` faster
+    - `go`: about `0.08%` faster
+    - `raytrace`: about `0.50%` faster
+    - `richards`: about `0.09%` faster
+  - compared with rejected unsigned-bounds refinement:
+    - `deltablue`: about `0.44%` faster
+    - `go`: about `0.83%` faster
+    - `raytrace`: about `0.47%` faster
+    - `richards`: about `1.34%` faster
+- Current interpretation:
+  - the restored two-guard exact list/int read fast path is the better final shape for this slice.
+  - it gives a small all-four-workload positive signal versus the mutator-disabled baseline, but the effect size is still noise-adjacent.
+  - the next performance step should target a higher-level Python-call or method-call cost rather than another guard-count micro-refinement.
+
+## 2026-05-01 object-heavy performance slice: HIR inliner switch experiment
+
+- Hypothesis:
+  - object-heavy workloads contain many small Python method/function calls.
+  - the existing HIR inliner is disabled by default, so a pure inliner-on experiment can tell us whether up-stack call removal is a better target than more list/attr micro-optimizations.
+- Remote matrix:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - extra benchmark command set `PYTHONJITENABLEHIRINLINER=1`.
+  - result file: `/root/work/arm-sync/object_matrix_hir_inliner_on_20260501_1.json`.
+  - medians:
+    - `deltablue`: `0.0037331460043787956s`
+    - `go`: `0.12648785300552845s`
+    - `raytrace`: `0.3559034479985712s`
+    - `richards`: `0.051703182005439885s`
+- Compared with restored two-guard baseline:
+  - `deltablue`: about `0.42%` slower
+  - `go`: about `0.15%` faster
+  - `raytrace`: about `0.36%` slower
+  - `richards`: about `0.30%` faster
+- Compared with mutator-disabled baseline:
+  - `deltablue`: about `0.01%` faster
+  - `go`: about `0.22%` faster
+  - `raytrace`: about `0.14%` faster
+  - `richards`: about `0.40%` faster
+- Decision:
+  - do not simply enable the HIR inliner globally based on this matrix.
+  - continue with a narrower call-shape optimization or selective inliner policy, because the signal is promising for `richards/go` but mixed against the current restored baseline.
+
+### Subagent workload-shape analysis
+
+- A read-only performance-shape subagent ranked the next candidates:
+  - Top 1: lookup-free monomorphic Python method call / selective inline fast path.
+  - Top 2: branch-only/immediately-consumed field-load refcount reduction.
+  - Top 3: list/queue `pop` direct helper path for `deltablue`.
+- Important synthesis:
+  - the top candidate matches the HIR inliner switch experiment: `richards` and `go` improve when call removal is available, but global inlining is too broad against the current restored baseline.
+  - the next implementable target should be selective and monomorphic, not a global `PYTHONJITENABLEHIRINLINER=1` default flip.
+  - correctness risks to explicitly test:
+    - instance method shadowing
+    - subclass/polymorphic receivers
+    - descriptor/function `__code__` changes
+    - deopt storms from over-eager method specialization
+
+## 2026-05-01 selective method-value preload for HIR inliner
+
+- Design:
+  - keep global HIR inliner disabled by default.
+  - when HIR inliner is explicitly enabled, allow warmed `LOAD_ATTR_METHOD_WITH_VALUES` calls to inline Python method descriptors by preloading cached `PyFunction` callees.
+  - this targets `Task.findtcb(self, id)`-style one-arg helper methods without hand-writing their semantics in the simplifier.
+- TDD RED:
+  - added `ArmRuntimeTests.test_method_with_values_one_arg_method_preloads_for_hir_inliner`.
+  - the test force-compiles only the caller `Task.release`, not `Task.findtcb`.
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - failed as expected before production code:
+    - assertion: `0 not greater than or equal to 1`
+    - stdout:
+      - `CallMethod = 1`
+      - `VectorCall = 1`
+      - `num_inlined_functions = 0`
+      - semantic outputs: `21`, `31`, `index-error`
+- Production change:
+  - `Preloader` now records cached `PyFunction` objects from warmed `LOAD_ATTR_METHOD_WITH_VALUES`.
+  - `preloadFuncAndDeps()` queues those method-value functions as dependent preload candidates, so the existing HIR inliner can consume the builder's recovered `VectorCall`.
+- Focused GREEN:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - focused test result:
+    - `Ran 1 test in 0.048s`
+    - `OK`
+- Next verification:
+  - run the focused object/JIT/OSR regression suite with the new test included.
+  - rerun the inliner-on object-heavy matrix to see whether the new preload path improves benchmark signal versus the previous mixed inliner-on result.
+- Focused regression:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - covered selective method-value preload, attr-derived monomorphic/polymorphic method paths, list/int read/store, list append, instance-value field ops, tiny-method paths, and phase-1 OSR gates.
+  - result:
+    - `Ran 20 tests in 15.646s`
+    - `OK`
+- Broad preload matrix:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - extra benchmark command set `PYTHONJITENABLEHIRINLINER=1`.
+  - result file: `/root/work/arm-sync/object_matrix_hir_inliner_method_preload_20260501_1.json`.
+  - medians:
+    - `deltablue`: `0.0037402169982669875s`
+    - `go`: `0.1263926179963164s`
+    - `raytrace`: `0.3542254209969542s`
+    - `richards`: `0.052375790997757576s`
+  - compared with restored two-guard baseline:
+    - `deltablue`: about `0.61%` slower
+    - `go`: about `0.22%` faster
+    - `raytrace`: about `0.11%` faster
+    - `richards`: about `0.99%` slower
+  - compared with the previous inliner-on run without method-value preload:
+    - `deltablue`: about `0.19%` slower
+    - `go`: about `0.08%` faster
+    - `raytrace`: about `0.47%` faster
+    - `richards`: about `1.30%` slower
+  - decision:
+    - reject broad method-value dependent preloading as the final shape.
+    - restrict the preloader to small one-arg `self` methods so it can target `findtcb(self, id)`-style helpers without feeding too many mixed callees into the HIR inliner.
+- Narrowed preload focused GREEN:
+  - production refinement limits recorded method-value callees to small non-generator functions with exactly `self` plus one positional argument and no varargs/kwargs.
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - focused test result:
+    - `Ran 1 test in 0.049s`
+    - `OK`
+- Narrowed preload focused regression:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - covered the 20-test object/JIT/OSR suite after narrowing.
+  - result:
+    - `Ran 20 tests in 15.739s`
+    - `OK`
+- Narrowed preload matrix:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - extra benchmark command set `PYTHONJITENABLEHIRINLINER=1`.
+  - result file: `/root/work/arm-sync/object_matrix_hir_inliner_small_method_preload_20260501_1.json`.
+  - medians:
+    - `deltablue`: `0.0037349900012486614s`
+    - `go`: `0.12648953100142535s`
+    - `raytrace`: `0.35573463599575916s`
+    - `richards`: `0.052032849001989234s`
+  - compared with restored two-guard baseline:
+    - `deltablue`: about `0.47%` slower
+    - `go`: about `0.14%` faster
+    - `raytrace`: about `0.31%` slower
+    - `richards`: about `0.33%` slower
+  - compared with previous inliner-on run without method-value preload:
+    - `deltablue`: about `0.05%` slower
+    - `go`: neutral
+    - `raytrace`: about `0.05%` faster
+    - `richards`: about `0.64%` slower
+  - compared with broad method-value preload:
+    - `deltablue`: about `0.14%` faster
+    - `go`: about `0.08%` slower
+    - `raytrace`: about `0.43%` slower
+    - `richards`: about `0.66%` faster
+- Decision:
+  - keep the narrowed method-value preload as an opt-in HIR-inliner capability candidate, not as a default throughput win.
+  - do not enable HIR inliner globally from this evidence.
+  - next performance work should target default-on hot paths with clearer object-workload signal.
+
+## 2026-05-01 object-heavy performance slice: refcount and tier-policy follow-up
+
+- HIR refcount probe:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - output file: `/root/work/arm-sync/object_probe_refcounts_20260501_2.txt`.
+  - aggregate over the probed `go` and `richards` functions:
+    - 65 functions
+    - 1206 refcount ops
+    - 992 `LoadField` ops
+  - hottest refcount-heavy shapes:
+    - `richards.Richards.run`: 102 refcount ops, 4 `LoadField`, 34 call ops
+    - `go.Board.useful`: 100 refcount ops, 91 `LoadField`, 9 call ops
+    - `go.Square.move`: 78 refcount ops, 66 `LoadField`, 7 call ops
+    - `richards.Task.runTask`: 52 refcount ops, 97 `LoadField`, 6 call ops
+    - `richards.schedule`: 41 refcount ops, 85 `LoadField`, 2 call ops
+- Minimal bool-field branch hypothesis:
+  - attempted to prove that `GuardType(TBool)` after an instance-value field load caused avoidable refcount traffic.
+  - first RED shape missed field lowering because the function had too few locals for the default `LOAD_ATTR_INSTANCE_VALUE` gate.
+  - mutated RED shape hit field lowering but showed the target gap was already absent:
+    - `LoadField=4`
+    - `GuardType=0`
+    - `ref_ops=0`
+  - decision:
+    - abandon this minimal refcount candidate; no production change is justified.
+- List-pop triage:
+  - existing tests already cover inherited list-subclass `pop(0)`:
+    - HIR eliminates `CallMethod`
+    - LIR avoids generic `VectorCall`
+  - decision:
+    - do not duplicate list-pop work in this slice.
+    - move to tier-policy / AUTOJIT threshold exploration.
+- AUTOJIT threshold probe (`AUTOJIT=100`):
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - result file: `/root/work/arm-sync/object_matrix_autojit100_20260501_1.json`.
+  - medians:
+    - `deltablue`: `0.003731424003490247s`
+    - `go`: `0.1266374890037696s`
+    - `raytrace`: `0.3560238979989663s`
+    - `richards`: `0.05177320700022392s`
+  - compared with current restored `AUTOJIT=50` baseline:
+    - `deltablue`: about `0.38%` slower
+    - `go`: about `0.03%` faster
+    - `raytrace`: about `0.40%` slower
+    - `richards`: about `0.17%` faster
+  - decision:
+    - `AUTOJIT=100` shows tier-policy sensitivity but is not a broad win.
+    - expand the threshold band before changing any default promotion policy.
+- AUTOJIT threshold band probe (`AUTOJIT=75/150/200`):
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - result files:
+    - `/root/work/arm-sync/object_matrix_autojit75_20260501_1.json`
+    - `/root/work/arm-sync/object_matrix_autojit150_20260501_1.json`
+    - `/root/work/arm-sync/object_matrix_autojit200_20260501_1.json`
+  - medians:
+    - `AUTOJIT=75`: `deltablue=0.003723295005s`, `go=0.126254659997s`, `raytrace=0.354330827002s`, `richards=0.052154175006s`
+    - `AUTOJIT=150`: `deltablue=0.003722745001s`, `go=0.126285933002s`, `raytrace=0.353755238997s`, `richards=0.051931681002s`
+    - `AUTOJIT=200`: `deltablue=0.003719715001s`, `go=0.126547669999s`, `raytrace=0.357053076004s`, `richards=0.051959971999s`
+  - compared with current restored `AUTOJIT=50` baseline:
+    - `AUTOJIT=75`: `deltablue` `0.16%` slower, `go` `0.33%` faster, `raytrace` `0.08%` faster, `richards` `0.57%` slower
+    - `AUTOJIT=150`: `deltablue` `0.14%` slower, `go` `0.31%` faster, `raytrace` `0.24%` faster, `richards` `0.14%` slower
+    - `AUTOJIT=200`: `deltablue` `0.06%` slower, `go` `0.10%` faster, `raytrace` `0.69%` slower, `richards` `0.19%` slower
+  - best per benchmark in this band:
+    - `deltablue`: current `AUTOJIT=50`
+    - `go`: `AUTOJIT=75`
+    - `raytrace`: `AUTOJIT=150`
+    - `richards`: `AUTOJIT=100`
+  - decision:
+    - no single global threshold beats the current default across the object-heavy matrix.
+    - this supports per-function tier policy work (promotion/backoff/fallback reasons) rather than changing the global auto-JIT gate.
+
+## 2026-05-01 baseline-tier MVP: pending baseline state and disable fallback
+
+- RED / crash reproduction:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - focused command:
+    - `PYTHONPATH=cinderx/PythonLib/test_cinderx python -m unittest test_jit_tiering -v`
+  - initial result:
+    - `test_force_compile_baseline_exposes_baseline_tier ... ok`
+    - `test_force_compile_promotes_baseline_function_to_optimized ... Segmentation fault`
+  - after adding `baseline_compile_after_n_calls(None)` reset, the first test still crashed:
+    - `test_baseline_compile_after_none_disables_auto_baseline ... Segmentation fault`
+- Root cause evidence:
+  - same remote entrypoint diagnostic script `python scripts/arm/baseline_tier_repro.py` passed the simple path:
+    - `baseline_gate0 None`
+    - `baseline_gate1 1`
+    - `baseline_gate2 None`
+    - `tier0 interp`
+    - `tier1 baseline`
+    - `tier2 optimized`
+  - direct ARM faulthandler diagnostics showed the unittest crash was in optimized compilation of traceback/annotation paths after baseline-auto had scheduled functions with `jitVectorcall`.
+  - root cause:
+    - `baseline_compile_after_n_calls()` reused `scheduleJitCompile()` for functions that were only pending baseline.
+    - if baseline-auto was disabled before those functions reached the baseline threshold, they still had `jitVectorcall` installed.
+    - with no active baseline state and no compile threshold, the next call fell through to `forcedJitVectorcall()` and could compile unrelated unittest/stdlib functions.
+- Fix:
+  - added a separate `baseline_scheduled_funcs_` tier-state set.
+  - pending baseline functions now interpret while baseline-auto is active but below threshold.
+  - if baseline-auto is disabled before activation, the next call removes pending baseline state, restores the interpreted vectorcall, and stays in `interp`.
+  - active baseline functions remain active baseline until explicit optimized promotion.
+- GREEN:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - focused result:
+    - `Ran 5 tests in 0.004s`
+    - `OK`
+  - tests covered:
+    - `baseline_compile_after_n_calls(None)` clears the baseline-auto gate.
+    - disabling baseline-auto keeps a pending function interpreted.
+    - `force_compile_baseline()` reports `baseline`.
+    - `force_compile()` promotes baseline to `optimized`.
+    - low threshold auto-baseline enters `baseline` before optimized promotion.
+- Combined verification:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - extra command:
+    - `PYTHONPATH=cinderx/PythonLib/test_cinderx python -m unittest test_jit_tiering -v && python scripts/arm/baseline_tier_repro.py`
+  - result:
+    - `test_jit_tiering`: `Ran 5 tests in 0.004s`, `OK`
+    - remote entrypoint exit code: `0`
+- Default object-heavy matrix after tier-state fix:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - result file: `/root/work/arm-sync/object_matrix_after_baseline_tier_state_20260501_1.json`
+  - medians:
+    - `deltablue`: `0.003740746004s`
+    - `go`: `0.127200627998s`
+    - `raytrace`: `0.355354153995s`
+    - `richards`: `0.051866986003s`
+  - compared with restored `AUTOJIT=50` baseline:
+    - `deltablue`: about `0.63%` slower
+    - `go`: about `0.42%` slower
+    - `raytrace`: about `0.21%` slower
+    - `richards`: about `0.01%` slower
+  - interpretation:
+    - this tier-state change is a correctness/stability improvement for the baseline-tier MVP, not a demonstrated default throughput win.
+    - the deltas are small enough to require repeat/noise-control before calling them a real regression, but they do not support a performance claim.
+
+## 2026-05-01 lookup-free tiny bool mutator retry
+
+- Context:
+  - the previous tiny bool mutator lowering was disabled because it removed `CallMethod` but kept `LoadMethodCached/LoadMethod`, adding enough guard/CFG/store work to slow object-heavy workloads.
+  - the new hypothesis was that the shape only deserves to exist if both the call and the method lookup disappear.
+- RED:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - tightened test:
+    - `ArmRuntimeTests.test_tiny_bool_state_mutator_removes_lookup_and_callmethod`
+  - pre-fix output:
+    - `CallMethod = 3`
+    - `LoadMethodCached + LoadMethod = 3`
+    - `StoreField = 0`
+- Root-cause during GREEN:
+  - removing the simplifier's `GuardIs(load_method_result)` was not sufficient.
+  - `LoadMethod` still remained in HIR because the method lookup has observable effects and cannot be deleted as ordinary dead code.
+  - instance shadowing then exposed a semantic failure in the half-enabled design.
+- Fix:
+  - move the optimization earlier into HIR builder for the warmed `LOAD_ATTR_METHOD_WITH_VALUES` shape.
+  - when the cached descriptor is a tiny bool mutator `PyFunction`, emit deopt-only guards using the profiled type version, inline-values validity, and split-dict keys version.
+  - push `LoadConst(func), receiver` instead of emitting `LoadMethod`.
+  - let the simplifier lower only that constant-function shape into direct bool `StoreField` operations.
+  - class method replacement is protected by type-version guards; instance method shadowing is protected by split-dict key version / patchpoint behavior.
+- Focused GREEN:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - result:
+    - `test_tiny_bool_state_mutator_removes_lookup_and_callmethod ... ok`
+    - remote entrypoint exit code `0`
+- Focused regression:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - object/JIT/OSR suite:
+    - `Ran 23 tests in 21.732s`
+    - `OK`
+- Benchmark matrix:
+  - remote command used `/root/work/incoming/remote_update_build_test.sh`.
+  - result file:
+    - `/root/work/arm-sync/object_matrix_tiny_bool_mutator_lookup_free_20260501_1.json`
+  - medians:
+    - `deltablue`: `0.003733324003405869s`
+    - `go`: `0.12625505700270878s`
+    - `raytrace`: `0.3546679770006449s`
+    - `richards`: `0.05186529200000223s`
+  - compared with restored list-read baseline:
+    - `deltablue`: about `0.43%` slower
+    - `go`: about `0.33%` faster
+    - `raytrace`: about `0.01%` slower
+    - `richards`: about `0.01%` slower
+  - compared with mutator-disabled baseline:
+    - `deltablue`: about neutral
+    - `go`: about `0.40%` faster
+    - `raytrace`: about `0.49%` faster
+    - `richards`: about `0.08%` faster
+- Current interpretation:
+  - this fixes the known negative mutator design and gives a small `go` signal, but it is not yet a strong broad pyperformance win against the latest restored baseline.
+  - continue with either noise-controlled on/off benchmarking or the next call-path optimization before claiming final performance success.
+
+## 2026-05-01 default one-arg method-value fast path
+
+- Hypothesis:
+  - object-heavy workloads repeatedly call small helper methods such as `table.get(index)` / Richards-style `findtcb(id)`.
+  - if warmed `LOAD_ATTR_METHOD_WITH_VALUES` can push `LoadConst(func), receiver` directly, the builder can remove the method lookup and the simplifier can convert `CallMethod` to `VectorCall`.
+- RED evidence:
+  - remote entrypoint:
+    - `/root/work/incoming/remote_update_build_test.sh`
+  - test:
+    - `ArmRuntimeTests.test_method_with_values_one_arg_method_removes_lookup_by_default`
+  - pre-fix shape:
+    - `CallMethod = 1`
+    - `LoadMethodCached + LoadMethod = 1`
+    - `VectorCall = 1`
+- Implementation:
+  - `builder.cpp` now recognizes small `self + 1 arg` Python function descriptors in warmed `LOAD_ATTR_METHOD_WITH_VALUES` cache entries.
+  - the path requires nonzero type/key versions and only fires in the outer frame.
+  - non-exact current-method `self` receivers are excluded to preserve polymorphic virtual-call behavior.
+- Regression found and fixed:
+  - initial implementation reopened `Task.runTask -> self.fn(x)` polymorphic deopts.
+  - focused regression failed with two `LOAD_ATTR_METHOD_WITH_VALUES` deopt entries.
+  - restoring the non-exact `self` receiver exclusion fixed it.
+- Verification:
+  - focused remote tests:
+    - `test_polymorphic_virtual_method_avoids_method_with_values_guard_deopts`
+    - `test_method_with_values_one_arg_method_removes_lookup_by_default`
+    - result: `Ran 2 tests in 0.788s`, `OK`
+  - focused object/JIT/OSR suite:
+    - result: `Ran 24 tests in 22.477s`, `OK`
+- Benchmark:
+  - result file:
+    - `arm-results/object_matrix_one_arg_method_value_default_20260501_1.json`
+  - medians:
+    - `deltablue`: `0.0037186230038059871s`
+    - `go`: `0.12664924700220581s`
+    - `raytrace`: `0.355018147994997s`
+    - `richards`: `0.052285240999481175s`
+  - vs restored list-read baseline:
+    - `deltablue`: `+0.03%`
+    - `go`: `-0.02%`
+    - `raytrace`: `+0.11%`
+    - `richards`: `+0.82%`
+- Interpretation:
+  - this is a correctness-clean call-path capability, not yet a throughput win.
+  - the richards regression signal means the next optimization pass should be hotspot-guided before widening any more default fast paths.
+
+## 2026-05-02 delayed lookup for non-exact self method-value fallback
+
+- Hypothesis:
+  - non-exact `self.fn(x)` calls should still expose a fast `VectorCall` path when the warmed descriptor is a small `self + 1 arg` Python function.
+  - the generic fallback lookup can be delayed from `LOAD_ATTR_METHOD_WITH_VALUES` to the fallback `CALL` block only when the intervening argument load is side-effect-free (`LOAD_FAST`, `LOAD_FAST_BORROW`, or `LOAD_CONST`), preserving Python lookup-before-argument-evaluation semantics for the enabled shape.
+- TDD evidence:
+  - RED through `/root/work/incoming/remote_update_build_test.sh`:
+    - new test:
+      - `ArmRuntimeTests.test_method_with_values_nonexact_self_delays_lookup_to_fallback`
+    - pre-fix final HIR had `LoadMethodCached` before `VectorCall`.
+  - GREEN through `/root/work/incoming/remote_update_build_test.sh`:
+    - focused result:
+      - `test_method_with_values_nonexact_self_delays_lookup_to_fallback ... ok`
+      - remote entrypoint exit code `0`
+- Regression evidence:
+  - focused three-test guard:
+    - `test_method_with_values_nonexact_self_delays_lookup_to_fallback`
+    - `test_polymorphic_virtual_method_avoids_method_with_values_guard_deopts`
+    - `test_method_with_values_one_arg_method_removes_lookup_by_default`
+    - result: `Ran 3 tests in 1.266s`, `OK`
+  - object/JIT/OSR focused suite:
+    - result: `Ran 25 tests in 23.240s`, `OK`
+- Benchmark evidence:
+  - result file:
+    - `arm-results/object_matrix_delayed_method_value_lookup_20260501_1.json`
+  - `AUTOJIT=50`, `SAMPLES=3`
+  - medians:
+    - `deltablue`: `0.0037092950005899183s`
+    - `go`: `0.12652551700011827s`
+    - `raytrace`: `0.35530350799672306s`
+    - `richards`: `0.05188201300188666s`
+  - vs restored list-read baseline:
+    - `deltablue`: about `0.22%` faster
+    - `go`: about `0.12%` faster
+    - `raytrace`: about `0.19%` slower
+    - `richards`: about `0.04%` slower
+  - vs the default one-arg method-value run:
+    - `deltablue`: about `0.25%` faster
+    - `go`: about `0.10%` faster
+    - `raytrace`: about `0.08%` slower
+    - `richards`: about `0.77%` faster
+- Interpretation:
+  - delayed lookup fixed the earlier richards-shaped regression from the default one-arg path, but the object-heavy matrix is still mixed.
+  - this is worth keeping as a correctness-clean call-path improvement only if later profiling shows it feeds larger optimizations; it is not yet a standalone pyperformance win.
+
+## 2026-05-02 object workload HIR probe after delayed lookup
+
+- Remote entrypoint:
+  - `/root/work/incoming/remote_update_build_test.sh`
+- Probe output:
+  - `arm-results/object_probe_hir_delayed_20260501_5.txt`
+- Diagnostic script fix:
+  - `scripts/arm/probe_object_hir.py` now imports `cinderx.jit` before `cinderjit`, matching the runtime-test import order.
+  - remote `EXTRA_VERIFY_CMD` needs to use the provided `$PYTHON` environment variable, not bare `python`, because `run_extra_cmd` starts a fresh shell and does not preserve venv activation.
+- Remaining high-count HIR shapes:
+  - `go.Board.useful`: `CallMethod=5`, `VectorCall=4`, `LoadMethodCached=5`, `Guard=40`, `LoadField=91`, `PrimitiveCompare=58`.
+  - `go.UCTNode.play`: `CallMethod=5`, `VectorCall=6`, `LoadMethodCached=7`, `ListAppend=2`, `LoadField=40`.
+  - `richards.Task.runTask`: `CallMethod=3`, `VectorCall=3`, `LoadMethodCached=4`, `Guard=28`, `LoadField=97`, `PrimitiveCompare=76`.
+  - `richards.Richards.run`: `CallMethod=6`, `VectorCall=28`, `LoadMethodCached=6`, many `GuardIs` and refcount ops from setup/call-heavy code.
+- Interpretation:
+  - remaining cost is distributed across call dispatch, guard/refcount pressure, and object field traffic, not a single obvious missing specialized opcode.
+  - next likely candidates should be chosen by targeted HIR/LIR deltas rather than further broad method-value widening.
+
+## 2026-05-02 tier-state quality closure: fallback and invalidation telemetry
+
+- Goal:
+  - Move the baseline-tier MVP from scattered sets/events toward one coherent per-function state model.
+  - Prioritize feature correctness and observability over performance tuning for this round.
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - Added stricter `test_jit_tiering` coverage for:
+    - `baseline_to_optimized` promotion reason.
+    - compile-failure reason via `PYJIT_OVER_MAX_CODE_SIZE`.
+    - runtime fallback reason via guard-failure deopt.
+    - type invalidation reason via a type-deopt patcher.
+  - Initial focused run failed 4/4 new checks:
+    - promotion still reported `optimized`.
+    - compile failure left `last_transition` as `none`.
+    - runtime fallback left `last_transition` as `optimized`.
+    - type invalidation did not increment the per-function invalidation counter for the original trigger shape.
+- Implementation:
+  - `FunctionTierState` now tracks active tier, pending baseline state, compiled/deopted mirrors, last transition, runtime fallback count/reason, compile failure count/reason, and invalidation count/reason.
+  - `prepareForDeopt()` records runtime fallback telemetry after normal deopt profiling.
+  - type-deopt patchers now carry their `CodeRuntime` and update per-function invalidation state when a patch really happens.
+  - `finalizeFunc()` preserves whether the function came from baseline and records `baseline_to_optimized`.
+  - compile failures now record `compile_failed` plus the concrete result name, such as `over_max_code_size`.
+  - pending baseline cleanup now restores interpreted vectorcall and removes registered compilation units when baseline-auto is disabled, when `deopt_all` runs, or when a scheduled function is uncompiled.
+  - `jitVectorcall()` now interprets immediately while the JIT is paused, avoiding accidental pending-baseline activation inside `pause()`.
+  - `force_compile_baseline()` no longer lets shared precompiled code silently reopt the target function as optimized.
+  - CodeRuntime owner tracking now fans out to all attached owners and removes owners on destroy/uncompile/deopt to avoid stale borrowed-function telemetry.
+- Subagent review findings addressed:
+  - stale/misattributed `code_runtime_funcs_` owner mapping.
+  - missing `last_transition` updates for compile failure, runtime fallback, invalidation, and baseline promotion.
+  - pending baseline state surviving baseline-auto disable / pause.
+  - shared-code `force_compile_baseline()` reopt hazard.
+  - partial compile-failure telemetry for batch/preloaded paths.
+- Verification:
+  - focused tiering run through the remote entrypoint:
+    - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+    - result: `Ran 14 tests in 2.101s`, `OK`
+  - broader guard run through the remote entrypoint:
+    - `test_jit_tiering` plus OSR and method-with-values ARM runtime guards.
+    - result: `Ran 26 tests in 5.330s`, `OK`
+  - local diff quality:
+    - `git diff --check -- cinderx/Jit/context.h cinderx/Jit/context.cpp cinderx/Jit/codegen/gen_asm.cpp cinderx/Jit/pyjit.cpp cinderx/PythonLib/cinderx/jit.py cinderx/PythonLib/test_cinderx/test_jit_tiering.py scripts/arm/tier_state_repro.py`
+    - result: no whitespace errors; only expected Windows LF/CRLF warnings.
+- Interpretation:
+  - This is a functionality/quality improvement for the tiered-JIT state model, not a performance optimization.
+  - The next tiering feature step should build an actual policy state machine on top of these state transitions: deopt budget, compile-fail cooldown, and promotion backoff.
+
+## 2026-05-02 threaded precompile crash chain: nested genexpr preloader
+
+- Scope:
+  - Functional completeness and stability for `precompile_all(workers=2)` in the tiering compile-failure cooldown test.
+  - No performance claim in this round.
+- RED evidence:
+  - Remote focused test through `/root/work/incoming/remote_update_build_test.sh` exited with subprocess return `-11`.
+  - Direct gdb on the current remote build showed worker-thread SIGSEGV:
+    - `_PyErr_GetRaisedException(tstate=0)`
+    - `PyDict_GetItem()`
+    - `jit::hir::Preloader::preload()` at `cinderx/Jit/hir/preload.cpp:587`
+    - `jit::hir::HIRBuilder::inlineGenexprHIR()` at `cinderx/Jit/hir/builder.cpp:3335`
+- Root cause:
+  - Nested genexpr inlining constructs a fresh `Preloader` inside worker-thread compilation.
+  - That preloader warms globals using Python dict APIs, which may consult error state.
+  - Threaded compile workers do not have a Python thread state, so this path is unsafe even if the work is serialized.
+- Candidate fix:
+  - During threaded precompile, skip nested genexpr HIR inlining and leave the original call shape on the generic compilation path.
+  - Keep genexpr inlining enabled for normal single-threaded compilation.
+- Verification:
+  - Focused remote entrypoint run:
+    - `test_jit_tiering.TieringApiTests.test_compile_failure_backoff_blocks_precompile_all_repromotion`
+    - result: `Ran 1 test in 1.699s`, `OK`
+  - Full tiering remote entrypoint run:
+    - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+    - result: `Ran 18 tests in 2.003s`, `OK`
+  - Broader remote guard:
+    - `test_jit_tiering`
+    - phase1 OSR guard tests
+    - method-with-values polymorphism/delayed-fallback tests
+    - normal set/any/tuple genexpr inlining tests
+    - result: `Ran 28 tests in 2.748s`, `OK`
+- Interpretation:
+  - This fixes a threaded-precompile correctness hole, not a performance feature.
+  - Normal genexpr optimization remains covered by the non-threaded HIR-shape tests.
+  - Threaded precompile still needs a broader audit for any remaining worker-thread Python C-API access, but this specific crash chain is now protected by regression coverage.
+
+### Follow-up audit hardening
+
+- Static audit identified more optional optimization helpers that could read Python dict/error state during worker-thread compilation:
+  - `resolveKnownCallableObject()` fallback lookup from globals/builtins.
+  - tiny-method candidate scanning over module globals and type dictionaries.
+  - math.sqrt module-dict validation in simplify / DCE / refcount cleanup helpers.
+- Hardening strategy:
+  - keep the optimizations enabled for normal compilation.
+  - skip only the optional Python-dict-backed queries while `getThreadedCompileContext().compileRunning()` is true.
+- Verification after hardening:
+  - Remote entrypoint covered:
+    - full `test_jit_tiering`
+    - phase1 OSR guards
+    - method-with-values polymorphism/delayed-fallback guards
+    - tiny bool method optimizations
+    - normal set/any/tuple genexpr inlining
+    - math.sqrt specialization and negative-input semantics
+  - Result: `Ran 34 tests in 3.122s`, `OK`
+
+## 2026-05-02 tier policy state machine and invalidation cleanup
+
+- Scope:
+  - Complete the functional tiering work before returning to performance tuning.
+  - Move policy observability from scattered reason strings toward an explicit per-function state.
+- TDD RED:
+  - New remote test `test_deopt_budget_exhaustion_blocks_repromotion` initially failed with `KeyError: 'policy_state'`.
+  - This confirmed the unified tier-state API did not yet expose policy state.
+- Implementation:
+  - Added `TierPolicyState`: `ready`, `compile_failure_cooldown`, and `deopt_budget_exhausted`.
+  - `recordCompileFailure()` now marks compile-failure cooldown explicitly.
+  - `recordRuntimeFallback()` and `shouldAttemptOptimizedPromotion()` now mark deopt-budget exhaustion explicitly.
+  - `get_function_tier_state()` now returns `policy_state`.
+  - Explicit `force_uncompile()` now removes compiled artifacts while preserving policy/backoff telemetry instead of treating the function as destroyed.
+- Crash found and fixed:
+  - After preserving state across `force_uncompile()`, the deopt-budget repro printed the expected state but exited with SIGBUS.
+  - gdb backtrace reached `0x000000000000badf` from `jit::Context::notifyTypeModified()` during shutdown GC.
+  - Root cause: type-deopt patchers were still registered after the compiled runtime owner was removed, leaving stale patcher pointers in `type_deopt_patchers_`.
+  - Fix: remove type-deopt patchers associated with a `CodeRuntime` when compiled runtime ownership is removed or a function is destroyed.
+- Threaded-precompile audit closure:
+  - Popper's read-only audit found more Python C-API/error-state risks in worker compilation.
+  - Guarded optional worker paths: builtin load-method elimination dict lookups, `checkTranslate()` UTF-8 name materialization, split-dict/member-descr field-name stringification, tiny helper key-version preparation, and inline-cache stats filename/name initialization.
+  - These are worker-only punts; normal single-threaded optimization paths remain enabled and covered.
+- Verification:
+  - focused remote policy/worker guard: `Ran 3 tests in 1.765s`, `OK`
+  - full remote `test_jit_tiering`: `Ran 20 tests in 3.730s`, `OK`
+  - broader remote ARM guard: `Ran 38 tests in 4.904s`, `OK`
+- Interpretation:
+  - This round improves functional completeness and lifecycle correctness of the tiering MVP.
+  - No performance win is claimed from this round.
+
+## 2026-05-02 submit-readiness review: shared CodeRuntime lifecycle
+
+- Scope:
+  - Submit-readiness review for the current tiered-JIT work, preparing it for a pushable split.
+  - Focused on functional stability, lifecycle correctness, and commit grouping rather than new performance claims.
+- Review finding:
+  - `TypeDeoptPatcher` cleanup was initially too aggressive for shared `CodeRuntime` cases.
+  - Removing one function owner could remove patchers that were still needed by another function sharing the same compiled code.
+  - A second issue remained in `force_uncompile()`: it always called `forgetCode()`, so explicit uncompile of one owner could delete the shared `CompiledFunction` while another owner still reported compiled.
+- Fix:
+  - `Context::forgetCodeRuntimeOwner()` now returns only runtimes that became ownerless.
+  - Type-deopt patchers are removed only for ownerless runtimes.
+  - `uncompile()` captures the function's `CodeRuntime` before deopt and calls `forgetCode()` only when that runtime has no remaining owners.
+- Regression coverage:
+  - Added `test_shared_runtime_keeps_type_invalidation_after_one_owner_uncompiled`.
+  - The test compiles two Python functions sharing one code object, uncompile one owner, then triggers a type invalidation and checks the remaining owner still receives tier-state invalidation telemetry.
+- Remote verification through `/root/work/incoming/remote_update_build_test.sh`:
+  - Focused shared-runtime regression:
+    - default ARM runtime: `Ran 99 tests in 15.430s`, `OK`
+    - focused tiering test: `Ran 1 test in 0.057s`, `OK`
+  - Full tiering suite:
+    - default ARM runtime: `Ran 99 tests in 15.592s`, `OK`
+    - `test_jit_tiering`: `Ran 21 tests in 3.791s`, `OK`
+  - Submit hygiene via remote entrypoint:
+    - default ARM runtime: `Ran 99 tests in 15.832s`, `OK`
+    - content hygiene: `submit-hygiene-ok files=43`
+- Cleanup:
+  - Removed a stale `<<<<<<< HEAD` marker and trailing whitespace from `findings.md`.
+  - Removed generated local `cinderx-update.tar`.
+- Commit split recommendation:
+  - Commit 1: tier-state lifecycle and policy state machine (`context.*`, `pyjit.cpp`, `jit.py`, tiering tests, tier repro scripts).
+  - Commit 2: threaded precompile worker safety (`py_error.h`, HIR pass guards, worker regression coverage).
+  - Commit 3: remote verification and pyperformance tooling (`scripts/arm/*`).
+  - Commit 4: object-workload experiments and HIR/runtime optimizations (`builder/simplify/jit_rt/lir`, `test_arm_runtime.py`), kept separate because benchmark signal is mixed.
+- Do not include:
+  - `arm-results/` raw artifacts.
+  - generated upload tarballs.

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/long_loop_unboxing.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "cinderx/Jit/config.h"
 #include "cinderx/Jit/hir/hir.h"
@@ -46,7 +47,7 @@ std::optional<int64_t> getBoxedLongConst(Register* reg) {
 
   int overflow = 0;
   long long value = PyLong_AsLongLongAndOverflow(ty.objectSpec(), &overflow);
-  PyErr_Clear();
+  clearPyErrIfPresent();
   if (overflow != 0) {
     return std::nullopt;
   }

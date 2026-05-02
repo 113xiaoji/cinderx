@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/type.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "cinderx/StaticPython/static_array.h"
 #include "cinderx/StaticPython/type_code.h"
@@ -167,7 +168,7 @@ std::string Type::specString() const {
     Py_ssize_t size;
     auto utf8 = PyUnicode_AsUTF8AndSize(objectSpec(), &size);
     if (utf8 == nullptr) {
-      PyErr_Clear();
+      clearPyErrIfPresent();
       return "encoding error";
     }
     return truncatedStr(utf8, size, '"');
@@ -193,7 +194,7 @@ std::string Type::specString() const {
     char* buffer;
     Py_ssize_t size;
     if (PyBytes_AsStringAndSize(objectSpec(), &buffer, &size) < 0) {
-      PyErr_Clear();
+      clearPyErrIfPresent();
       return "unknown error";
     }
     return truncatedStr(buffer, size, '\'');
@@ -214,7 +215,7 @@ std::string Type::specString() const {
         return "overflow";
       }
       if (PyErr_Occurred()) {
-        PyErr_Clear();
+        clearPyErrIfPresent();
         return "error";
       }
     }

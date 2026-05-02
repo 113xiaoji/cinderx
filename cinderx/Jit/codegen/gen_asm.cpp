@@ -384,6 +384,7 @@ CiPyFrameObjType* prepareForDeopt(
   Ref<> deopt_obj = profileDeopt(deopt_meta, mem);
   auto ctx = getContext();
   ctx->recordDeopt(code_runtime, deopt_idx, deopt_obj);
+  ctx->recordRuntimeFallback(code_runtime, deoptReasonName(deopt_meta.reason));
   releaseRefs(deopt_meta, mem);
 #if PY_VERSION_HEX >= 0x030C0000
   if (_PyFrame_GetCode(frame)->co_flags & kCoFlagsAnyGenerator) {
@@ -2572,7 +2573,7 @@ void NativeGenerator::linkDeoptPatchers(const asmjit::CodeHolder& code) {
 
     // Register patcher with the runtime if it is type-based.
     if (auto typed_patcher = dynamic_cast<TypeDeoptPatcher*>(udp.patcher)) {
-      env_.ctx->watchType(typed_patcher->type(), typed_patcher);
+      env_.ctx->watchType(typed_patcher->type(), typed_patcher, env_.code_rt);
     }
   }
 

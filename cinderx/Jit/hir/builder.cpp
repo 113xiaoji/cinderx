@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/builder.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "ceval.h"
 
@@ -112,17 +113,21 @@ BorrowedRef<PyTypeObject> getStdlibArrayType() {
   if (array_type != nullptr) {
     return array_type;
   }
+  RETURN_MULTITHREADED_COMPILE(nullptr);
 
   ThreadedCompileSerialize guard;
+  if (array_type != nullptr) {
+    return array_type;
+  }
   Ref<> mod = Ref<>::steal(PyImport_ImportModule("array"));
   if (mod == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return nullptr;
   }
 
   Ref<> type = Ref<>::steal(PyObject_GetAttrString(mod, "array"));
   if (type == nullptr || !PyType_Check(type)) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return nullptr;
   }
 
@@ -350,6 +355,22 @@ bool isBannedName(std::string_view name) {
   return name == "eval" || name == "exec" || name == "locals";
 }
 
+bool unicodeEqualsAscii(BorrowedRef<> obj, std::string_view ascii) {
+  PyObject* raw = obj.get();
+  if (!PyUnicode_Check(raw) || !PyUnicode_IS_ASCII(raw) ||
+      PyUnicode_GET_LENGTH(raw) != static_cast<Py_ssize_t>(ascii.size())) {
+    return false;
+  }
+  return std::memcmp(PyUnicode_1BYTE_DATA(raw), ascii.data(), ascii.size()) ==
+      0;
+}
+
+bool isBannedNameObject(BorrowedRef<> name) {
+  return unicodeEqualsAscii(name, "eval") ||
+      unicodeEqualsAscii(name, "exec") ||
+      unicodeEqualsAscii(name, "locals");
+}
+
 bool codeHasBackedge(BorrowedRef<PyCodeObject> code) {
   for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
     switch (bc_instr.opcode()) {
@@ -399,6 +420,169 @@ bool isBuiltinListMethodDescr(PyObject* descr) {
   auto* method = reinterpret_cast<PyMethodDescrObject*>(descr);
   return method->d_common.d_type == &PyList_Type;
 }
+
+#if PY_VERSION_HEX >= 0x030E0000
+bool isBuilderResumeCheckOpcode(const BytecodeInstruction& instr) {
+  int opcode = instr.opcode();
+  if (opcode == RESUME_CHECK || instr.specializedOpcode() == RESUME_CHECK) {
+    return true;
+  }
+  return (opcode & EXTENDED_OPCODE_FLAG) != 0 &&
+      (opcode & ~EXTENDED_OPCODE_FLAG) == RESUME;
+}
+
+bool isBuilderSelfLoadOpcode(int opcode) {
+  switch (opcode) {
+    case LOAD_FAST:
+    case LOAD_FAST_BORROW:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::optional<bool> matchBuilderBoolConst(
+    BorrowedRef<PyCodeObject> code,
+    const BytecodeInstruction& instr) {
+  if (instr.opcode() != LOAD_CONST) {
+    return std::nullopt;
+  }
+  BorrowedRef<> constant{PyTuple_GET_ITEM(code->co_consts, instr.oparg())};
+  if (constant == Py_True) {
+    return true;
+  }
+  if (constant == Py_False) {
+    return false;
+  }
+  return std::nullopt;
+}
+
+bool isTinyBoolMutatorMethodValue(PyObject* descr) {
+  if (descr == nullptr || !PyFunction_Check(descr)) {
+    return false;
+  }
+  BorrowedRef<PyFunctionObject> func{
+      reinterpret_cast<PyFunctionObject*>(descr)};
+  BorrowedRef<PyCodeObject> code{func->func_code};
+  if (
+      code->co_argcount != 1 || code->co_kwonlyargcount != 0 ||
+      (code->co_flags & (CO_VARARGS | CO_VARKEYWORDS)) != 0) {
+    return false;
+  }
+
+  BorrowedRef<> arg0_name_obj{jit::getVarname(code, 0)};
+  if (!PyUnicode_CheckExact(arg0_name_obj)) {
+    return false;
+  }
+  const char* arg0_name = PyUnicode_AsUTF8(arg0_name_obj);
+  if (arg0_name == nullptr || std::strcmp(arg0_name, "self") != 0) {
+    clearPyErrIfPresent();
+    return false;
+  }
+
+  std::vector<BytecodeInstruction> body;
+  for (auto bc_instr : BytecodeInstructionBlock{code}) {
+    if (bc_instr.opcode() == RESUME || isBuilderResumeCheckOpcode(bc_instr) ||
+        bc_instr.opcode() == NOT_TAKEN ||
+        bc_instr.specializedOpcode() == NOT_TAKEN) {
+      continue;
+    }
+    body.push_back(bc_instr);
+  }
+
+  size_t stores = 0;
+  size_t next_idx = 0;
+  while (next_idx + 2 < body.size()) {
+    auto value = matchBuilderBoolConst(code, body[next_idx]);
+    if (
+        !value.has_value() ||
+        !isBuilderSelfLoadOpcode(body[next_idx + 1].opcode()) ||
+        body[next_idx + 1].oparg() != 0 ||
+        body[next_idx + 2].opcode() != STORE_ATTR ||
+        body[next_idx + 2].specializedOpcode() !=
+            STORE_ATTR_INSTANCE_VALUE) {
+      break;
+    }
+    stores++;
+    next_idx += 3;
+  }
+
+  return stores > 0 && stores <= 4 && next_idx + 1 < body.size() &&
+      isBuilderSelfLoadOpcode(body[next_idx].opcode()) &&
+      body[next_idx].oparg() == 0 &&
+      body[next_idx + 1].opcode() == RETURN_VALUE &&
+      next_idx + 2 == body.size();
+}
+
+bool isSmallOneArgMethodValueCallCandidate(PyObject* descr) {
+  if (descr == nullptr || !PyFunction_Check(descr)) {
+    return false;
+  }
+  BorrowedRef<PyFunctionObject> func{
+      reinterpret_cast<PyFunctionObject*>(descr)};
+  BorrowedRef<PyCodeObject> code{func->func_code};
+  if (
+      code->co_argcount != 2 || code->co_kwonlyargcount != 0 ||
+      (code->co_flags & (CO_VARARGS | CO_VARKEYWORDS | kCoFlagsAnyGenerator)) !=
+          0) {
+    return false;
+  }
+
+  BorrowedRef<> arg0_name_obj{jit::getVarname(code, 0)};
+  if (!PyUnicode_CheckExact(arg0_name_obj)) {
+    return false;
+  }
+  const char* arg0_name = PyUnicode_AsUTF8(arg0_name_obj);
+  if (arg0_name == nullptr || std::strcmp(arg0_name, "self") != 0) {
+    clearPyErrIfPresent();
+    return false;
+  }
+
+  size_t opcodes = 0;
+  for (auto bc_instr : BytecodeInstructionBlock{code}) {
+    if (bc_instr.opcode() == RESUME || isBuilderResumeCheckOpcode(bc_instr) ||
+        bc_instr.opcode() == NOT_TAKEN ||
+        bc_instr.specializedOpcode() == NOT_TAKEN) {
+      continue;
+    }
+    opcodes++;
+    if (opcodes > 16) {
+      return false;
+    }
+  }
+  return opcodes > 0;
+}
+
+bool isBuilderSideEffectFreeArgLoad(const BytecodeInstruction& instr) {
+  switch (instr.opcode()) {
+    case LOAD_CONST:
+    case LOAD_FAST:
+    case LOAD_FAST_BORROW:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isSideEffectFreeOneArgMethodValueCall(
+    BorrowedRef<PyCodeObject> code,
+    const BytecodeInstruction& load_attr_instr) {
+  BytecodeInstructionBlock block{code};
+  if (load_attr_instr.nextInstrOffset() >= block.endOffset()) {
+    return false;
+  }
+  BytecodeInstruction arg_instr = load_attr_instr.nextInstr();
+  if (!isBuilderSideEffectFreeArgLoad(arg_instr)) {
+    return false;
+  }
+  if (arg_instr.nextInstrOffset() >= block.endOffset()) {
+    return false;
+  }
+  BytecodeInstruction call_instr = arg_instr.nextInstr();
+  return (call_instr.opcode() == CALL || call_instr.opcode() == CALL_METHOD) &&
+      call_instr.oparg() == 1;
+}
+#endif
 
 bool canUseMethodWithValuesFastPath(
     Register* receiver,
@@ -623,6 +807,11 @@ BorrowedRef<> resolveKnownCallableObject(
     if (obj != nullptr) {
       return obj;
     }
+    if (getThreadedCompileContext().compileRunning()) {
+      // The fallback lookups below may touch Python dict error state.  Worker
+      // threads only use objects that were already safely preloaded.
+      return nullptr;
+    }
     BorrowedRef<> name = PyTuple_GET_ITEM(preloader.code()->co_names, name_idx);
     if (name == nullptr) {
       return nullptr;
@@ -707,7 +896,7 @@ bool isInlineableSetGenexprCode(BorrowedRef<PyCodeObject> code) {
 
   const char* name = PyUnicode_AsUTF8(code->co_name);
   if (name == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   return std::strcmp(name, "<genexpr>") == 0;
@@ -721,7 +910,7 @@ bool nameEquals(BorrowedRef<> obj, const char* expected) {
   }
   int cmp = PyUnicode_CompareWithASCIIString(obj, expected);
   if (cmp < 0) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   return cmp == 0;
@@ -786,7 +975,7 @@ bool isPickleUnpicklerLoadFunction(BorrowedRef<PyCodeObject> code) {
   const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
   const char* filename = PyUnicode_AsUTF8(code->co_filename);
   if (qualname == nullptr || filename == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   return std::strcmp(qualname, "_Unpickler.load") == 0 &&
@@ -2770,6 +2959,21 @@ void HIRBuilder::emitAnyCall(
         Register* callable = tc.frame.stack.peek(num_stack_inputs);
         switch (bc_instr.specializedOpcode()) {
           case CALL_LIST_APPEND:
+            if (bc_instr.oparg() == 1 && kwnames_ == nullptr && !is_call_kw) {
+              Register* item = tc.frame.stack.pop();
+              Register* list = tc.frame.stack.pop();
+              tc.frame.stack.pop(); // discard list.append callable
+
+              tc.emit<RefineType>(list, TList, list);
+              Register* append_status = temps_.AllocateStack();
+              tc.emit<ListAppend>(append_status, list, item, tc.frame);
+
+              Register* none = temps_.AllocateStack();
+              tc.emit<LoadConst>(none, TNoneType);
+              tc.frame.stack.push(none);
+              break;
+            }
+            [[fallthrough]];
           case CALL_METHOD_DESCRIPTOR_FAST:
           case CALL_METHOD_DESCRIPTOR_FAST_WITH_KEYWORDS:
           case CALL_METHOD_DESCRIPTOR_NOARGS:
@@ -2927,6 +3131,31 @@ bool HIRBuilder::tryEmitProfiledMethodWithValuesCall(
   auto emit_generic_call = [&](TranslationContext& call_tc) {
     call_tc.emitSnapshot();
     Register* call_out = temps_.AllocateStack();
+    if (pending.delayed_lookup) {
+      std::vector<Register*> arg_regs(num_operands - 1, nullptr);
+      FrameState lookup_frame = call_tc.frame;
+      for (auto i = num_operands - 1; i > 1; i--) {
+        arg_regs[i - 1] = call_tc.frame.stack.pop();
+      }
+      Register* self = call_tc.frame.stack.pop();
+      call_tc.frame.stack.pop(); // discard fast-path placeholder callable
+
+      Register* callable = temps_.AllocateStack();
+      Register* method_instance = temps_.AllocateStack();
+      call_tc.emit<LoadMethod>(callable, self, pending.name_idx, lookup_frame);
+      call_tc.emit<GetSecondOutput>(method_instance, TOptObject, callable);
+
+      auto call = call_tc.emit<CallMethod>(num_operands, call_out, flags);
+      call->SetOperand(0, callable);
+      call->SetOperand(1, method_instance);
+      for (std::size_t i = 2; i < num_operands; i++) {
+        call->SetOperand(i, arg_regs[i - 1]);
+      }
+      call->setFrameState(call_tc.frame);
+      call_tc.frame.stack.push(call_out);
+      return call_out;
+    }
+
     auto call = call_tc.emit<CallMethod>(num_operands, call_out, flags);
     for (auto i = num_operands; i > 0; i--) {
       Register* arg = call_tc.frame.stack.pop();
@@ -2944,10 +3173,13 @@ bool HIRBuilder::tryEmitProfiledMethodWithValuesCall(
       arg_regs[i - 1] = call_tc.frame.stack.pop();
     }
     Register* self = call_tc.frame.stack.pop();
-    call_tc.frame.stack.pop(); // discard generic callable from LoadMethod
+    Register* callable = call_tc.frame.stack.pop();
 
-    Register* funcreg = temps_.AllocateStack();
-    call_tc.emit<LoadConst>(funcreg, Type::fromObject(pending.descr));
+    Register* funcreg = callable;
+    if (!pending.delayed_lookup) {
+      funcreg = temps_.AllocateStack();
+      call_tc.emit<LoadConst>(funcreg, Type::fromObject(pending.descr));
+    }
 
     Register* call_out = temps_.AllocateStack();
     auto vector_call = call_tc.emit<VectorCall>(num_operands, call_out, flags);
@@ -3121,6 +3353,11 @@ InlineResult HIRBuilder::inlineGenexprHIR(
     Register* closure_tuple,
     Register* collector,
     InlineGenexprCollectorKind collector_kind) {
+  // Building a nested preloader can touch Python dict/error state while warming
+  // globals. Worker threads intentionally do not own a PyThreadState, so leave
+  // genexpr calls on the generic path during threaded precompile.
+  RETURN_MULTITHREADED_COMPILE({});
+
   auto preloader = Preloader::makePreloader(
       gen_code,
       preloader_.builtins(),
@@ -3128,7 +3365,7 @@ InlineResult HIRBuilder::inlineGenexprHIR(
       nullptr,
       preloader_.fullname());
   if (preloader == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return {};
   }
 
@@ -3452,7 +3689,7 @@ bool HIRBuilder::tryEmitDeepcopyDictSubscrRewrite(
 
   PyObject* sentinel_obj = JITRT_GetDictItemMissSentinel();
   if (sentinel_obj == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
 
@@ -4564,7 +4801,7 @@ void HIRBuilder::emitLoadAttr(
     }
     const char* arg0_name = PyUnicode_AsUTF8(arg0_name_obj);
     if (arg0_name == nullptr) {
-      PyErr_Clear();
+      clearPyErrIfPresent();
       return false;
     }
     return std::strcmp(arg0_name, "self") == 0;
@@ -4700,7 +4937,7 @@ void HIRBuilder::emitLoadAttr(
             PyTuple_GET_ITEM(code_->co_names, name_idx);
         const char* field_name = PyUnicode_AsUTF8(name);
         if (field_name == nullptr) {
-          PyErr_Clear();
+          clearPyErrIfPresent();
           field_name = "<unknown>";
         }
         emit_type_version_guard(bc_instr.cacheU32(2), "LOAD_ATTR_SLOT");
@@ -4714,6 +4951,11 @@ void HIRBuilder::emitLoadAttr(
       }
 #if PY_VERSION_HEX >= 0x030E0000
       case LOAD_ATTR_INSTANCE_VALUE: {
+        if (is_method) {
+          // Method-call LOAD_ATTR must leave the two-value LoadMethod stack
+          // shape. The instance-value path only produces the plain attribute.
+          break;
+        }
         if (code_->co_nlocals < instance_value_min_locals()) {
           break;
         }
@@ -4721,7 +4963,7 @@ void HIRBuilder::emitLoadAttr(
             PyTuple_GET_ITEM(code_->co_names, name_idx);
         const char* field_name = PyUnicode_AsUTF8(name);
         if (field_name == nullptr) {
-          PyErr_Clear();
+          clearPyErrIfPresent();
           field_name = "<unknown>";
         }
         Register* obj_type = emit_type_version_guard(
@@ -4740,13 +4982,39 @@ void HIRBuilder::emitLoadAttr(
         if (descr == nullptr) {
           break;
         }
+        bool deopt_only_method_value_fast_path =
+            (isTinyBoolMutatorMethodValue(descr) ||
+             isSmallOneArgMethodValueCallCandidate(descr)) &&
+            !is_nonexact_self_receiver() &&
+            bc_instr.cacheU32(2) != 0 &&
+            bc_instr.cacheU32(4) != 0 && tc.frame.parent == nullptr;
+        bool delayed_method_value_fast_path =
+            isSmallOneArgMethodValueCallCandidate(descr) &&
+            is_nonexact_self_receiver() && bc_instr.cacheU32(2) != 0 &&
+            bc_instr.cacheU32(4) != 0 && tc.frame.parent == nullptr &&
+            isSideEffectFreeOneArgMethodValueCall(code_, bc_instr);
         if (!canUseMethodWithValuesFastPath(
-                receiver, descr, code_, preloader_.globals())) {
+                receiver, descr, code_, preloader_.globals()) &&
+            !deopt_only_method_value_fast_path) {
           // Only recover the profiled fast path in the outer function body.
           // Re-emitting the same hybrid branch inside already-inlined callees
           // creates a nested shape that later HIR passes do not handle well yet.
           if (tc.frame.parent == nullptr) {
             Register* result = temps_.AllocateStack();
+            if (delayed_method_value_fast_path) {
+              tc.emit<LoadConst>(result, Type::fromObject(descr));
+              pending_method_with_values_call_ = PendingMethodWithValuesCall{
+                  receiver,
+                  result,
+                  descr,
+                  bc_instr.cacheU32(2),
+                  bc_instr.cacheU32(4),
+                  name_idx,
+                  true};
+              tc.frame.stack.push(result);
+              tc.frame.stack.push(receiver);
+              return;
+            }
             Register* method_instance = temps_.AllocateStack();
             tc.emit<LoadMethod>(result, receiver, name_idx, tc.frame);
             tc.emit<GetSecondOutput>(method_instance, TOptObject, result);
@@ -4755,7 +5023,9 @@ void HIRBuilder::emitLoadAttr(
                 result,
                 descr,
                 bc_instr.cacheU32(2),
-                bc_instr.cacheU32(4)};
+                bc_instr.cacheU32(4),
+                name_idx,
+                false};
             tc.frame.stack.push(result);
             tc.frame.stack.push(method_instance);
             return;
@@ -5867,10 +6137,10 @@ void HIRBuilder::emitPopJumpIfNone(
 void HIRBuilder::emitStoreAttr(
     TranslationContext& tc,
     const jit::BytecodeInstruction& bc_instr) {
+  FrameState deopt_frame = tc.frame;
   Register* receiver = tc.frame.stack.pop();
   Register* value = tc.frame.stack.pop();
-  if (getConfig().specialized_opcodes &&
-      bc_instr.specializedOpcode() == STORE_ATTR_SLOT) {
+  if (getConfig().specialized_opcodes) {
     auto emit_type_version_guard = [&](uint32_t type_version, const char* descr)
         -> Register* {
       Register* obj_type = temps_.AllocateStack();
@@ -5891,36 +6161,49 @@ void HIRBuilder::emitStoreAttr(
       Register* matches = temps_.AllocateStack();
       tc.emit<PrimitiveCompare>(
           matches, PrimitiveCompareOp::kEqual, version, expected);
-      auto* guard = tc.emit<Guard>(matches, tc.frame);
+      auto* guard = tc.emit<Guard>(matches, deopt_frame);
       guard->setGuiltyReg(receiver);
       guard->setDescr(descr);
       return obj_type;
     };
-
-    BorrowedRef<PyUnicodeObject> name =
-        PyTuple_GET_ITEM(code_->co_names, bc_instr.oparg());
-    const char* field_name = PyUnicode_AsUTF8(name);
-    if (field_name == nullptr) {
-      PyErr_Clear();
-      field_name = "<unknown>";
+    switch (bc_instr.specializedOpcode()) {
+      case STORE_ATTR_SLOT: {
+        BorrowedRef<PyUnicodeObject> name =
+            PyTuple_GET_ITEM(code_->co_names, bc_instr.oparg());
+        const char* field_name = PyUnicode_AsUTF8(name);
+        if (field_name == nullptr) {
+          clearPyErrIfPresent();
+          field_name = "<unknown>";
+        }
+        emit_type_version_guard(bc_instr.cacheU32(2), "STORE_ATTR_SLOT");
+        Register* previous = temps_.AllocateStack();
+        tc.emit<LoadField>(
+            previous,
+            receiver,
+            field_name,
+            bc_instr.cacheU16(4),
+            TOptObject,
+            /* borrowed= */ false);
+        tc.emit<StoreField>(
+            receiver,
+            field_name,
+            bc_instr.cacheU16(4),
+            value,
+            TOptObject,
+            previous);
+        return;
+      }
+#if PY_VERSION_HEX >= 0x030E0000
+      case STORE_ATTR_INSTANCE_VALUE: {
+        // CPython's specialized store also records insertion order when the
+        // inline value slot is empty. Until the JIT models that side effect,
+        // keep this on the generic path instead of direct field stores.
+        break;
+      }
+#endif
+      default:
+        break;
     }
-    emit_type_version_guard(bc_instr.cacheU32(2), "STORE_ATTR_SLOT");
-    Register* previous = temps_.AllocateStack();
-    tc.emit<LoadField>(
-        previous,
-        receiver,
-        field_name,
-        bc_instr.cacheU16(4),
-        TOptObject,
-        /* borrowed= */ false);
-    tc.emit<StoreField>(
-        receiver,
-        field_name,
-        bc_instr.cacheU16(4),
-        value,
-        TOptObject,
-        previous);
-    return;
   }
   tc.emit<StoreAttr>(receiver, value, bc_instr.oparg(), tc.frame);
 }
@@ -6097,9 +6380,16 @@ void HIRBuilder::emitStoreSubscr(
       tc.emit<Branch>(done_path);
 
       tc.block = slow_path;
+      tc.emit<Snapshot>(tc.frame);
       if (bc_instr.specializedOpcode() == STORE_SUBSCR_DICT) {
         tc.emit<GuardType>(container, TDictExact, container, tc.frame);
       }
+#if PY_VERSION_HEX >= 0x030E0000
+      if (bc_instr.specializedOpcode() == STORE_SUBSCR_LIST_INT) {
+        tc.emit<GuardType>(container, TListExact, container, tc.frame);
+        tc.emit<GuardType>(sub, TLongExact, sub, tc.frame);
+      }
+#endif
       tc.emit<StoreSubscr>(container, sub, value, tc.frame);
       tc.emit<Branch>(done_path);
 
@@ -6112,6 +6402,13 @@ void HIRBuilder::emitStoreSubscr(
       bc_instr.specializedOpcode() == STORE_SUBSCR_DICT) {
     tc.emit<GuardType>(container, TDictExact, container, tc.frame);
   }
+#if PY_VERSION_HEX >= 0x030E0000
+  if (getConfig().specialized_opcodes &&
+      bc_instr.specializedOpcode() == STORE_SUBSCR_LIST_INT) {
+    tc.emit<GuardType>(container, TListExact, container, tc.frame);
+    tc.emit<GuardType>(sub, TLongExact, sub, tc.frame);
+  }
+#endif
 
   tc.emit<StoreSubscr>(container, sub, value, tc.frame);
 }
@@ -6517,7 +6814,7 @@ void HIRBuilder::emitLoadField(
   Register* result = temps_.AllocateStack();
   const char* field_name = PyUnicode_AsUTF8(name);
   if (field_name == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     field_name = "";
   }
   tc.emit<LoadField>(result, receiver, field_name, offset, type);
@@ -6534,7 +6831,7 @@ void HIRBuilder::emitStoreField(
   auto& [offset, type, name] = preloader_.fieldInfo(constArg(bc_instr));
   const char* field_name = PyUnicode_AsUTF8(name);
   if (field_name == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     field_name = "";
   }
 
@@ -7331,11 +7628,20 @@ void HIRBuilder::checkTranslate() {
 
   PyObject* names = code_->co_names;
   std::unordered_set<Py_ssize_t> banned_name_ids;
-  auto name_at = [&](Py_ssize_t i) {
-    return std::string_view(PyUnicode_AsUTF8(PyTuple_GET_ITEM(names, i)));
+  auto name_at = [&](Py_ssize_t i) -> BorrowedRef<> {
+    return PyTuple_GET_ITEM(names, i);
+  };
+  auto name_for_error = [&](Py_ssize_t i) -> std::string {
+    RETURN_MULTITHREADED_COMPILE(std::string{"<name>"});
+    const char* name = PyUnicode_AsUTF8(name_at(i).get());
+    if (name == nullptr) {
+      clearPyErrIfPresent();
+      return "<unknown>";
+    }
+    return name;
   };
   for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(names); i++) {
-    if (isBannedName(name_at(i))) {
+    if (isBannedNameObject(name_at(i))) {
       banned_name_ids.insert(i);
     }
   }
@@ -7351,7 +7657,8 @@ void HIRBuilder::checkTranslate() {
           opcodeName(opcode))};
     } else if (opcode == LOAD_GLOBAL) {
       if constexpr (PY_VERSION_HEX >= 0x030B0000) {
-        if ((oparg & 0x01) && name_at(oparg >> 1) == "super") {
+        if ((oparg & 0x01) &&
+            unicodeEqualsAscii(name_at(oparg >> 1), "super")) {
           // LOAD_GLOBAL NULL + super, super isn't being used with a
           // LOAD_SUPER_ATTR.
           throw std::runtime_error{fmt::format(
@@ -7365,7 +7672,7 @@ void HIRBuilder::checkTranslate() {
         throw std::runtime_error{fmt::format(
             "Cannot compile {} to HIR because it uses banned global '{}'",
             preloader_.fullname(),
-            name_at(oparg))};
+            name_for_error(oparg))};
       }
     }
   }

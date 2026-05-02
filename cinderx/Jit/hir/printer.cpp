@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/printer.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "cinderx/Common/util.h"
 #include "cinderx/Jit/symbolizer.h"
@@ -190,7 +191,7 @@ static std::string escape_unicode(PyObject* str) {
   Py_ssize_t size;
   const char* data = PyUnicode_AsUTF8AndSize(str, &size);
   if (data == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return "";
   }
   return escape_unicode(data, size);

@@ -1016,6 +1016,33 @@ int JITRT_ListPrefixReverseAssign(PyObject* list, PyObject* index) {
   return 0;
 }
 
+int JITRT_SetListItemExactInt(PyObject* list, PyObject* index, PyObject* value) {
+  if (!PyList_CheckExact(list) || !PyLong_CheckExact(index)) {
+    return PyObject_SetItem(list, index, value);
+  }
+
+  Py_ssize_t idx = PyNumber_AsSsize_t(index, PyExc_IndexError);
+  if (idx == -1 && PyErr_Occurred()) {
+    return -1;
+  }
+
+  Py_ssize_t size = PyList_GET_SIZE(list);
+  if (idx < 0) {
+    idx += size;
+  }
+  if (idx < 0 || idx >= size) {
+    PyErr_SetString(PyExc_IndexError, "list assignment index out of range");
+    return -1;
+  }
+
+  PyObject** items = reinterpret_cast<PyListObject*>(list)->ob_item;
+  PyObject* old = items[idx];
+  Py_INCREF(value);
+  items[idx] = value;
+  Py_DECREF(old);
+  return 0;
+}
+
 #if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
 
 namespace {

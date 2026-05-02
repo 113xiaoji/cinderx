@@ -59,12 +59,15 @@ def _iter_jitlist_entries(raw: str):
 
 def _worker_jit_api():
     try:
-        import cinderjit as jit_ext
+        # Import the Python wrapper before enabling the JIT. It imports typing
+        # and importlib-heavy stdlib code that should stay interpreted during
+        # worker startup.
+        import cinderx.jit as jit_ext
 
         return jit_ext
     except Exception:
         try:
-            import cinderx.jit as jit_ext
+            import cinderjit as jit_ext
 
             return jit_ext
         except Exception:

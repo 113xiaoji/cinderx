@@ -122,10 +122,11 @@ BorrowedRef<> getMethodObjectFromType(Type receiver_type, BorrowedRef<> name) {
       PyType_HasFeature(type, Py_TPFLAGS_IMMUTABLETYPE) &&
       PyType_CheckExact(type) && type->tp_dictoffset == 0) {
     method_obj = immutableMultithreadedTypeLookup(type, name);
-    if (Py_TYPE(method_obj) != &PyClassMethodDescr_Type &&
+    if (method_obj == nullptr ||
+        (Py_TYPE(method_obj) != &PyClassMethodDescr_Type &&
         Py_TYPE(method_obj) != &PyMethodDescr_Type &&
         Py_TYPE(method_obj) != &PyWrapperDescr_Type &&
-        Py_TYPE(method_obj) != &PyFunction_Type) {
+        Py_TYPE(method_obj) != &PyFunction_Type)) {
       method_obj = nullptr;
     }
   }
@@ -136,6 +137,8 @@ BorrowedRef<> getMethodObjectFromType(Type receiver_type, BorrowedRef<> name) {
 // Returns true if LoadMethod/CallMethod/GetSecondOutput were removed.
 // Returns false if they could not be removed.
 bool tryEliminateLoadMethod(Function& irfunc, MethodInvoke& invoke) {
+  RETURN_MULTITHREADED_COMPILE(false);
+
   ThreadedCompileSerialize guard;
   PyCodeObject* code = invoke.load_method->frameState()->code;
   PyObject* names = code->co_names;

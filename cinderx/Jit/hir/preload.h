@@ -15,6 +15,7 @@
 #include <map>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace jit::hir {
 
@@ -143,6 +144,11 @@ class Preloader {
     return global_names_;
   }
 
+  const std::vector<BorrowedRef<PyFunctionObject>>& methodValueFunctions()
+      const {
+    return method_value_functions_;
+  }
+
   // get the type from argument check info for the given locals index, or
   // TObject
   Type checkArgType(long local_idx) const;
@@ -260,6 +266,7 @@ class Preloader {
   bool allow_aggressive_split_dict_loads_{false};
   // keyed by name index, names borrowed from code object
   GlobalNamesMap global_names_;
+  std::vector<BorrowedRef<PyFunctionObject>> method_value_functions_;
   Type return_type_{TObject};
   bool has_primitive_args_{false};
   bool has_primitive_first_arg_{false};

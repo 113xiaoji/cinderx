@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/float_accumulator_promotion.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "pycore_long.h"
 
@@ -29,7 +30,7 @@ std::optional<int64_t> getBoxedLongConst(Register* reg) {
 
   int overflow = 0;
   long long value = PyLong_AsLongLongAndOverflow(ty.objectSpec(), &overflow);
-  PyErr_Clear();
+  clearPyErrIfPresent();
   if (overflow != 0) {
     return std::nullopt;
   }
@@ -83,7 +84,7 @@ void FloatAccumulatorPromotion::Run(Function& irfunc) {
 
   Ref<> zero_float = Ref<>::steal(PyFloat_FromDouble(0.0));
   if (zero_float == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return;
   }
   Type zero_float_type =

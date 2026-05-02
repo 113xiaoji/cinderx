@@ -110,6 +110,32 @@ uint64_t countCalls(PyCodeObject* code) {
 #endif
 }
 
+const char* resultName(Result result) {
+  switch (result) {
+    case Result::OK:
+      return "ok";
+    case Result::CANNOT_SPECIALIZE:
+      return "cannot_specialize";
+    case Result::NOT_ON_JITLIST:
+      return "not_on_jitlist";
+    case Result::NOT_INITIALIZED:
+      return "not_initialized";
+    case Result::ALREADY_SCHEDULED:
+      return "already_scheduled";
+    case Result::PAUSED:
+      return "paused";
+    case Result::NO_PRELOADER:
+      return "no_preloader";
+    case Result::OVER_MAX_CODE_SIZE:
+      return "over_max_code_size";
+    case Result::UNKNOWN_ERROR:
+      return "unknown_error";
+    case Result::PYTHON_EXCEPTION:
+      return "python_exception";
+  }
+  return "unknown_result";
+}
+
 BCOffset hotLoopBCOffset(_PyInterpreterFrame* frame, _Py_CODEUNIT* loop_start) {
   auto* code = _PyFrame_GetCode(frame);
 #if PY_VERSION_HEX >= 0x030D0000
@@ -154,6 +180,54 @@ std::optional<Phase1OSRArgs> buildPhase1OSRArgs(
     args.raw[mapping.local_index] = obj;
   }
   return args;
+}
+
+bool canAttemptHotLoopOSR(BorrowedRef<PyFunctionObject> func) {
+  BorrowedRef<> module_name{
+      PyDict_GetItemString(func->func_globals, "__name__")};
+  if (module_name == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+
+  int cmp = PyUnicode_CompareWithASCIIString(module_name, "__main__");
+  if (cmp == -1 && PyErr_Occurred()) {
+    PyErr_Clear();
+    return false;
+  }
+
+  // Phase-1 same-activation OSR is intentionally limited to top-level user or
+  // benchmark code. Import-time stdlib loops can hit compiler shapes that are
+  // outside the MVP's supported surface before the workload has even started.
+  return cmp == 0;
+}
+
+bool hasOpcode(const hir::OpcodeCounts& counts, hir::Opcode opcode) {
+  return counts.at(static_cast<size_t>(opcode)) != 0;
+}
+
+bool supportsPhase1HotLoopOSR(const CompiledFunction& compiled_func) {
+  const hir::OpcodeCounts& counts = compiled_func.hirOpcodeCounts();
+
+  // The phase-1 adapter reuses the phase-0 test entry, which only restores
+  // Python locals. Object-heavy loops with calls/attrs may also have internal
+  // pinned state (for example tstate around periodic-task checks) live across
+  // the loop header. Until OSR metadata tracks those non-Python values, keep
+  // same-activation OSR to leaf loops and fall back safely for richer shapes.
+  return !hasOpcode(counts, hir::Opcode::kCallCFunc) &&
+      !hasOpcode(counts, hir::Opcode::kCallEx) &&
+      !hasOpcode(counts, hir::Opcode::kCallInd) &&
+      !hasOpcode(counts, hir::Opcode::kCallMethod) &&
+      !hasOpcode(counts, hir::Opcode::kCallStatic) &&
+      !hasOpcode(counts, hir::Opcode::kInvokeStaticFunction) &&
+      !hasOpcode(counts, hir::Opcode::kVectorCall) &&
+      !hasOpcode(counts, hir::Opcode::kLoadAttr) &&
+      !hasOpcode(counts, hir::Opcode::kLoadAttrCached) &&
+      !hasOpcode(counts, hir::Opcode::kLoadMethod) &&
+      !hasOpcode(counts, hir::Opcode::kLoadMethodCached) &&
+      !hasOpcode(counts, hir::Opcode::kStoreAttr) &&
+      !hasOpcode(counts, hir::Opcode::kStoreAttrCached) &&
+      !hasOpcode(counts, hir::Opcode::kDeoptPatchpoint);
 }
 
 // If functions in the cinderx module get compiled, they will somehow keep the
@@ -207,6 +281,20 @@ PyObject* forcedJitVectorcall(
       Py_TYPE(func_obj)->tp_name);
   BorrowedRef<PyFunctionObject> func{func_obj};
   BorrowedRef<PyCodeObject> code{func->func_code};
+  auto interp_entry = getInterpretedVectorcall(func);
+
+  if (auto* ctx = jitCtx()) {
+    const char* promotion_reason =
+        ctx->isBaselineFunc(func) ? "baseline_to_optimized" : "lazy_compile";
+    if (!ctx->shouldAttemptOptimizedPromotion(func, promotion_reason)) {
+      setVectorcall(func, interp_entry);
+      cinderx::getModuleState()->registered_compilation_units.erase(
+          func.getObj());
+      incrementShadowcodeCall(code);
+      return interp_entry(func_obj, stack, nargsf, kwnames);
+    }
+    ctx->recordPromotionAttempt(func, promotion_reason);
+  }
 
   auto result = compileFunction(func);
   if (result == Result::OK) {
@@ -217,11 +305,12 @@ PyObject* forcedJitVectorcall(
     return func->vectorcall(func_obj, stack, nargsf, kwnames);
   }
 
-  auto interp_entry = getInterpretedVectorcall(func);
-
   // Python errors shouldn't happen during compilation, but if they do, bubble
   // them up without calling the function.
   if (result == Result::PYTHON_EXCEPTION) {
+    if (auto* ctx = jitCtx()) {
+      ctx->recordCompileFailure(func, resultName(result));
+    }
     setVectorcall(func, interp_entry);
     return nullptr;
   }
@@ -229,6 +318,9 @@ PyObject* forcedJitVectorcall(
   // Reset the function's entrypoint if it doesn't seem like there's a chance
   // compilation will work "soon".
   if (result != Result::ALREADY_SCHEDULED && result != Result::PAUSED) {
+    if (auto* ctx = jitCtx()) {
+      ctx->recordCompileFailure(func, resultName(result));
+    }
     setVectorcall(func, interp_entry);
   }
 
@@ -250,16 +342,59 @@ PyObject* jitVectorcall(
       Py_TYPE(func_obj)->tp_name);
   BorrowedRef<PyFunctionObject> func{func_obj};
   BorrowedRef<PyCodeObject> code{func->func_code};
+  auto* ctx = jitCtx();
+  auto baseline_limit = getConfig().baseline_compile_after_n_calls;
+  auto compile_limit = getConfig().compile_after_n_calls;
+  std::optional<uint64_t> calls;
+  auto get_calls = [&]() -> uint64_t {
+    if (!calls.has_value()) {
+      calls = countCalls(code);
+    }
+    return *calls;
+  };
+
+  if (!isJitUsable()) {
+    incrementShadowcodeCall(code);
+    auto entry = getInterpretedVectorcall(func);
+    return entry(func_obj, stack, nargsf, kwnames);
+  }
+
+  if (baseline_limit.has_value() && ctx != nullptr && !isJitCompiled(func) &&
+      !ctx->isBaselineFunc(func)) {
+    uint64_t call_count = get_calls();
+    uint64_t effective_calls =
+        call_count == std::numeric_limits<uint64_t>::max() ? call_count
+                                                           : call_count + 1;
+    if (effective_calls >= *baseline_limit) {
+      ctx->addBaselineFunc(func);
+    }
+  }
 
   // If there's a call count limit, interpret the function as usual until the
   // limit is reached.
-  if (auto limit = getConfig().compile_after_n_calls; limit.has_value()) {
-    auto const calls = countCalls(code);
-    if (calls < *limit) {
+  if (compile_limit.has_value()) {
+    if (get_calls() < *compile_limit) {
       incrementShadowcodeCall(code);
       auto entry = getInterpretedVectorcall(func);
       return entry(func_obj, stack, nargsf, kwnames);
     }
+  } else if (ctx != nullptr && ctx->isBaselineFunc(func)) {
+    incrementShadowcodeCall(code);
+    auto entry = getInterpretedVectorcall(func);
+    return entry(func_obj, stack, nargsf, kwnames);
+  } else if (ctx != nullptr && ctx->isBaselineScheduledFunc(func)) {
+    if (!baseline_limit.has_value()) {
+      // The function was scheduled only for baseline-auto.  If that policy was
+      // disabled before the function became active baseline, don't accidentally
+      // fall through into optimized compilation.
+      ctx->removeBaselineScheduledFunc(func);
+      cinderx::getModuleState()->registered_compilation_units.erase(
+          func.getObj());
+      setVectorcall(func, getInterpretedVectorcall(func));
+    }
+    incrementShadowcodeCall(code);
+    auto entry = getInterpretedVectorcall(func);
+    return entry(func_obj, stack, nargsf, kwnames);
   }
 
   return forcedJitVectorcall(func_obj, stack, nargsf, kwnames);
@@ -362,6 +497,15 @@ FlagProcessor initFlagProcessor() {
       [](uint32_t val) { getMutableConfig().compile_after_n_calls = val; },
       "Enable auto-JIT mode, which compiles functions after the given "
       "threshold");
+
+  flag_processor.addOption(
+      "jit-baseline-auto",
+      "PYTHONJITBASELINEAUTO",
+      [](uint32_t val) {
+        getMutableConfig().baseline_compile_after_n_calls = val;
+      },
+      "Enable baseline-tier auto mode, which moves functions into the "
+      "baseline tier after the given threshold");
 
   flag_processor.addOption(
       "jit-debug",
@@ -986,6 +1130,27 @@ Result tryCompilePreloaded(BorrowedRef<> unit) {
   return preloader ? compilePreloader(*preloader, func) : Result::NO_PRELOADER;
 }
 
+bool shouldAttemptPreloadedUnit(BorrowedRef<> unit, const char* reason) {
+  if (jitCtx() == nullptr || !PyFunction_Check(unit.get())) {
+    return true;
+  }
+  BorrowedRef<PyFunctionObject> func{unit.get()};
+  if (!jitCtx()->shouldAttemptOptimizedPromotion(func, reason)) {
+    return false;
+  }
+  jitCtx()->recordPromotionAttempt(func, reason);
+  return true;
+}
+
+void recordPreloadedCompileFailure(BorrowedRef<> unit, Result result) {
+  if (result == Result::OK || result == Result::ALREADY_SCHEDULED ||
+      jitCtx() == nullptr || !PyFunction_Check(unit.get())) {
+    return;
+  }
+  jitCtx()->recordCompileFailure(
+      BorrowedRef<PyFunctionObject>{unit.get()}, resultName(result));
+}
+
 void compile_worker_thread() {
   JIT_DLOG("Started compile worker in thread {}", std::this_thread::get_id());
 
@@ -995,6 +1160,7 @@ void compile_worker_thread() {
   while (BorrowedRef<> unit = getThreadedCompileContext().nextUnit()) {
     attempts++;
     auto result = tryCompilePreloaded(unit);
+    recordPreloadedCompileFailure(unit, result);
     if (result == Result::ALREADY_SCHEDULED) {
       retries++;
       getThreadedCompileContext().retryUnit(unit);
@@ -1018,7 +1184,8 @@ void compile_worker_thread() {
 
 void compile_units_preloaded(std::vector<BorrowedRef<>>&& units) {
   for (auto unit : units) {
-    tryCompilePreloaded(unit);
+    Result result = tryCompilePreloaded(unit);
+    recordPreloadedCompileFailure(unit, result);
   }
 }
 
@@ -1032,6 +1199,11 @@ void multithread_compile_units_preloaded(
       "workers",
       units.size(),
       worker_count);
+
+  // Some HIR type queries consult the cached builtins table.  Initialize it
+  // while the main thread still owns the GIL so workers never have to touch
+  // interpreter module state.
+  jitCtx()->builtins();
 
   // Disable checks for using GIL protected data across threads.
   // Conceptually what we're doing here is saying we're taking our own
@@ -1120,13 +1292,19 @@ bool compile_all(size_t workers = 0) {
 
   // Filter out any units that were deleted as a side effect of preloading.
   std::erase_if(compilation_units, [&](BorrowedRef<> unit) {
-    return deleted_units.contains(unit);
+    return deleted_units.contains(unit) ||
+        !shouldAttemptPreloadedUnit(unit, "precompile_all");
   });
 
   JIT_DLOG(
       "compile_all finished preloading {} units, {} were deleted",
       compilation_units.size(),
       deleted_units.size());
+
+  if (compilation_units.empty()) {
+    hir::preloaderManager().clear();
+    return true;
+  }
 
   if (workers > 1) {
     multithread_compile_units_preloaded(std::move(compilation_units), workers);
@@ -1266,10 +1444,12 @@ std::vector<BorrowedRef<PyCodeObject>> findNestedCodes(
 //
 // Return true if the function is registered with JIT or is already compiled,
 // and false otherwise.
-bool registerFunction(BorrowedRef<PyFunctionObject> func) {
+bool registerFunction(
+    BorrowedRef<PyFunctionObject> func,
+    bool allow_reopt = true) {
   // Attempt to attach already-compiled code even if the JIT is disabled, as
   // long as it hasn't been finalized.
-  if (reoptFunc(func)) {
+  if (allow_reopt && reoptFunc(func)) {
     return true;
   }
 
@@ -1349,8 +1529,13 @@ bool deoptFuncImpl(BorrowedRef<PyFunctionObject> func) {
 }
 
 void uncompile(BorrowedRef<PyFunctionObject> func) {
-  deoptFuncImpl(func);
-  jitCtx()->forgetCode(func);
+  CodeRuntime* runtime = jitCtx()->lookupCodeRuntime(func);
+  if (!deoptFuncImpl(func)) {
+    return;
+  }
+  if (runtime == nullptr || !jitCtx()->hasCodeRuntimeOwners(runtime)) {
+    jitCtx()->forgetCode(func);
+  }
 }
 
 /*
@@ -1375,8 +1560,10 @@ void disable_jit_impl(bool deopt_all) {
   if (deopt_all) {
     JIT_DLOG(
         "Deopting {} compiled functions", jitCtx()->compiledFuncs().size());
+    std::vector<BorrowedRef<PyFunctionObject>> compiled_funcs{
+        jitCtx()->compiledFuncs().begin(), jitCtx()->compiledFuncs().end()};
     size_t success = 0;
-    for (BorrowedRef<PyFunctionObject> func : jitCtx()->compiledFuncs()) {
+    for (BorrowedRef<PyFunctionObject> func : compiled_funcs) {
       if (deoptFunc(func)) {
         success++;
       } else {
@@ -1384,6 +1571,21 @@ void disable_jit_impl(bool deopt_all) {
       }
     }
     JIT_DLOG("Deopted {} compiled functions", success);
+
+    std::vector<BorrowedRef<PyFunctionObject>> baseline_funcs{
+        jitCtx()->baselineFuncs().begin(), jitCtx()->baselineFuncs().end()};
+    for (BorrowedRef<PyFunctionObject> func : baseline_funcs) {
+      setVectorcall(func, getInterpretedVectorcall(func));
+    }
+    std::vector<BorrowedRef<PyFunctionObject>> baseline_scheduled_funcs{
+        jitCtx()->baselineScheduledFuncs().begin(),
+        jitCtx()->baselineScheduledFuncs().end()};
+    for (BorrowedRef<PyFunctionObject> func : baseline_scheduled_funcs) {
+      cinderx::getModuleState()->registered_compilation_units.erase(
+          func.getObj());
+      setVectorcall(func, getInterpretedVectorcall(func));
+    }
+    jitCtx()->clearBaselineTierState("deopt_all");
   }
 
   if (isJitUsable()) {
@@ -1616,6 +1818,26 @@ int compile_after_n_calls_impl(uint32_t calls) {
   return 0;
 }
 
+int baseline_compile_after_n_calls_impl(uint32_t calls) {
+  if (Ci_InitFrameEvalFunc() < 0) {
+    return -1;
+  }
+
+  getMutableConfig().baseline_compile_after_n_calls = calls;
+
+  // Schedule all pre-existing functions so they can enter the baseline tier
+  // through jitVectorcall() once their per-code call count reaches the gate.
+  walkFunctionObjects([](BorrowedRef<PyFunctionObject> func) {
+    if (scheduleJitCompile(func) && jitCtx() != nullptr) {
+      jitCtx()->addBaselineScheduledFunc(func);
+    }
+  });
+
+  JIT_DLOG("Configuring JIT baseline tier after {} calls", calls);
+
+  return 0;
+}
+
 PyObject* compile_after_n_calls(PyObject* /* self */, PyObject* arg) {
   Py_ssize_t calls = -1;
   if (!PyArg_Parse(arg, "n:compile_after_n_calls", &calls)) {
@@ -1630,6 +1852,42 @@ PyObject* compile_after_n_calls(PyObject* /* self */, PyObject* arg) {
   }
 
   if (compile_after_n_calls_impl(calls) < 0) {
+    return nullptr;
+  }
+
+  Py_RETURN_NONE;
+}
+
+PyObject* baseline_compile_after_n_calls(PyObject* /* self */, PyObject* arg) {
+  if (arg == Py_None) {
+    getMutableConfig().baseline_compile_after_n_calls.reset();
+    if (jitCtx() != nullptr) {
+      std::vector<BorrowedRef<PyFunctionObject>> baseline_scheduled_funcs{
+          jitCtx()->baselineScheduledFuncs().begin(),
+          jitCtx()->baselineScheduledFuncs().end()};
+      for (BorrowedRef<PyFunctionObject> func : baseline_scheduled_funcs) {
+        cinderx::getModuleState()->registered_compilation_units.erase(
+            func.getObj());
+        setVectorcall(func, getInterpretedVectorcall(func));
+      }
+      jitCtx()->clearBaselineScheduledTierState("baseline_auto_disabled");
+    }
+    Py_RETURN_NONE;
+  }
+
+  Py_ssize_t calls = -1;
+  if (!PyArg_Parse(arg, "n:baseline_compile_after_n_calls", &calls)) {
+    return nullptr;
+  }
+  if (calls < 0 || calls > std::numeric_limits<uint32_t>::max()) {
+    PyErr_Format(
+        PyExc_ValueError,
+        "Cannot configure baseline JIT after '%zd' calls",
+        calls);
+    return nullptr;
+  }
+
+  if (baseline_compile_after_n_calls_impl(calls) < 0) {
     return nullptr;
   }
 
@@ -1709,7 +1967,18 @@ PyObject* force_compile(PyObject* /* self */, PyObject* arg) {
     return nullptr;
   }
 
+  if (auto* ctx = jitCtx()) {
+    if (!ctx->shouldAttemptOptimizedPromotion(func, "force_compile")) {
+      Py_RETURN_FALSE;
+    }
+    ctx->recordPromotionAttempt(func, "force_compile");
+  }
   auto result = compileFunction(func);
+  if (result != Result::OK && result != Result::ALREADY_SCHEDULED) {
+    if (auto* ctx = jitCtx()) {
+      ctx->recordCompileFailure(func, resultName(result));
+    }
+  }
   switch (result) {
     case Result::OK:
       Py_RETURN_TRUE;
@@ -1751,6 +2020,33 @@ PyObject* force_compile(PyObject* /* self */, PyObject* arg) {
   return nullptr;
 }
 
+PyObject* force_compile_baseline(PyObject* /* self */, PyObject* arg) {
+  BorrowedRef<PyFunctionObject> func =
+      get_func_arg("force_compile_baseline", arg);
+  if (func == nullptr) {
+    return nullptr;
+  }
+  if (!isJitUsable() || isJitCompiled(func) || jitCtx() == nullptr ||
+      jitCtx()->isBaselineFunc(func)) {
+    Py_RETURN_FALSE;
+  }
+
+  if (Ci_InitFrameEvalFunc() < 0) {
+    return nullptr;
+  }
+
+  setVectorcall(func, jitVectorcall);
+  if (!registerFunction(func, /* allow_reopt= */ false)) {
+    setVectorcall(func, getInterpretedVectorcall(func));
+    Py_RETURN_FALSE;
+  }
+  if (!jitCtx()->addBaselineFunc(func)) {
+    Py_RETURN_FALSE;
+  }
+
+  Py_RETURN_TRUE;
+}
+
 PyObject* lazy_compile(PyObject* /* self */, PyObject* arg) {
   BorrowedRef<PyFunctionObject> func = get_func_arg("lazy_compile", arg);
   if (func == nullptr) {
@@ -1774,6 +2070,8 @@ PyObject* lazy_compile(PyObject* /* self */, PyObject* arg) {
   Py_RETURN_TRUE;
 }
 
+void unregisterFunctionCodes(BorrowedRef<PyFunctionObject> func);
+
 // Uncompile a function by returning it to its non-jitted version.
 PyObject* force_uncompile(PyObject* /* self */, PyObject* arg) {
   BorrowedRef<PyFunctionObject> func = get_func_arg("force_uncompile", arg);
@@ -1781,7 +2079,11 @@ PyObject* force_uncompile(PyObject* /* self */, PyObject* arg) {
     return nullptr;
   }
 
-  if (!isJitCompiled(func)) {
+  bool was_compiled = isJitCompiled(func);
+  bool was_baseline = jitCtx() != nullptr && jitCtx()->isBaselineFunc(func);
+  bool was_baseline_scheduled =
+      jitCtx() != nullptr && jitCtx()->isBaselineScheduledFunc(func);
+  if (!was_compiled && !was_baseline && !was_baseline_scheduled) {
     Py_RETURN_FALSE;
   }
 
@@ -1789,11 +2091,17 @@ PyObject* force_uncompile(PyObject* /* self */, PyObject* arg) {
   // can properly be called again.
   setVectorcall(func, getInterpretedVectorcall(func));
 
-  // "Destroy" the function from the perspective of the JIT, effectively erasing
-  // all traces of it from the metadata.
-  funcDestroyed(func);
+  // Explicit uncompile removes compiled artifacts but keeps per-function tier
+  // policy telemetry such as compile-failure cooldowns and deopt budgets.
+  // Actual function destruction still goes through funcDestroyed().
+  unregisterFunctionCodes(func);
+  cinderx::getModuleState()->registered_compilation_units.erase(func.getObj());
   if (jitCtx() != nullptr) {
-    uncompile(func);
+    if (was_compiled) {
+      uncompile(func);
+    }
+    jitCtx()->noteUncompiledFunc(func, "uncompile");
+    jitCtx()->clearFunctionEntryCache(func);
   }
 
   Py_RETURN_TRUE;
@@ -1890,6 +2198,14 @@ PyObject* get_compile_after_n_calls(PyObject* /* self */, PyObject*) {
   Py_RETURN_NONE;
 }
 
+PyObject* get_baseline_compile_after_n_calls(PyObject* /* self */, PyObject*) {
+  auto limit = getConfig().baseline_compile_after_n_calls;
+  if (limit.has_value()) {
+    return PyLong_FromLong(*limit);
+  }
+  Py_RETURN_NONE;
+}
+
 PyObject* is_enabled(PyObject* /* self */, PyObject* /* args */) {
   return PyBool_FromLong(isJitUsable());
 }
@@ -1907,6 +2223,82 @@ PyObject* count_interpreted_calls(PyObject* /* self */, PyObject* arg) {
 PyObject* is_jit_compiled(PyObject* /* self */, PyObject* arg) {
   BorrowedRef<PyFunctionObject> func = get_func_arg("is_jit_compiled", arg);
   return func != nullptr ? PyBool_FromLong(isJitCompiled(func)) : nullptr;
+}
+
+PyObject* get_function_tier(PyObject* /* self */, PyObject* arg) {
+  BorrowedRef<PyFunctionObject> func = get_func_arg("get_function_tier", arg);
+  if (func == nullptr) {
+    return nullptr;
+  }
+  if (isJitCompiled(func)) {
+    return PyUnicode_FromString("optimized");
+  }
+  if (jitCtx() != nullptr && jitCtx()->isBaselineFunc(func)) {
+    return PyUnicode_FromString("baseline");
+  }
+  return PyUnicode_FromString("interp");
+}
+
+PyObject* get_function_tier_state(PyObject* /* self */, PyObject* arg) {
+  BorrowedRef<PyFunctionObject> func =
+      get_func_arg("get_function_tier_state", arg);
+  if (func == nullptr) {
+    return nullptr;
+  }
+
+  FunctionTierState state;
+  if (jitCtx() != nullptr) {
+    state = jitCtx()->getFunctionTierState(func);
+  }
+
+  auto result = Ref<>::steal(PyDict_New());
+  if (result == nullptr) {
+    return nullptr;
+  }
+
+  auto set_string = [&](const char* key, const char* value) -> bool {
+    auto py_value = Ref<>::steal(PyUnicode_FromString(value));
+    return py_value != nullptr &&
+        PyDict_SetItemString(result, key, py_value) == 0;
+  };
+  auto set_bool = [&](const char* key, bool value) -> bool {
+    auto py_value = Ref<>::steal(PyBool_FromLong(value));
+    return py_value != nullptr &&
+        PyDict_SetItemString(result, key, py_value) == 0;
+  };
+  auto set_size = [&](const char* key, std::size_t value) -> bool {
+    auto py_value = Ref<>::steal(PyLong_FromSize_t(value));
+    return py_value != nullptr &&
+        PyDict_SetItemString(result, key, py_value) == 0;
+  };
+
+  if (!set_string("active_tier", functionTierName(state.active_tier)) ||
+      !set_string("policy_state", tierPolicyStateName(state.policy_state)) ||
+      !set_bool("baseline_scheduled", state.baseline_scheduled) ||
+      !set_bool("compiled", state.compiled) ||
+      !set_bool("deopted", state.deopted) ||
+      !set_string("last_transition", state.last_transition.c_str()) ||
+      !set_size("runtime_fallbacks", state.runtime_fallbacks) ||
+      !set_string("last_fallback_reason", state.last_fallback_reason.c_str()) ||
+      !set_size("deopt_budget", state.deopt_budget) ||
+      !set_size("compile_failures", state.compile_failures) ||
+      !set_string("last_compile_failure", state.last_compile_failure.c_str()) ||
+      !set_size("invalidations", state.invalidations) ||
+      !set_string(
+          "last_invalidation_reason",
+          state.last_invalidation_reason.c_str()) ||
+      !set_size("promotion_attempts", state.promotion_attempts) ||
+      !set_string(
+          "last_promotion_reason",
+          state.last_promotion_reason.c_str()) ||
+      !set_bool("promotion_blocked", state.promotion_blocked) ||
+      !set_string(
+          "promotion_blocked_reason",
+          state.promotion_blocked_reason.c_str())) {
+    return nullptr;
+  }
+
+  return result.release();
 }
 
 PyObject* set_max_code_size(PyObject* /* self */, PyObject* arg) {
@@ -3097,6 +3489,12 @@ PyMethodDef jit_methods[] = {
      PyDoc_STR(
          "Configure the JIT to automatically compile functions after "
          "they are called a set number of times.")},
+    {"baseline_compile_after_n_calls",
+     baseline_compile_after_n_calls,
+     METH_O,
+     PyDoc_STR(
+         "Configure the JIT to move functions into the baseline tier after "
+         "they are called a set number of times.")},
     {"disassemble", disassemble, METH_O, "Disassemble JIT compiled functions."},
 #ifndef WIN32
     {"dump_elf",
@@ -3121,6 +3519,12 @@ PyMethodDef jit_methods[] = {
      PyDoc_STR(
          "Get the current number of calls needed before a function is "
          "automatically compiled.")},
+    {"get_baseline_compile_after_n_calls",
+     get_baseline_compile_after_n_calls,
+     METH_NOARGS,
+     PyDoc_STR(
+         "Get the current number of calls needed before a function enters "
+         "the baseline tier.")},
     {"is_enabled",
      is_enabled,
      METH_NOARGS,
@@ -3135,6 +3539,14 @@ PyMethodDef jit_methods[] = {
      is_jit_compiled,
      METH_O,
      PyDoc_STR("Check if a function is jit compiled.")},
+    {"get_function_tier",
+     get_function_tier,
+     METH_O,
+     PyDoc_STR("Return 'interp', 'baseline', or 'optimized' for a function.")},
+    {"get_function_tier_state",
+     get_function_tier_state,
+     METH_O,
+     PyDoc_STR("Return detailed tiering state for a function.")},
     {"set_max_code_size",
      set_max_code_size,
      METH_O,
@@ -3153,6 +3565,10 @@ PyMethodDef jit_methods[] = {
      force_compile,
      METH_O,
      PyDoc_STR("Force a function to be JIT compiled if it hasn't yet.")},
+    {"force_compile_baseline",
+     force_compile_baseline,
+     METH_O,
+     PyDoc_STR("Force a function into the baseline tier if it hasn't yet.")},
     {"force_uncompile",
      force_uncompile,
      METH_O,
@@ -3447,6 +3863,10 @@ Result compile_func(BorrowedRef<PyFunctionObject> func) {
     }
 
     result = compilePreloader(*preloader, target);
+    if (target != func && result != Result::OK &&
+        result != Result::ALREADY_SCHEDULED && jitCtx() != nullptr) {
+      jitCtx()->recordCompileFailure(target, resultName(result));
+    }
     JIT_CHECK(
         result != Result::PYTHON_EXCEPTION,
         "Raised a Python exception while JIT-compiling function {}, which is "
@@ -3647,6 +4067,10 @@ HotLoopCompiledState ensureCompiledForHotLoopOSR(
   trackEligibleCodeObjects(func, func->func_code, JitEligibility::Eligible);
   hir::Preloader* preloader = preload(func);
   if (preloader == nullptr) {
+    if (auto* ctx = jitCtx()) {
+      ctx->recordCompileFailure(
+          func, PyErr_Occurred() ? "python_exception" : "no_preloader");
+    }
     return {
         .compiled_func = nullptr,
         .needs_finalize = false,
@@ -3655,9 +4079,15 @@ HotLoopCompiledState ensureCompiledForHotLoopOSR(
 
   Result compile_result = compilePreloaderImpl(jitCtx(), *preloader, nullptr);
   if (compile_result == Result::PYTHON_EXCEPTION) {
+    if (auto* ctx = jitCtx()) {
+      ctx->recordCompileFailure(func, resultName(compile_result));
+    }
     return {.compiled_func = nullptr, .needs_finalize = false, .status = -1};
   }
   if (compile_result != Result::OK) {
+    if (auto* ctx = jitCtx()) {
+      ctx->recordCompileFailure(func, resultName(compile_result));
+    }
     return {.compiled_func = nullptr, .needs_finalize = false, .status = 0};
   }
 
@@ -3690,6 +4120,9 @@ extern "C" int _PyJIT_TryHotLoopOSR(
     return 0;
   }
   BorrowedRef<PyFunctionObject> func{func_obj};
+  if (!canAttemptHotLoopOSR(func)) {
+    return 0;
+  }
   BorrowedRef<PyCodeObject> code{_PyFrame_GetCode(frame)};
   if ((code->co_flags & kCoFlagsAnyGenerator) != 0) {
     return 0;
@@ -3698,6 +4131,16 @@ extern "C" int _PyJIT_TryHotLoopOSR(
       PyBytes_GET_SIZE(code->co_exceptiontable) != 0) {
     return 0;
   }
+  if (!isJitCompiled(func)) {
+    auto* ctx = jitCtx();
+    if (ctx != nullptr &&
+        !ctx->shouldAttemptOptimizedPromotion(func, "hot_loop_osr")) {
+      return 0;
+    }
+    if (ctx != nullptr) {
+      ctx->recordPromotionAttempt(func, "hot_loop_osr");
+    }
+  }
 
   HotLoopCompiledState compile_state = ensureCompiledForHotLoopOSR(func);
   if (compile_state.status < 0) {
@@ -3705,6 +4148,9 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   }
   CompiledFunction* compiled_func = compile_state.compiled_func;
   if (compiled_func == nullptr) {
+    return 0;
+  }
+  if (!supportsPhase1HotLoopOSR(*compiled_func)) {
     return 0;
   }
 
@@ -3996,6 +4442,11 @@ int initialize() {
     if (compile_after_n_calls_impl(*compile_n) < 0) {
       return -1;
     }
+  } else if (auto baseline_n = getConfig().baseline_compile_after_n_calls;
+             baseline_n.has_value()) {
+    if (baseline_compile_after_n_calls_impl(*baseline_n) < 0) {
+      return -1;
+    }
   } else if (mod_state->jit_list.get() != nullptr) {
     if (rescheduleJitList() < 0) {
       return -1;
@@ -4028,7 +4479,9 @@ void finalize() {
   // Deopt all compiled functions before releasing references. This ensures
   // that if any JIT Python functions are invoked as side-effects during the
   // remainder of shutdown, they will go through the interpreter.
-  for (PyFunctionObject* func : jitCtx()->compiledFuncs()) {
+  std::vector<BorrowedRef<PyFunctionObject>> compiled_funcs{
+      jitCtx()->compiledFuncs().begin(), jitCtx()->compiledFuncs().end()};
+  for (BorrowedRef<PyFunctionObject> func : compiled_funcs) {
     deoptFuncImpl(func);
   }
 
@@ -4067,6 +4520,7 @@ void finalize() {
 bool shouldScheduleCompile(BorrowedRef<PyFunctionObject> func) {
   BorrowedRef<PyCodeObject> code{func->func_code};
   return shouldAlwaysScheduleCompile(code) ||
+      getConfig().baseline_compile_after_n_calls.has_value() ||
       getConfig().compile_after_n_calls.has_value();
 }
 
@@ -4187,6 +4641,17 @@ std::vector<BorrowedRef<PyFunctionObject>> preloadFuncAndDeps(
         continue;
       }
       BorrowedRef<PyFunctionObject> target_func = obj.get();
+      if (shouldPreload(target_func)) {
+        worklist.push_back(target_func);
+      }
+    }
+
+    // Preload Python functions discovered through warmed method-value inline
+    // caches.  These are not globals, but builder can still turn the
+    // LOAD_ATTR_METHOD_WITH_VALUES + CALL pair into a direct VectorCall that
+    // the HIR inliner can consume if the callee has a preloader.
+    for (BorrowedRef<PyFunctionObject> target_func :
+         preloader->methodValueFunctions()) {
       if (shouldPreload(target_func)) {
         worklist.push_back(target_func);
       }

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/inline_genexpr_makefunction_hoist.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "cinderx/Jit/deopt.h"
 #include "cinderx/Jit/hir/analysis.h"
@@ -52,7 +53,7 @@ bool isInlineGenexprMakeFunction(const MakeFunction& make_func) {
   }
   const char* name = PyUnicode_AsUTF8(code->co_name);
   if (name == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   return std::strcmp(name, "<genexpr>") == 0;

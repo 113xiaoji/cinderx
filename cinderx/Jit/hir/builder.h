@@ -629,6 +629,8 @@ class HIRBuilder {
     PyObject* descr{nullptr};
     uint32_t type_version{0};
     uint32_t keys_version{0};
+    int name_idx{-1};
+    bool delayed_lookup{false};
   };
 
   TempAllocator temps_{nullptr};

@@ -26,9 +26,7 @@ class ArmRuntimeTests(unittest.TestCase):
         self._compile_after_n_calls = cinderx.jit.get_compile_after_n_calls()
 
     def tearDown(self) -> None:
-        if self._compile_after_n_calls is None:
-            cinderx.jit.compile_after_n_calls(0)
-        else:
+        if self._compile_after_n_calls is not None:
             cinderx.jit.compile_after_n_calls(self._compile_after_n_calls)
 
     def test_runtime_initializes(self) -> None:
@@ -212,6 +210,168 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-3]), (5000 * 5001) // 2 + 1, proc.stdout)
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(lines[-1], "False", proc.stdout)
+
+    def test_phase1_loop_osr_skips_pyperformance_startup_imports(self) -> None:
+        # Regression guard:
+        # pyperformance workers load the JIT startup hook while importing
+        # stdlib modules. Same-activation OSR must not try to compile those
+        # import-time stdlib loops before benchmark/user code starts.
+        code = textwrap.dedent(
+            """
+            import cinderx
+            import cinderx.jit as jit
+
+            print(cinderx.is_initialized())
+            print(jit.is_enabled())
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/pyperf_worker_startup_import.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYPERFORMANCE_RUNID"] = "pyperf-probe"
+            env["CINDERX_WORKER_PYTHONJITAUTO"] = "10"
+            env["CINDERX_ENABLE_SPECIALIZED_OPCODES"] = "0"
+            hook_dir = os.path.abspath("scripts/arm/pyperf_env_hook")
+            old_pythonpath = env.get("PYTHONPATH")
+            env["PYTHONPATH"] = (
+                hook_dir if not old_pythonpath else f"{hook_dir}{os.pathsep}{old_pythonpath}"
+            )
+
+            proc = subprocess.run(
+                [sys.executable, script, "--debug-single-value"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 2, proc.stdout)
+            self.assertEqual(lines[-2], "True", proc.stdout)
+            self.assertEqual(lines[-1], "True", proc.stdout)
+
+    def test_phase1_loop_osr_richards_method_loop_does_not_crash(self) -> None:
+        try:
+            import pyperformance
+        except ModuleNotFoundError:
+            self.skipTest("pyperformance is not installed")
+
+        bench = os.path.join(
+            os.path.dirname(pyperformance.__file__),
+            "data-files",
+            "benchmarks",
+            "bm_richards",
+            "run_benchmark.py",
+        )
+        if not os.path.exists(bench):
+            self.skipTest(f"missing pyperformance richards benchmark: {bench}")
+
+        code = textwrap.dedent(
+            f"""
+            import importlib.util
+
+            import cinderx.jit as jit
+
+            spec = importlib.util.spec_from_file_location("richards_probe", {bench!r})
+            richards = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(richards)
+
+            # pyperformance benchmark workers execute benchmark modules as
+            # __main__. Preserve that module shape without invoking pyperf's
+            # command-line runner from the imported file.
+            richards.__dict__["__name__"] = "__main__"
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            print(richards.Richards().run(1))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/phase1_richards_osr.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONFAULTHANDLER"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 1, proc.stdout)
+            self.assertEqual(lines[-1], "True", proc.stdout)
+
+    def test_instance_value_method_attr_shape_falls_back(self) -> None:
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class C:
+                def __init__(self):
+                    self.f = lambda: 42
+
+            def call_attr(c):
+                return c.f()
+
+            c = C()
+            for _ in range(20000):
+                if call_attr(c) != 42:
+                    raise SystemExit("bad warmup result")
+
+            print(jit.force_compile(call_attr))
+            print(call_attr(c))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/instance_value_method_attr.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITINSTANCEVALUEMINLOCALS"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 2, proc.stdout)
+            self.assertEqual(lines[-2], "True", proc.stdout)
+            self.assertEqual(lines[-1], "42", proc.stdout)
 
     def test_phase0_osr_test_entry_preserves_live_local_refcounts(self) -> None:
         code = textwrap.dedent(
@@ -1024,6 +1184,124 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertLessEqual(int(lines[-2]), 6, proc.stdout)
             self.assertEqual(float(lines[-1]), 32.0, proc.stdout)
 
+    def test_tiny_bool_state_mutator_removes_lookup_and_callmethod(self) -> None:
+        # Regression guard:
+        # Richards-style state transitions are tiny zero-arg mutators that set
+        # boolean instance fields and return self. The direct lowering only
+        # earns its keep if it removes both the method call and the method
+        # lookup; keeping LoadMethodCached alive regressed the object-heavy
+        # matrix in an earlier attempt.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class State:
+                def __init__(self):
+                    self.packet_pending = True
+                    self.task_waiting = False
+                    self.task_holding = False
+
+                def running(self):
+                    self.packet_pending = False
+                    self.task_waiting = False
+                    self.task_holding = False
+                    return self
+
+                def packetPending(self):
+                    self.packet_pending = True
+                    self.task_waiting = False
+                    self.task_holding = False
+                    return self
+
+                def waitTask(self):
+                    self.task_waiting = True
+                    return self
+
+            def score(state):
+                return (
+                    (4 if state.packet_pending else 0)
+                    + (2 if state.task_waiting else 0)
+                    + (1 if state.task_holding else 0)
+                )
+
+            def hot(state, mode):
+                if mode == 0:
+                    result = state.running()
+                elif mode == 1:
+                    result = state.packetPending()
+                else:
+                    result = state.waitTask()
+                if result is not state:
+                    return -100
+                return score(state)
+
+            state = State()
+            for _ in range(20000):
+                if hot(state, 0) != 0:
+                    raise SystemExit("bad running warmup")
+                if hot(state, 1) != 4:
+                    raise SystemExit("bad pending warmup")
+                if hot(state, 2) != 6:
+                    raise SystemExit("bad wait warmup")
+
+            assert jit.force_compile(hot)
+            counts = cinderjit.get_function_hir_opcode_counts(hot)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("LoadMethodCached", 0) + counts.get("LoadMethod", 0))
+            print(counts.get("StoreField", 0))
+            print(hot(state, 0))
+            print(hot(state, 1))
+            print(hot(state, 2))
+
+            state.packet_pending = True
+            state.task_waiting = False
+            state.task_holding = False
+            state.running = lambda: state
+            print(hot(state, 0))
+
+            State.packetPending = lambda self: self
+            state.packet_pending = False
+            state.task_waiting = True
+            state.task_holding = False
+            print(hot(state, 1))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/tiny_bool_state_mutator_lookup_free.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONFAULTHANDLER"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 8, proc.stdout)
+            self.assertEqual(int(lines[-8]), 0, proc.stdout)
+            self.assertEqual(int(lines[-7]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-6]), 7, proc.stdout)
+            self.assertEqual(int(lines[-5]), 0, proc.stdout)
+            self.assertEqual(int(lines[-4]), 4, proc.stdout)
+            self.assertEqual(int(lines[-3]), 6, proc.stdout)
+            self.assertEqual(int(lines[-2]), 4, proc.stdout)
+            self.assertEqual(int(lines[-1]), 2, proc.stdout)
+
     def test_tiny_bool_method_refines_branch_receiver_fields(self) -> None:
         # Regression guard:
         # a zero-arg helper that returns constant bool should let the JIT
@@ -1114,6 +1392,257 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertLessEqual(int(lines[-3]), 1, proc.stdout)
             self.assertEqual(float(lines[-2]), 54.0, proc.stdout)
             self.assertEqual(float(lines[-1]), 45.0, proc.stdout)
+
+    def test_tiny_bool_getter_method_eliminates_callmethod(self) -> None:
+        # Regression guard:
+        # object-heavy workloads such as Richards use zero-arg predicate
+        # helpers that simply return a boolean instance field. Once warmed,
+        # those should be cheaper than a full Python method call.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class State:
+                def __init__(self):
+                    self.flag = False
+                    self.value = 7
+
+                def is_flag(self):
+                    return self.flag
+
+            def hot(state):
+                if state.is_flag():
+                    return 1
+                return state.value
+
+            state = State()
+            for _ in range(20000):
+                if hot(state) != 7:
+                    raise SystemExit("bad false warmup")
+
+            assert jit.force_compile(hot)
+            counts = cinderjit.get_function_hir_opcode_counts(hot)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("LoadMethodCached", 0))
+            print(counts.get("LoadField", 0))
+            print(hot(state))
+            state.flag = True
+            print(hot(state))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/tiny_bool_getter_no_callmethod.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 5, proc.stdout)
+            self.assertEqual(int(lines[-5]), 0, proc.stdout)
+            # The method cache load may remain as a conservative lookup guard;
+            # the expensive Python method call itself should be gone.
+            self.assertLessEqual(int(lines[-4]), 1, proc.stdout)
+            self.assertGreaterEqual(int(lines[-3]), 2, proc.stdout)
+            self.assertEqual(int(lines[-2]), 7, proc.stdout)
+            self.assertEqual(int(lines[-1]), 1, proc.stdout)
+
+    def test_tiny_bool_getter_method_respects_instance_shadowing(self) -> None:
+        # A direct getter inline must still respect Python's dynamic instance
+        # attribute shadowing after the method has already been compiled.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class State:
+                def __init__(self):
+                    self.flag = False
+                    self.value = 7
+
+                def is_flag(self):
+                    return self.flag
+
+            def hot(state):
+                if state.is_flag():
+                    return 1
+                return state.value
+
+            state = State()
+            for _ in range(20000):
+                if hot(state) != 7:
+                    raise SystemExit("bad false warmup")
+
+            assert jit.force_compile(hot)
+            counts = cinderjit.get_function_hir_opcode_counts(hot)
+            print(counts.get("CallMethod", 0))
+            print(hot(state))
+            state.is_flag = lambda: True
+            print(hot(state))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/tiny_bool_getter_shadowing.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertEqual(int(lines[-2]), 7, proc.stdout)
+            self.assertEqual(int(lines[-1]), 1, proc.stdout)
+
+    def test_tiny_bool_predicate_method_eliminates_branch_callmethod(self) -> None:
+        # Regression guard:
+        # Richards-style state predicates are inherited by multiple concrete
+        # task classes and are only used as branch conditions. The caller should
+        # be able to avoid the Python method call while preserving branch
+        # semantics for exact-bool state fields.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class TaskState:
+                def __init__(self, pending=False, waiting=False, holding=False):
+                    self.packet_pending = pending
+                    self.task_waiting = waiting
+                    self.task_holding = holding
+
+                def isTaskHoldingOrWaiting(self):
+                    return self.task_holding or (
+                        not self.packet_pending and self.task_waiting
+                    )
+
+                def isWaitingWithPacket(self):
+                    return (
+                        self.packet_pending
+                        and self.task_waiting
+                        and not self.task_holding
+                    )
+
+            class TaskA(TaskState):
+                pass
+
+            class TaskB(TaskState):
+                pass
+
+            def hot_waiting_with_packet(state):
+                if state.isWaitingWithPacket():
+                    return 10
+                return 20
+
+            def hot_holding_or_waiting(state):
+                if state.isTaskHoldingOrWaiting():
+                    return 30
+                return 40
+
+            ready = TaskA(True, True, False)
+            holding = TaskB(False, False, True)
+            waiting = TaskA(False, True, False)
+            running = TaskB(False, False, False)
+            states = (ready, holding, waiting, running)
+
+            for _ in range(20000):
+                if hot_waiting_with_packet(ready) != 10:
+                    raise SystemExit("bad ready waiting result")
+                if hot_waiting_with_packet(holding) != 20:
+                    raise SystemExit("bad holding waiting result")
+                if hot_holding_or_waiting(waiting) != 30:
+                    raise SystemExit("bad waiting holding result")
+                if hot_holding_or_waiting(running) != 40:
+                    raise SystemExit("bad running holding result")
+                for state in states:
+                    state.isWaitingWithPacket()
+                    state.isTaskHoldingOrWaiting()
+
+            assert jit.force_compile(hot_waiting_with_packet)
+            assert jit.force_compile(hot_holding_or_waiting)
+            waiting_counts = cinderjit.get_function_hir_opcode_counts(
+                hot_waiting_with_packet
+            )
+            holding_counts = cinderjit.get_function_hir_opcode_counts(
+                hot_holding_or_waiting
+            )
+            print(waiting_counts.get("CallMethod", 0))
+            print(waiting_counts.get("LoadMethodCached", 0))
+            print(waiting_counts.get("LoadField", 0))
+            print(holding_counts.get("CallMethod", 0))
+            print(holding_counts.get("LoadMethodCached", 0))
+            print(holding_counts.get("LoadField", 0))
+            print(hot_waiting_with_packet(ready))
+            print(hot_waiting_with_packet(holding))
+            print(hot_holding_or_waiting(waiting))
+            print(hot_holding_or_waiting(running))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/tiny_bool_predicate_no_callmethod.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 10, proc.stdout)
+            self.assertEqual(int(lines[-10]), 0, proc.stdout)
+            self.assertLessEqual(int(lines[-9]), 1, proc.stdout)
+            self.assertGreaterEqual(int(lines[-8]), 6, proc.stdout)
+            self.assertEqual(int(lines[-7]), 0, proc.stdout)
+            self.assertLessEqual(int(lines[-6]), 1, proc.stdout)
+            self.assertGreaterEqual(int(lines[-5]), 6, proc.stdout)
+            self.assertEqual(int(lines[-4]), 10, proc.stdout)
+            self.assertEqual(int(lines[-3]), 20, proc.stdout)
+            self.assertEqual(int(lines[-2]), 30, proc.stdout)
+            self.assertEqual(int(lines[-1]), 40, proc.stdout)
 
     def test_plain_instance_other_arg_guard_eliminates_cached_attr_loads(self) -> None:
         # Regression guard:
@@ -1440,6 +1969,245 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertGreaterEqual(len(lines), 4, proc.stdout)
             self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(int(lines[-1]), 9, proc.stdout)
+
+    def test_method_with_values_one_arg_method_preloads_for_hir_inliner(
+        self,
+    ) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        # Regression guard:
+        # Richards-style methods call one-arg helper methods like
+        # Task.findtcb(id).  LOAD_ATTR_METHOD_WITH_VALUES can recover a direct
+        # VectorCall for these calls, but the HIR inliner also needs the
+        # method's PyFunction preloaded.  Only force-compile the caller here;
+        # the callee should be discovered from the warmed method cache.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_hir_inliner()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class TaskWorkArea:
+                def __init__(self):
+                    self.taskTab = [None] * 4
+
+            taskWorkArea = TaskWorkArea()
+
+            class Task:
+                def __init__(self, ident, priority):
+                    self.ident = ident
+                    self.priority = priority
+                    taskWorkArea.taskTab[ident] = self
+
+                def findtcb(self, ident):
+                    t = taskWorkArea.taskTab[ident]
+                    if t is None:
+                        pass
+                    return t
+
+                def release(self, ident):
+                    return self.findtcb(ident).priority + self.priority
+
+            root = Task(0, 1)
+            Task(1, 10)
+            Task(2, 20)
+            Task(3, 30)
+
+            for _ in range(20000):
+                if root.release(1) != 11:
+                    raise SystemExit("bad warmup")
+
+            assert jit.force_compile(Task.release)
+            counts = cinderjit.get_function_hir_opcode_counts(Task.release)
+            stats = jit.get_inlined_functions_stats(Task.release)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("VectorCall", 0))
+            print(stats.get("num_inlined_functions", 0))
+            print(root.release(2))
+            print(root.release(-1))
+            try:
+                root.release(99)
+            except IndexError:
+                print("index-error")
+            else:
+                print("missing-index-error")
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/method_with_values_one_arg_inline.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 6, proc.stdout)
+            self.assertGreaterEqual(int(lines[-4]), 1, proc.stdout)
+            self.assertEqual(int(lines[-3]), 21, proc.stdout)
+            self.assertEqual(int(lines[-2]), 31, proc.stdout)
+            self.assertEqual(lines[-1], "index-error", proc.stdout)
+
+    def test_method_with_values_one_arg_method_removes_lookup_by_default(
+        self,
+    ) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Table:
+                def __init__(self):
+                    self.items = [10, 20, 30]
+
+                def get(self, index):
+                    return self.items[index]
+
+            def hot(table, index):
+                return table.get(index) + 1
+
+            table = Table()
+            for _ in range(20000):
+                if hot(table, 1) != 21:
+                    raise SystemExit("bad warmup result")
+
+            assert jit.force_compile(hot)
+            counts = cinderjit.get_function_hir_opcode_counts(hot)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("LoadMethodCached", 0) + counts.get("LoadMethod", 0))
+            print(counts.get("VectorCall", 0))
+            print(hot(table, 1))
+
+            table.get = lambda index: 99
+            print(hot(table, 1))
+
+            other = Table()
+            Table.get = lambda self, index: 41
+            print(hot(other, 1))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/method_with_values_one_arg_default_fastpath.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONFAULTHANDLER"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 6, proc.stdout)
+            self.assertEqual(int(lines[-6]), 0, proc.stdout)
+            self.assertEqual(int(lines[-5]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-4]), 1, proc.stdout)
+            self.assertEqual(int(lines[-3]), 21, proc.stdout)
+            self.assertEqual(int(lines[-2]), 100, proc.stdout)
+            self.assertEqual(int(lines[-1]), 42, proc.stdout)
+
+    def test_method_with_values_nonexact_self_delays_lookup_to_fallback(
+        self,
+    ) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 LOAD_ATTR_METHOD_WITH_VALUES")
+
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Base:
+                def call(self, x):
+                    return self.fn(x)
+
+            class First(Base):
+                def fn(self, x):
+                    return x + 1
+
+            class Second(Base):
+                def fn(self, x):
+                    return x + 2
+
+            first = First()
+            for i in range(20000):
+                if first.call(i) != i + 1:
+                    raise SystemExit("bad warmup")
+
+            assert jit.force_compile(Base.call)
+            print(first.call(10))
+            print(Second().call(10))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/method_with_values_nonexact_self_fallback.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITDUMPFINALHIR"] = "1"
+            env["PYTHONJITLOGLEVEL"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 2, proc.stdout)
+            self.assertEqual(int(lines[-2]), 11, proc.stdout)
+            self.assertEqual(int(lines[-1]), 12, proc.stdout)
+
+            combined = proc.stdout + proc.stderr
+            marker = "Optimized HIR for __main__:Base.call:"
+            self.assertIn(marker, combined)
+            hir = combined.split(marker, 1)[1]
+            vector_pos = hir.find("VectorCall<2>")
+            load_method_pos = hir.find("LoadMethod")
+            self.assertNotEqual(vector_pos, -1, hir)
+            self.assertNotEqual(load_method_pos, -1, hir)
+            self.assertLess(vector_pos, load_method_pos, hir)
 
     def test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts(
         self,
@@ -2161,7 +2929,7 @@ class ArmRuntimeTests(unittest.TestCase):
             self.assertEqual(int(lines[-2]), 0, proc.stdout)
             self.assertEqual(int(lines[-1]), 200001, proc.stdout)
 
-    def test_instance_value_specialized_opcodes_lower_to_field_ops(self) -> None:
+    def test_instance_value_load_specialized_opcode_lowers_to_field_op(self) -> None:
         code = textwrap.dedent(
             """
             import cinderx.jit as jit
@@ -2197,6 +2965,8 @@ class ArmRuntimeTests(unittest.TestCase):
             counts = cinderjit.get_function_hir_opcode_counts(Counter.increment)
             print(counts.get("LoadField", 0))
             print(counts.get("StoreField", 0))
+            print(counts.get("StoreAttr", 0))
+            print(counts.get("StoreAttrInstanceValue", 0))
             print(counts.get("LoadAttrCached", 0))
             print(counts.get("StoreAttrCached", 0))
             c.increment()
@@ -2222,8 +2992,161 @@ class ArmRuntimeTests(unittest.TestCase):
                 f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
             )
             lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-            self.assertGreaterEqual(len(lines), 5, proc.stdout)
+            self.assertGreaterEqual(len(lines), 7, proc.stdout)
+            self.assertGreaterEqual(int(lines[-7]), 1, proc.stdout)
+            self.assertEqual(int(lines[-6]), 0, proc.stdout)
+            self.assertEqual(int(lines[-5]), 0, proc.stdout)
+            self.assertEqual(int(lines[-4]), 0, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
             self.assertEqual(int(lines[-1]), 200001, proc.stdout)
+
+    def test_list_int_store_subscr_lowers_to_callstatic_helper(self) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 STORE_SUBSCR_LIST_INT")
+
+        # Regression guard:
+        # bm_go's EmptySet.set() is dominated by exact-list/int-index stores.
+        # Those should avoid the generic PyObject_SetItem StoreSubscr path.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class MyList(list):
+                pass
+
+            def set_pair(empties, empty_pos, i, pos):
+                empties[i] = pos
+                empty_pos[pos] = i
+                return empties[i] + empty_pos[pos]
+
+            empties = list(range(8))
+            empty_pos = list(range(8))
+            for n in range(20000):
+                set_pair(empties, empty_pos, n % 8, (n + 3) % 8)
+
+            assert jit.force_compile(set_pair)
+            counts = cinderjit.get_function_hir_opcode_counts(set_pair)
+            print(counts.get("StoreSubscr", 0))
+            print(counts.get("CallStatic", 0))
+            print(set_pair(empties, empty_pos, 2, 5))
+            print(set_pair(empties, empty_pos, -1, 3))
+
+            try:
+                set_pair(empties, empty_pos, 99, 1)
+            except IndexError:
+                print("index-error")
+            else:
+                print("missing-index-error")
+
+            subclass = MyList(range(8))
+            print(set_pair(subclass, empty_pos, 1, 4))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/list_int_store_subscr_helper.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONFAULTHANDLER"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 6, proc.stdout)
+            self.assertEqual(int(lines[-6]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-5]), 2, proc.stdout)
+            self.assertEqual(int(lines[-4]), 7, proc.stdout)
+            self.assertEqual(int(lines[-3]), 2, proc.stdout)
+            self.assertEqual(lines[-2], "index-error", proc.stdout)
+            self.assertEqual(int(lines[-1]), 5, proc.stdout)
+
+    def test_exact_list_int_subscr_uses_guarded_array_fast_path(self) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 BINARY_OP_SUBSCR_LIST_INT")
+
+        # Regression guard:
+        # Richards' Task.findtcb() and bm_go both perform many exact list/int
+        # reads. The hot non-negative, in-bounds path should avoid the runtime
+        # sequence-bounds helper while still deopting to preserve negative,
+        # out-of-range, and subclass semantics.
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class MyList(list):
+                pass
+
+            def get_pair(xs, i):
+                return xs[i] + xs[0]
+
+            xs = [10, 20, 30, 40]
+            for n in range(20000):
+                if get_pair(xs, n % 4) < 20:
+                    raise SystemExit("bad warmup")
+
+            assert jit.force_compile(get_pair)
+            counts = cinderjit.get_function_hir_opcode_counts(get_pair)
+            print(counts.get("CheckSequenceBounds", 0))
+            print(counts.get("LoadArrayItem", 0))
+            print(get_pair(xs, 2))
+            print(get_pair(xs, -1))
+            try:
+                get_pair(xs, 99)
+            except IndexError:
+                print("index-error")
+            else:
+                print("missing-index-error")
+            print(get_pair(MyList(xs), 1))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/exact_list_int_subscr_fast_bounds.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 6, proc.stdout)
+            self.assertEqual(int(lines[-6]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-5]), 2, proc.stdout)
+            self.assertEqual(int(lines[-4]), 40, proc.stdout)
+            self.assertEqual(int(lines[-3]), 50, proc.stdout)
+            self.assertEqual(lines[-2], "index-error", proc.stdout)
+            self.assertEqual(int(lines[-1]), 30, proc.stdout)
 
     def test_generator_low_local_attr_access_uses_field_lowering(self) -> None:
         # Regression guard:
@@ -2934,6 +3857,58 @@ class ArmRuntimeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             script = f"{tmp}/list_subclass_append_no_callmethod.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=dict(os.environ),
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 3, proc.stdout)
+            self.assertEqual(int(lines[-3]), 0, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 10001, proc.stdout)
+
+    def test_exact_list_append_eliminates_callmethod(self) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("requires Python 3.14 CALL_LIST_APPEND")
+
+        code = textwrap.dedent(
+            """
+            import cinderx.jit as jit
+            import cinderjit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            def append_once(todo, value):
+                todo.append(value)
+                return len(todo)
+
+            todo = []
+            for i in range(10000):
+                append_once(todo, i)
+
+            assert jit.force_compile(append_once)
+            counts = cinderjit.get_function_hir_opcode_counts(append_once)
+            print(counts.get("CallMethod", 0))
+            print(counts.get("ListAppend", 0))
+            print(append_once(todo, 10000))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/exact_list_append_no_callmethod.py"
             with open(script, "w", encoding="utf-8") as fp:
                 fp.write(code)
 

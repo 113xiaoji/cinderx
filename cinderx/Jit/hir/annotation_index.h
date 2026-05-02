@@ -3,6 +3,7 @@
 #pragma once
 
 #include "cinderx/Common/ref.h"
+#include "cinderx/Jit/threaded_compile.h"
 
 #include <memory>
 
@@ -17,6 +18,9 @@ class AnnotationIndex {
   // Retrieve the annotation for the given name, or return nullptr.
   PyObject* find(PyObject* name) {
     if (dict_) {
+      if (getThreadedCompileContext().compileRunning()) {
+        return nullptr;
+      }
       return PyDict_GetItem(dict_, name);
     }
     for (Py_ssize_t index = 0; index < size_; index += 2) {

@@ -1,8 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "cinderx/Jit/hir/dead_code_elimination.h"
+#include "cinderx/Jit/py_error.h"
 
 #include "cinderx/Jit/hir/instr_effects.h"
+#include "cinderx/Jit/threaded_compile.h"
 
 #include <cstring>
 
@@ -26,6 +28,10 @@ int countUses(const Function& func, const Register* reg) {
 }
 
 bool isBuiltinMathSqrtLoad(const LoadModuleAttrCached& instr) {
+  // This helper only enables optional cleanup of math.sqrt module loads.  It
+  // validates by reading a module dict, so skip it from worker threads.
+  RETURN_MULTITHREADED_COMPILE(false);
+
   Register* receiver = instr.GetOperand(0);
   Type receiver_type = receiver->type();
   if (!receiver_type.hasObjectSpec()) {
@@ -39,21 +45,21 @@ bool isBuiltinMathSqrtLoad(const LoadModuleAttrCached& instr) {
 
   PyModuleDef* def = PyModule_GetDef(module_obj);
   if (def == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   if (std::strcmp(def->m_name, "math") != 0) {
     return false;
   }
   if (PyUnicode_CompareWithASCIIString(instr.name(), "sqrt") != 0) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
 
   auto* dict = PyModule_GetDict(module_obj);
   BorrowedRef<> value = PyDict_GetItemWithError(dict, instr.name());
   if (value == nullptr) {
-    PyErr_Clear();
+    clearPyErrIfPresent();
     return false;
   }
   return PyCFunction_Check(value);
