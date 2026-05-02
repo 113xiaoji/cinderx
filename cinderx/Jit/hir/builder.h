@@ -160,12 +160,14 @@ class HIRBuilder {
       TranslationContext& tc,
       jit::BytecodeInstructionBlock::Iterator& bc_it,
       const jit::BytecodeInstructionBlock& bc_instrs);
+#if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
   bool tryInlineAnyGenexprCall(
       Function& irfunc,
       CFG& cfg,
       TranslationContext& tc,
       jit::BytecodeInstructionBlock::Iterator& bc_it,
       const jit::BytecodeInstructionBlock& bc_instrs);
+#endif
   bool tryInlineTupleGenexprCall(
       Function& irfunc,
       CFG& cfg,

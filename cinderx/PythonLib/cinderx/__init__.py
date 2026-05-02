@@ -9,6 +9,8 @@ import platform
 import sys
 from os import environ
 
+from ._compat import get_family_policy
+
 # ============================================================================
 # Note!
 #
@@ -45,14 +47,15 @@ def is_supported_runtime() -> bool:
     if sys.platform not in ("darwin", "linux"):
         return False
 
-    version = (sys.version_info.major, sys.version_info.minor)
-    if version == (3, 14) or version == (3, 15):
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if get_family_policy(version) is not None:
         # Can't load the native extension if the GIL is forcibly being disabled.  The
         # native extension doesn't support free-threading properly yet.
         return environ.get("PYTHON_GIL") != "0"
-    if version == (3, 12):
+    version_tuple = (sys.version_info.major, sys.version_info.minor)
+    if version_tuple == (3, 12):
         return "+meta" in sys.version
-    if version == (3, 10):
+    if version_tuple == (3, 10):
         return "+cinder" in sys.version
     return False
 

@@ -1739,15 +1739,20 @@ fun test {
     v3:ListExact = RefineType<ListExact> v0
     v4:NoneType = RefineType<NoneType> v1
     v5:LongExact = RefineType<LongExact> v2
-    UseType<ListExact> v3
-    UseType<NoneType> v4
-    UseType<LongExact> v5
-    v7:MortalListExact = ListSlice v3 v4 v5 {
+    v6:MortalSlice = BuildSlice<2> v4 v5 {
       FrameState {
         CurInstrOffset -2
       }
     }
-    Return v7
+    UseType<ListExact> v3
+    UseType<NoneType> v4
+    UseType<LongExact> v5
+    v8:MortalListExact = ListSlice v3 v4 v5 {
+      FrameState {
+        CurInstrOffset -2
+      }
+    }
+    Return v8
   }
 }
 --- Expected 3.15 ---

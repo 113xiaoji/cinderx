@@ -17,6 +17,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Compilers",
 ]
 
@@ -24,7 +25,7 @@ classifiers = [
 Repository = "https://www.github.com/facebookincubator/cinderx"
 
 [tool.cibuildwheel]
-build = ["cp314-manylinux_x86_64", "cp314-musllinux_x86_64"]
+build = ["cp314-manylinux_x86_64", "cp314-musllinux_x86_64", "cp315-manylinux_x86_64", "cp315-musllinux_x86_64"]
 environment = { CINDERX_ENABLE_PGO = "1", CINDERX_ENABLE_LTO = "1" }
 build-verbosity = 3
 # Build using the latest image to try to get the latest Python point release.

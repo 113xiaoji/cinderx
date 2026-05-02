@@ -6,6 +6,548 @@ entrypoint:
 
 `scripts/push_to_arm.ps1` -> `scripts/arm/remote_update_build_test.sh`
 
+## 2026-04-05 performance-go JIT analysis
+
+- Scope:
+  - read-only analysis of pyperformance `go`
+  - prioritize explanation and repair design before code edits
+- Current branch:
+  - `bench-cur-7c361dce`
+- Key source files reviewed:
+  - `cinderx/Jit/hir/builder.cpp`
+  - `cinderx/Jit/hir/builder.h`
+  - `cinderx/Jit/hir/inliner.cpp`
+  - `cinderx/Jit/hir/guarded_load_elimination.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+  - `plans/2026-03-23-issue60-go-method-values-fastpath/*`
+  - `scripts/push_to_arm.ps1`
+  - `scripts/arm/remote_update_build_test.sh`
+  - `scripts/arm/run_pyperf_subset.sh`
+
+- Unified remote entrypoint for this case:
+  - launcher:
+    - `scripts/push_to_arm.ps1`
+  - remote executor:
+    - `scripts/arm/remote_update_build_test.sh`
+  - subset helper:
+    - `scripts/arm/run_pyperf_subset.sh`
+
+- Fresh verification attempt in this session:
+  - command:
+    - `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@124.70.162.35 "echo remote-ok"`
+  - result:
+    - timed out on port `22`
+  - consequence:
+    - no fresh benchmark numbers were claimed in this session
+    - analysis below is grounded in the repo's prior remote issue60 evidence
+
+- Root cause summary:
+  - `go`'s important hot shape is an attr-derived but runtime-monomorphic
+    receiver, documented in the issue60 artifacts as
+    `self.reference.find(update)` / `Square.find -> reference.find`.
+  - The builder's base gate remains exact-type-only:
+    - `canUseMethodWithValuesFastPath()` returns
+      `hasStableExactReceiverType(receiver)`.
+  - When the receiver reaches HIR as generic object rather than exact type, the
+    normal lowering loses the const-descriptor method-with-values fast path and
+    falls back to `LoadMethod` / `CallMethod`.
+  - The HIR inliner only recognizes `VectorCall` and
+    `InvokeStaticFunction`, so once the call falls back to `CallMethod`, the
+    hot recursive `find()` chain stops being inlinable.
+
+- Current code path state on this branch:
+  - the branch already contains the issue60 profile-driven recovery:
+    - `emitLoadAttr()` records a pending method-with-values opportunity for
+      non-exact receivers in the outer function body
+    - `tryEmitProfiledMethodWithValuesCall()` later splits the call into:
+      - fast path:
+        - interpreter-cache-profile-validated `VectorCall`
+      - fallback path:
+        - generic `CallMethod`
+    - both generated call blocks now start with `Snapshot`
+  - this design was added specifically because earlier static heuristics were
+    either too weak or too unsafe.
+
+- Why earlier alternatives failed:
+  - attr-derived + owner-has-no-subclasses:
+    - reopened polymorphic `LOAD_ATTR_METHOD_WITH_VALUES` deopts
+    - rejected
+  - recursive-same-method-only heuristic:
+    - recovered the issue-specific hotspot
+    - but broader pyperformance sampling still showed suspicious regressions
+    - rejected as a landing candidate
+  - first hybrid/profiled attempt:
+    - still failed to reconnect the site to an inliner-visible `VectorCall`
+    - targeted regression stayed red
+  - nested fast-path inlining without a dominating `Snapshot`:
+    - crashed later in `RefcountInsertion::bindGuards()`
+    - fixed by adding explicit leading `Snapshot` instructions to both fast and
+      fallback call blocks
+
+- Most important existing remote evidence from issue60:
+  - baseline issue shape:
+    - `CallMethod = 1`
+    - `LoadMethodCached = 1`
+    - `num_inlined_functions = 0`
+  - viable profile-driven candidate:
+    - targeted regressions: `OK`
+    - `bm_go.versus_cpu()` direct probe improved by about `-2.91%`
+    - `go` pyperformance debug-single-value was effectively flat
+    - requested broad smoke subset completed without `Benchmark died`
+
+- Residual gap worth targeting next:
+  - the viable profile-driven version intentionally recovers only the outer
+    attr-derived recursive call.
+  - The issue60 findings explicitly note that the remaining recursive call
+    inside the already-inlined callee stays on generic `CallMethod` for safety.
+  - If `go` still trails the desired target, that remaining generic inner call
+    is the highest-probability next bottleneck.
+
+- Recommended repair direction:
+  - keep the exact-receiver fast path unchanged
+  - keep the profile-driven call-site split as the base design
+  - if further `go` work is needed, extend the profiled recovery so it can
+    safely re-fire inside already-inlined callees, but only after adding new
+    regressions that prove:
+    - no polymorphic deopt storm returns
+    - nested inlining still has dominating snapshots/frame state
+    - broader benchmark subset remains flat
+
+- Concrete fix options, ordered by recommendation:
+  - Option A (recommended next step):
+    - teach the profile-driven pending-call path how to recover one more nested
+      attr-derived recursive call inside an already-inlined callee
+    - likely implementation surface:
+      - `cinderx/Jit/hir/builder.cpp`
+      - `cinderx/Jit/hir/builder.h`
+      - regression coverage in
+        `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+    - expected benefit:
+      - recover the second `find()` call that still stays generic today
+  - Option B (larger but cleaner):
+    - expose stronger per-site receiver monomorphism/profile information from
+      the interpreter specialization cache to the builder, so the builder does
+      not need the current pending-load-to-call handoff trick
+    - higher engineering cost, but more general
+  - Option C (not recommended):
+    - broaden static heuristics again
+    - repo evidence already shows this is the quickest path back to polymorphic
+      deopts or unexplained broad regressions
+
+### Fresh ARM rerun update (2026-04-05)
+
+- Unified remote entrypoint:
+  - manual archive upload into `/root/work/incoming`
+  - execute `scripts/arm/remote_update_build_test.sh`
+- Remote workspace:
+  - workdir: `/root/work/cinderx-go-analysis-20260405`
+  - driver venv: `/root/venv-cinderx314-go-analysis-20260405`
+
+- Benchmark-only rerun settings:
+  - `BENCH=go`
+  - `SKIP_ARM_RUNTIME_VALIDATION=1`
+  - `SKIP_PYPERF=0`
+  - `CINDERX_ENABLE_SPECIALIZED_OPCODES=1`
+- Fresh benchmark artifacts:
+  - `go_jitlist_20260405_084805.json`
+    - value: `0.24736241299990525 s`
+  - `go_autojit50_20260405_084805.json`
+    - value: `0.2466943160000028 s`
+  - `go_autojit50_20260405_084805_compile_summary.json`
+    - `main_compile_count = 34`
+    - `total_compile_count = 34`
+    - `other_compile_count = 0`
+  - `pyperf_venv_20260405_084805_worker.json`
+    - `jit_enabled = true`
+    - `cinderx_initialized = true`
+- Interpretation:
+  - the `go` benchmark gate itself is not failing because JIT is disabled
+  - benchmark workers are JIT-enabled and do compile benchmark `__main__`
+    functions on the current branch
+
+- Focused issue60 safety rerun settings:
+  - same unified entrypoint
+  - `SKIP_ARM_RUNTIME_VALIDATION=1`
+  - `SKIP_PYPERF=1`
+  - `EXTRA_TEST_CMD='PYTHONFAULTHANDLER=1 python -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_arm_runtime.py -k attr_derived_polymorphic -v'`
+- Fresh focused regression result:
+  - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`
+    - test body result: `ok`
+    - process result: `SIGSEGV` immediately after unittest summary
+- Crash evidence:
+  - Python fatal error: `Segmentation fault`
+  - top native stack:
+    - `_cinderx.so`
+    - `outputTypeWithRecursiveCoroHint`
+    - `reflowTypes`
+    - `SSAify::Run`
+    - `Compiler::runPasses`
+    - `Compiler::Compile`
+    - `compileFunction`
+    - `Preloader::makePreloader`
+- Interpretation:
+  - current branch still contains a compiler-stability bug on the issue60
+    safety path
+  - this blocker is separate from the historical `go` throughput diagnosis, but
+    it materially changes repair priority
+  - before extending deeper nested-call recovery for `go`, the next change
+    round should first root-cause and lock down this `SSAify/reflowTypes`
+    crash with a failing regression
+
+### Root-cause narrowing for the fresh `SSAify/reflowTypes` crash
+
+- New diagnostic evidence from a focused rerun with:
+  - `PYTHONFAULTHANDLER=1`
+  - `PYTHONJITDEBUG=1`
+  - `PYTHONJITLOGFILE=/tmp/attr_derived_poly_debug_20260405.log`
+- The last compile target before the crash is:
+  - `_colorize:__annotate__`
+- That means the crash is not happening while compiling `Holder.run` from the
+  issue60 reproducer itself.
+- Instead, the reproducer pushes the outer `unittest` process far enough that
+  it later auto-compiles a lazy-annotations thunk during teardown / reporting.
+- Confirmation by counterexample through the same unified remote entrypoint:
+  - rerun the same focused unittest with only:
+    - `PYTHONJITAUTO=1000000`
+  - result:
+    - `Ran 2 tests ... OK`
+    - no crash
+  - interpretation:
+    - raising the outer-process autojit threshold suppresses the failure
+    - the trigger is therefore outer-process compile scheduling, not the inner
+      `Holder.run` subprocess body
+
+- `_colorize.__annotate__` shape on the ARM host:
+  - module: `/opt/python-3.14/lib/python3.14/_colorize.py`
+  - `co_flags = 3`
+  - bytecode is simple and non-coroutine:
+    - `LOAD_FAST_BORROW`
+    - `LOAD_SMALL_INT`
+    - `COMPARE_OP`
+    - `BUILD_MAP`
+    - `LOAD_GLOBAL`
+    - `CONTAINS_OP`
+    - `COPY`
+    - `LOAD_CONST`
+    - `STORE_SUBSCR`
+    - `RETURN_VALUE`
+  - direct 2026-04-05 host check against
+    `_colorize.can_colorize.__annotate__` confirmed:
+    - there is no `SEND`
+    - there are multiple `LOAD_GLOBAL` opcodes
+
+- Most likely root-cause hypothesis:
+  - file:
+    - `cinderx/Jit/hir/pass.cpp`
+  - lines:
+    - around `361-392`
+  - problem:
+    - `outputTypeWithRecursiveCoroHint()` groups many ordinary object-returning
+      opcodes together with `Opcode::kSend`
+    - the shared case body then unconditionally does:
+      - `static_cast<const Send&>(instr)`
+      - `sendCalleeFunction(...)`
+      - `sendResultType(...)`
+  - concrete bad shape:
+    - `Opcode::kLoadGlobal`, `kLoadMethod`, `kLoadAttr`, `kMatchKeys`, etc.
+      all fall into that same block before `kSend`
+  - why this explains the stack:
+    - `_colorize.__annotate__` contains `LOAD_GLOBAL`
+    - during `SSAify::Run()`, `reflowTypes()` calls
+      `outputTypeWithRecursiveCoroHint()` for every instruction output
+    - once a non-`Send` instruction such as `LoadGlobal` enters that shared
+      block, the `static_cast<const Send&>(instr)` is undefined behavior
+    - that matches the native crash top frame in
+      `outputTypeWithRecursiveCoroHint -> reflowTypes -> SSAify::Run`
+  - recent commit that introduced the risk:
+    - `247b4a5005ec` (`Specialize recursive coroutine add types`)
+  - minimal diagnostic / assertion to validate:
+    - before any send-specific logic in that block:
+      - `JIT_DCHECK(instr.IsSend(), "send-specific type hint path reached for {}", instr.opname());`
+    - or, equivalently, split `case Opcode::kSend` into its own dedicated case
+      and keep the other opcodes on the old `return TObject` path
+
+- Second, weaker but still useful hypothesis:
+  - file:
+    - `cinderx/Jit/hir/annotation_index.cpp`
+    - `cinderx/Jit/hir/preload.h`
+  - problem:
+    - `AnnotationIndex::from_function()` now calls `PyFunction_GetAnnotations()`
+      when specialized opcodes are enabled
+    - on Python 3.14 this can execute a synthetic `__annotate__` function
+      during preloading
+    - that creates a compile-during-preload path for annotation thunks which
+      was not part of the original issue60 benchmark analysis
+  - why this matters:
+    - it explains why the crash target is `_colorize:__annotate__` instead of
+      the benchmark reproducer itself
+    - it is the trigger that makes the `pass.cpp` UB deterministic in this
+      test path
+  - minimal diagnostic / assertion to validate:
+    - log or assert the function fullname inside `Compiler::Compile()` /
+      `Preloader::makePreloader()` when `AnnotationIndex::from_function()`
+      requests annotations, to confirm the failing compile target is indeed the
+      annotation thunk
+
+- Current assessment:
+  - the first hypothesis is the primary one
+  - the second explains the trigger, not the likely memory-safety bug itself
+
+### Narrowed root-cause update (2026-04-05)
+
+- Additional direct evidence:
+  - outer unittest harness defaults:
+    - `jit_enabled = True`
+    - `compile_after = None`
+  - raising the outer harness threshold with `PYTHONJITAUTO=1000000` makes the
+    focused `attr_derived_polymorphic` unittest run complete without crashing
+  - direct `force_compile(_colorize.can_colorize.__annotate__)` reproduces the
+    same `outputTypeWithRecursiveCoroHint -> reflowTypes -> SSAify::Run` crash
+    even outside the issue60 test harness
+- Most likely immediate bug in `pass.cpp`:
+  - `outputTypeWithRecursiveCoroHint()` groups `case Opcode::kSend` together
+    with many non-`Send` opcodes such as:
+    - `kLoadGlobal`
+    - `kLoadMethod`
+    - `kLoadAttr`
+    - `kMatchKeys`
+  - inside that shared block it unconditionally does:
+    - `static_cast<const Send&>(instr)`
+    - `sendCalleeFunction(...)`
+    - `sendResultType(...)`
+  - source region:
+    - `cinderx/Jit/hir/pass.cpp` around the grouped case beginning at the
+      `kBuildInterpolation/.../kSend` cluster and the `static_cast<const Send&>`
+      calls
+- Why this matches the crash:
+  - `_colorize.can_colorize.__annotate__` bytecode contains multiple
+    `LOAD_GLOBAL` instructions and no actual `SEND`
+  - once `reflowTypes()` visits one of those `LoadGlobal` HIR instructions,
+    `outputTypeWithRecursiveCoroHint()` can enter the shared case block and
+    reinterpret a non-`Send` instruction as `Send`
+  - that is immediate undefined behavior and cleanly explains the top-of-stack
+    crash inside `outputTypeWithRecursiveCoroHint()`
+- Secondary contributing factor:
+  - issue60-specific method-with-values recovery is still relevant as the
+    original trigger that exposed the broader compiler stability problem
+  - but the direct `_colorize:__annotate__` reproducer shows the crash is now
+    broader than the `go` benchmark shape itself
+- Minimal diagnostics / assertions to validate before changing behavior:
+  - add `JIT_DCHECK(instr.IsSend())` immediately before any
+    `static_cast<const Send&>(instr)` in `outputTypeWithRecursiveCoroHint()`
+  - log `current_func->fullname` plus `instr.opcode()` in that branch
+  - expected immediate proof:
+    - `_colorize:__annotate__` will hit the branch on a non-`Send` opcode such
+      as `LoadGlobal`
+
+### Follow-up isolation on the same ARM workspace
+
+- Target:
+  - determine whether the focused crash is caused by the issue60 test body
+    itself or by incidental outer-harness auto-jit compilation
+
+- Experiment A: custom one-test harness with outer compile threshold raised
+  - remote command shape:
+    - load `test_arm_runtime.py` manually
+    - call:
+      - `cinderx.jit.enable()`
+      - `cinderx.jit.compile_after_n_calls(1000000)`
+    - run only:
+      - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`
+  - result:
+    - `Ran 1 test ... OK`
+    - no segfault
+- Interpretation:
+  - the attr-derived polymorphic regression body itself is not sufficient to
+    reproduce the crash
+  - the `SIGSEGV` depends on incidental compilation in the outer
+    `python -m unittest discover ...` harness
+
+- Experiment B: direct failing harness rerun with JIT log enabled
+  - remote command shape:
+    - `PYTHONFAULTHANDLER=1`
+    - `PYTHONJITDEBUG=1`
+    - `PYTHONJITLOGFILE=/tmp/attr_poly_unittest.log`
+    - `python -m unittest discover -s cinderx/PythonLib/test_cinderx -p test_arm_runtime.py -k attr_derived_polymorphic -v`
+  - result:
+    - test output still reports:
+      - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts ... ok`
+    - process still segfaults after the unittest summary
+  - important JIT log tail evidence:
+    - incidental harness compiles include:
+      - `unittest.case:TestCase.run`
+      - `unittest.runner:TextTestResult.printErrors`
+      - `unittest.suite:BaseTestSuite._removeTestAtIndex`
+    - during `BaseTestSuite._removeTestAtIndex` compilation:
+      - `builder.cpp:3092 -- profiled-mwv call emitted for instr 124`
+    - the final compile started before the crash is:
+      - `_colorize:__annotate__`
+
+- Strong updated interpretation:
+  - the current crash is most likely not a direct failure of the issue60 test's
+    child subprocess
+  - the immediate reproducer is outer-harness auto-jit compiling unrelated
+    stdlib/unittest code
+  - `_colorize:__annotate__` is a key suspect because the earlier native stack
+    also included:
+    - `AnnotationIndex::from_function`
+    - `PyFunction_GetAnnotations`
+    - `Preloader::makePreloader`
+  - that combination strongly suggests a re-entrant or otherwise unsafe compile
+    path around annotation thunk functions, with `reflowTypes()` /
+    `outputTypeWithRecursiveCoroHint()` being where the compiler finally faults
+
+### Trigger-chain hypothesis for the post-test crash
+
+- The focused regression's own subprocess body is not the crashing process:
+  - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`
+    runs a temporary script via `subprocess.run(...)`
+  - that inner script explicitly:
+    - `jit.enable()`
+    - `jit.enable_specialized_opcodes()`
+    - `jit.compile_after_n_calls(1000000)`
+    - `jit.force_compile(Holder.run)`
+  - and the outer unittest assertion reports the test body itself as `ok`
+- The outer unittest process still has CinderX loaded:
+  - `cinderx.pth` imports `cinderx` on startup
+  - `ArmRuntimeTests` therefore runs inside a JIT-capable outer process too
+- The most important trigger is in `ArmRuntimeTests.tearDown()`:
+  - it restores the saved outer-process compile policy
+  - when the saved value is `None`, it calls `cinderx.jit.compile_after_n_calls(0)`
+  - remote driver-venv probe on the same workdir printed:
+    - `jit.get_compile_after_n_calls() -> None`
+- Why that matters:
+  - `compile_after_n_calls_impl()` in `pyjit.cpp` explicitly:
+    - stores the new threshold
+    - then calls `walkFunctionObjects(...)`
+    - and "schedule[s] all pre-existing functions for compilation"
+  - `scheduleJitCompile()` switches scheduled functions to `jitVectorcall`
+  - `jitVectorcall()` enters `compileFunction()` on the next call once the
+    threshold condition is satisfied
+- This explains the observed timing:
+  - the selected issue60 test finishes and reports `ok`
+  - `tearDown()` then bulk-schedules the already-live outer-process functions
+  - unittest summary / shutdown code immediately calls some of those functions
+  - one such call enters `compileFunction()`
+  - compilation then crashes in:
+    - `Preloader::makePreloader`
+    - `outputTypeWithRecursiveCoroHint`
+    - `reflowTypes`
+    - `SSAify::Run`
+
+- Current best classification:
+  - issue60 is the route that exposed the crash
+  - but the crash shape itself looks more general than issue60's
+    method-with-values lowering
+  - the strongest local suspect is the newer recursive-coroutine-aware type
+    reflow logic added in commit `247b4a50` (`Specialize recursive coroutine add types`)
+  - reason:
+    - the top native frames are all in `pass.cpp` / `ssa.cpp`
+    - those paths were changed recently and are not specific to
+      method-with-values lowering
+    - the outer-process trigger bulk-schedules arbitrary live functions, so the
+      eventual crashing compile does not need to be `Holder.run` itself
+## 2026-04-07 Issue: Python 3.14 功能保障矩阵
+
+- 状态：
+  - in progress
+- 说明：
+  - 本节用于记录 `py314-pr-core`、`py314-nightly-extended`、`py314-release-full`
+    三个 profile 的正式远端验证结果
+
+### 2026-04-07 profile 契约与入口能力
+
+- 目标：
+  - 为 Python 3.14 功能保障矩阵建立命名 profile 契约，并把远端入口扩展到支持 lane 级环境变量展开
+- 代码变更：
+  - 新增：
+    - `scripts/arm/py314_functional_assurance_profiles.json`
+    - `tests/test_py314_functional_assurance_profiles.py`
+    - `docs/py314-functional-assurance-matrix.md`
+  - 修改：
+    - `scripts/push_to_arm.ps1`
+    - `scripts/arm/remote_update_build_test.sh`
+- 新增远端入口能力：
+  - `push_to_arm.ps1` 支持 `-Profile` / `-Lane`
+  - `remote_update_build_test.sh` 支持：
+    - `SKIP_ARM_RUNTIME`
+    - `SKIP_JIT_EFFECTIVENESS_SMOKE`
+    - `SKIP_PYPERF_SETUP`
+- 本地 wrapper smoke：
+  - `push_to_arm.ps1 -Profile py314-pr-core -Lane baseline`
+  - 结果：
+    - 参数已被正确识别
+    - 当前阻塞点前移到既有的 dirty-worktree 保护，而不是“未知参数”
+
+### py314-pr-core / baseline
+
+- 入口：
+  - 统一远端 helper：`scripts/arm/remote_update_build_test.sh`
+  - 本轮 TDD 使用 staged-tree archive 上传后执行同一 helper
+- 远端 workdir：
+  - `/root/work/cinderx-profile-test-20260407d`
+- 结果：
+  - `PASS`
+- 关键测试：
+  - `tests/test_py314_functional_assurance_profiles.py`
+- 结论：
+  - baseline lane 可以在跳过默认 ARM runtime / JIT smoke / pyperf setup 的情况下稳定执行 profile 契约测试
+
+### py314-pr-core / optimized
+
+- 入口：
+  - 统一远端 helper：`scripts/arm/remote_update_build_test.sh`
+- 远端 workdir：
+  - `/root/work/cinderx-py314-pr-core-optimized-20260407c`
+- 结果：
+  - `PASS`
+- 关键测试：
+  - `test_cinderx.test_frame_evaluator`
+  - `test_cinderx.test_jit_specialization`
+  - `test_cinderx.test_jit_generators`
+  - `test_cinderx.test_jit_disable`
+  - `test_cinderx.test_jit_exception`
+- 运行摘要：
+  - `Ran 91 tests ... OK (skipped=2)`
+- 结论：
+  - `py314-pr-core / optimized` 需要保持 OSS-safe 测试集合
+  - `test_jit_coroutines`、`test_type_cache` 不适合放进当前 OSS optimized lane
+
+### py314-nightly-extended / baseline
+
+- 入口：
+  - 统一远端 helper：`scripts/arm/remote_update_build_test.sh`
+- 远端 workdir：
+  - `/root/work/cinderx-py314-nightly-baseline-20260407c`
+- 结果：
+  - `PASS`
+- 关键测试：
+  - `test_cinderx.test_cpython_overrides.test_asyncgen`
+  - `test_cinderx.test_cpython_overrides.test_dis`
+  - `test_cinderx.test_cpython_overrides.test_generators`
+  - `test_cinderx.test_cpython_overrides.test_inspect`
+  - `test_cinderx.test_cpython_overrides.test_trace`
+  - `test_cinderx.test_cpython_overrides.test_tracemalloc`
+  - `test_cinderx.test_cpython_overrides.test_types`
+- 运行摘要：
+  - `Ran 12 tests ... OK (skipped=1)`
+- 结论：
+  - `test_cpython_overrides.test__opcode` 不应进入 Python 3.14 nightly baseline
+  - 原因是它仍依赖 `DUP_TOP_TWO`、`JUMP_IF_TRUE_OR_POP` 这类旧 opcode 名称
+
+### 本轮额外环境结论
+
+- 远端构建必须使用 fresh workdir 才稳定：
+  - 复用旧 `scratch/` 时出现过不稳定的 `.o.d` / 头文件错误
+- `CINDERX_BUILD_JOBS=1` 对当前 ARM 主机是必要的：
+  - 否则更容易放大构建阶段噪声
+- ARM 主机磁盘容易被 repeated fresh workdir + `arm-sync` 工件打满：
+  - 本轮在重跑 nightly 之前清理了：
+    - `/root/work/cinderx-profile-test-*`
+    - `/root/work/cinderx-py314-*`
+    - `/root/work/arm-sync/*`
+    - `/root/.cache/*`
+
 ### Open case: nqueens residual MakeFunction / issue #61
 
 - Date: `2026-03-24`
@@ -50,9 +592,248 @@ entrypoint:
     - `MakeFunction = 1`
     - `MakeTuple = 1`
     - `SetFunctionAttr = 1`
+
+## 2026-04-05 post-fix targeted verification
+
+- Minimal local fix under test:
+  - `cinderx/Jit/hir/pass.cpp`
+    - split `Opcode::kSend` out of the shared object-returning opcode cluster
+    - restore the neighboring non-`Send` opcodes to `return TObject`
+    - add `JIT_DCHECK(instr.IsSend(), ...)` on the send-specific branch
+  - `cinderx/Jit/hir/annotation_index.cpp`
+    - stop eagerly calling `PyFunction_GetAnnotations()` when only
+      `specialized_opcodes` is enabled
+    - keep eager annotation materialization only for true
+      `emit_type_annotation_guards`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+    - add `test_force_compile_annotation_thunk_does_not_crash`
+    - add `test_specialized_opcodes_do_not_eagerly_execute_annotation_thunks`
+
+- Remote validation path:
+  - unified remote entrypoint:
+    - `scripts/arm/remote_update_build_test.sh`
+  - source packaging:
+    - working-tree snapshot tar
+    - reason:
+      - `git archive HEAD` would omit the new uncommitted local regression and fix
+
+- Targeted remote regression result on the fixed working-tree snapshot:
+  - custom runner kept outer `compile_after_n_calls(1000000)` to avoid
+    incidental post-test auto-JIT noise
+  - executed tests:
+    - `test_force_compile_annotation_thunk_does_not_crash`
+    - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`
+  - result:
+    - `Ran 2 tests in 0.131s`
+    - `OK`
+
+- Additional single-test remote verification after the second fix:
+  - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`
+    - `Ran 1 test in 0.206s`
+    - `OK`
+  - `test_specialized_opcodes_do_not_eagerly_execute_annotation_thunks`
+    - `Ran 1 test in 0.315s`
+    - `OK`
+
+- Interpretation:
+  - the minimal `pass.cpp` change is sufficient to stop the direct
+    `_colorize.can_colorize.__annotate__` crash on the targeted path
+  - the follow-up `annotation_index.cpp` narrowing removes the
+    `specialized_opcodes`-only eager annotation-materialization trigger
+  - the original issue60 safety regression now remains green under the same
+    fixed build when rerun in isolation
+
+- Remaining gap:
+  - the pyperformance harness syntax issue in
+    `scripts/arm/remote_update_build_test.sh` was subsequently fixed by
+    correcting the here-doc argument order
+  - a same-build `go` benchmark rerun now completes through the unified remote
+    entrypoint
+
+- Fresh post-fix `go` benchmark gate:
+  - artifacts:
+    - `go_jitlist_20260405_181404.json`
+    - `go_autojit50_20260405_181404.json`
+    - `go_autojit50_20260405_181404_compile_summary.json`
+    - `pyperf_venv_20260405_181404_worker.json`
+  - jitlist:
+    - `0.5156086859933566 s`
+  - autojit50:
+    - `0.5089590209972812 s`
+  - compile summary:
+    - `main_compile_count = 34`
+    - `total_compile_count = 34`
+    - `other_compile_count = 0`
+  - worker probe:
+    - `jit_enabled = true`
+    - `cinderx_initialized = true`
+- Interpretation:
+  - the fixed working-tree snapshot now passes both:
+    - targeted stability regressions
+    - benchmark-level `go` gate
+  - the new `go` numbers were collected under noticeably higher host load than
+    the earlier single-benchmark sample (`runnable_threads = 9` vs `1`), so
+    they should be treated as fresh gate evidence rather than a clean
+    apples-to-apples A/B performance claim
   - the closure setup now sits after the outer-loop prefix and before the
     inner genexpr iterator loop, so it is no longer rebuilt in the innermost
     repeated path
+
+### Same-host A/B rerun on 2026-04-05
+
+- Method:
+  - same ARM host
+  - same remote entrypoint
+  - same benchmark (`BENCH=go`)
+  - same flags:
+    - `SKIP_ARM_RUNTIME_VALIDATION=1`
+    - `RECREATE_PYPERF_VENV=1`
+    - `CINDERX_ENABLE_SPECIALIZED_OPCODES=1`
+  - separate workdirs and driver venvs for:
+    - baseline `HEAD`
+    - current fixed working-tree snapshot
+
+- Baseline artifacts:
+  - workdir:
+    - `/root/work/cinderx-go-baseline-ab-20260405`
+  - `go_jitlist_20260405_193137.json`
+    - `0.24918644900026266 s`
+    - `runnable_threads = 2`
+  - `go_autojit50_20260405_193137.json`
+    - `0.4742307880005683 s`
+    - `runnable_threads = 5`
+  - compile summary:
+    - `main_compile_count = 34`
+
+- Fixed artifacts:
+  - workdir:
+    - `/root/work/cinderx-go-fixed-ab-20260405`
+  - `go_jitlist_20260405_194714.json`
+    - `0.25993193100293865 s`
+    - `runnable_threads = 2`
+  - `go_autojit50_20260405_194714.json`
+    - `0.25297167700045975 s`
+    - `runnable_threads = 2`
+  - compile summary:
+    - `main_compile_count = 34`
+
+- Coarse comparison:
+  - jitlist:
+    - fixed vs baseline: about `+4.31%` slower
+  - autojit50:
+    - fixed vs baseline: about `-46.66%` faster
+
+- Interpretation:
+  - the autojit50 direction is strongly positive after the stability fixes
+  - the jitlist direction is slightly negative in this single-sample rerun
+  - because these are still single-sample gate numbers and the autojit baseline
+    had a different `runnable_threads` value, treat this as directional rather
+    than a final precise performance claim
+  - a follow-up attempt to run a direct `bm_go.versus_cpu()`-style probe was
+    deferred when the ARM host became unreachable again (`ssh ... port 22:
+    Connection timed out`)
+
+### Requested subset regression sweep (2026-04-06)
+
+- Method:
+  - same ARM host
+  - same unified remote entrypoint
+  - same benchmark filter:
+    - `generators,coroutines,comprehensions,richards,richards_super,float,go,deltablue,raytrace,nqueens,nbody,unpack_sequence,fannkuch,coverage,scimark,spectral_norm,chaos,logging`
+  - `SAMPLES=3`
+  - baseline:
+    - `/root/work/cinderx-go-baseline-ab-20260405`
+  - fixed:
+    - `/root/work/cinderx-go-fixed-ab-20260405`
+
+- First-pass subset compare (median delta fixed vs baseline):
+  - `chaos`: `-2.64%`
+  - `comprehensions`: `-6.14%`
+  - `coroutines`: `+3.03%`
+  - `coverage`: `+3.06%`
+  - `deltablue`: `-0.73%`
+  - `fannkuch`: `+7.59%`
+  - `float`: `+2.80%`
+  - `generators`: `+0.17%`
+  - `go`: `+1.36%`
+  - `logging_format`: `-4.73%`
+  - `logging_silent`: `-5.20%`
+  - `logging_simple`: `-1.23%`
+  - `nbody`: `-1.01%`
+  - `nqueens`: `-1.69%`
+  - `raytrace`: `+0.60%`
+  - `richards`: `+0.50%`
+  - `richards_super`: `+0.83%`
+  - `scimark_fft`: `+0.85%`
+  - `scimark_lu`: `+0.25%`
+  - `scimark_monte_carlo`: `+1.25%`
+  - `scimark_sor`: `-3.80%`
+  - `scimark_sparse_mat_mult`: `-0.78%`
+  - `spectral_norm`: `-4.94%`
+  - `unpack_sequence`: `+1.22%`
+- Threshold read:
+  - first pass had only one `>=5%` regression candidate:
+    - `fannkuch`
+
+- Focused `fannkuch` follow-up:
+  - rerun as dedicated benchmark gate on the same host
+  - baseline:
+    - `fannkuch_jitlist_20260406_095415.json`: `0.4893510160000005 s`
+    - `fannkuch_autojit50_20260406_095415.json`: `0.4726716300001499 s`
+  - fixed:
+    - `fannkuch_jitlist_20260406_100253.json`: `0.4717694239998309 s`
+    - `fannkuch_autojit50_20260406_100253.json`: `0.4497695210002348 s`
+  - compile summary:
+    - `main_compile_count = 1`
+  - focused delta:
+    - jitlist: about `-3.59%`
+    - autojit50: about `-4.84%`
+
+- Final subset conclusion:
+  - after the focused `fannkuch` rerun, there is no benchmark in the requested
+    set with confirmed `>=5%` regression
+  - the initial `fannkuch` `+7.59%` signal was measurement noise from the
+    3-sample subset sweep, not a stable regression
+
+### Direct `bm_go.versus_cpu()` rerun on 2026-04-06
+
+- Method:
+  - same ARM host
+  - same `bm_go/run_benchmark.py`
+  - same `bench_pyperf_direct.py` harness
+  - same flags:
+    - `PYTHONJITENABLEHIRINLINER=1`
+    - `--compile-strategy all`
+    - `--specialized-opcodes`
+    - `--prewarm-runs 1`
+    - `--samples 5`
+  - baseline workdir:
+    - `/root/work/cinderx-go-baseline-ab-20260405`
+  - fixed workdir:
+    - `/root/work/cinderx-go-fixed-ab-20260405`
+
+- Baseline direct artifact:
+  - `/root/work/arm-sync/go_direct_baseline_20260406.json`
+  - `median_wall_sec = 0.5150911270000051`
+  - `min_wall_sec = 0.35995911899999555`
+  - `total_deopt_count = 63960`
+
+- Fixed direct artifact:
+  - `/root/work/arm-sync/go_direct_fixed_20260406.json`
+  - `median_wall_sec = 0.17598324100003992`
+  - `min_wall_sec = 0.17564833100004762`
+  - `total_deopt_count = 63960`
+
+- Direct comparison:
+  - fixed vs baseline median: about `-65.83%`
+
+- Interpretation:
+  - this direct issue-specific probe strongly supports the original diagnosis:
+    the fixes materially improve the `go` hot path even though the coarse
+    pyperformance gate can look flatter or noisier
+  - the identical top-level deopt totals suggest the main win here is not from
+    removing the dominant remaining deopt buckets, but from recovering a faster
+    compiled call shape on the benchmark's critical path
 
 - ARM A/B performance snapshot:
   - method:
@@ -5709,3 +6490,586 @@ Conclusion:
 - Do not include:
   - `arm-results/` raw artifacts.
   - generated upload tarballs.
+
+- 2026-04-03 analysis: CPython minor-wide compatibility for `3.14.x` now and `3.15.x` next
+  - scope assumption:
+    - target scope is source build, getdeps, remote ARM validation, docs/release policy
+    - wheel ABI still follows CPython minor tags (`cp314`, later `cp315`), not cross-minor sharing
+  - current state:
+    - core source selection is already keyed by `major.minor`, not exact patch:
+      - `setup.py` computes `PY_VERSION` from `sys.version_info.major.minor`
+      - `CMakeLists.txt` selects borrowed/interpreter/JIT generated assets by `3.12`, `3.14`, `3.15`
+    - OSS CI already validates the source path across multiple 3.14 patch releases:
+      - `.github/workflows/ci.yml` runs build/test and sdist jobs on `3.14.0`, `3.14.1`, `3.14.2`, `3.14.3`
+    - patch-specific compatibility shims already exist where needed:
+      - `cinderx/UpstreamBorrow/borrowed.h` backfills `FT_ATOMIC_LOAD_PTR_CONSUME` for `< 3.14.3`
+    - the places that are still effectively pinned to `3.14.3` are the auxiliary pipelines and published messaging:
+      - `README.md` says `Python 3.14.3 or later`
+      - `build/fbcode_builder/manifests/python-3_14` downloads `v3.14.3.tar.gz` exactly
+      - `build/fbcode_builder/manifests/cinderx-3_14` depends on that single `python-3_14` manifest
+      - `.github/workflows/getdeps-3_14-linux.yml` exercises only the `python-3_14` getdeps path
+      - `.github/workflows/publish.yml` pins the sdist build job to `3.14.3`
+      - the ARM remote entry chain defaults to `/opt/python-3.14/bin/python3.14` and `/root/venv-cinderx314`, which are currently provisioned around one concrete 3.14 patchline
+  - diagnosis:
+    - "current only supports 3.14.3" is too strong for source/CI truth, but accurate for several fixed validation and packaging paths
+    - the repo currently mixes two support models:
+      - model A: implementation assets are organized per minor (`3.14`, `3.15`)
+      - model B: operational pipelines are provisioned per patch (`3.14.3`)
+    - this mismatch is the real blocker to advertising and sustaining wide matching
+  - solution options:
+    - option A, minimal pipeline widening:
+      - keep current code layout
+      - change docs/getdeps/remote defaults from `3.14.3` to "latest validated 3.14 patch"
+      - continue adding one-off patch shims as needed
+      - pros: smallest change set
+      - cons: support truth stays implicit and 3.15 will repeat the same drift
+    - option B, recommended two-level compatibility model:
+      - define support at two layers:
+        - layer 1: minor family selects generated assets and feature defaults (`3.14`, `3.15`)
+        - layer 2: patch compatibility table/allowlist records validated patch releases and required shims inside each family
+      - parameterize getdeps and ARM remote entrypoint from that compatibility data instead of hardcoded `3.14.3`
+      - keep `PY_VERSION_HEX` guards only for actual patch-level API drift
+      - pros: matches existing code organization, scales cleanly to `3.15.x`
+      - cons: requires a small new compatibility abstraction and matrix discipline
+    - option C, per-patch regenerated asset sets:
+      - maintain separate borrowed/interpreter/generated artifacts per patch release
+      - pros: maximal isolation from CPython internal drift
+      - cons: much higher maintenance cost, duplicates assets, unnecessary unless patch-level opcode/internal churn becomes common
+  - recommended direction:
+    - adopt option B
+    - keep borrowed/interpreter/opcode assets minor-scoped
+    - introduce one explicit compatibility ownership point for each minor family that captures:
+      - validated patch set
+      - default build/test patch
+      - known required shims
+      - remote interpreter path or label selection
+    - treat getdeps, publish, and ARM validation as consumers of that compatibility policy rather than independent sources of truth
+    - for `3.15`, start with the same framework from day one so one CinderX line can validate against multiple `3.15.x` releases without re-architecting again
+  - rollout suggestion:
+    - phase 1:
+      - align docs/metadata with the actual support model
+      - document the difference between wheel build baseline and supported runtime patch range
+    - phase 2:
+      - parameterize getdeps and remote ARM entrypoint by minor family plus explicit patch selection
+      - stop baking `3.14.3` into manifest names, remote paths, and release jobs where not required
+    - phase 3:
+      - add validated-patch matrix coverage for `3.14.x`
+      - extend the same contract to `3.15.x`
+  - verification note:
+    - no runtime benchmark/test was executed in this turn because this was analysis-only and made no runtime code change
+    - the unified remote verification chain was traced from `scripts/push_to_arm.ps1` into `scripts/arm/remote_update_build_test.sh`, which remains the correct execution surface for future implementation verification
+
+- 2026-04-03 analysis: one CinderX release supporting multiple CPython minors (`3.14` + `3.15`, later `3.16`)
+  - precise target:
+    - feasible target is:
+      - one CinderX source line
+      - one CinderX release version
+      - multiple wheels, one per supported CPython minor (`cp314`, `cp315`, later `cp316`)
+    - non-goal:
+      - one single wheel / one `.so` binary working unchanged across multiple CPython minors
+    - reason:
+      - CinderX uses CPython internal APIs and version-specific interpreter/JIT integration, so it is not an `abi3`-style extension
+  - current maturity by layer:
+    - source tree already has multi-minor scaffolding:
+      - `Interpreter/3.14`
+      - `Interpreter/3.15`
+      - `opcodes/3.14`
+      - `opcodes/3.15`
+      - `borrowed-3.14`
+      - `borrowed-3.15`
+    - internal build intent already includes `3.15`:
+      - `cinderx/TestScripts/test_builds.sh` builds `3.15`
+    - OSS packaging and release are still `3.14`-only:
+      - `pyproject.toml` has `requires-python = ">= 3.14.0, < 3.16"`
+      - classifier only declares `Python :: 3.14`
+      - cibuildwheel only builds `cp314-*`
+      - OSS CI only runs `3.14.0` ~ `3.14.3`
+    - OSS behavioral tests are also still biased toward `3.14`:
+      - there is `test_python314_bytecodes.py`
+      - there is no parallel `test_python315_bytecodes.py`
+      - `test_oss_quick.py` only models `3.14` ARM feature expectations
+    - setup logic is not yet generalized for arbitrary future minors:
+      - `setup.py` currently uses `is_314plus = py_version == "3.14" or py_version == "3.15"`
+      - this would require explicit code changes for `3.16`
+  - main conclusion:
+    - "one CinderX version supports both `3.14` and `3.15`" is structurally achievable with the current repository direction
+    - "future `3.16` just works automatically" is not true with the current codebase
+    - today the repo has:
+      - enough minor-scoped source structure to support a multi-minor release model
+      - but not enough packaging/CI/generalized policy to claim that model externally
+  - required architectural model:
+    - product version layer:
+      - one CinderX release version number
+    - minor-family implementation layer:
+      - `3.14`
+      - `3.15`
+      - later `3.16`
+    - patch-compatibility layer inside each family:
+      - validated patch list
+      - default build baseline
+      - family-local patch shims
+    - release artifact model:
+      - publish multiple wheels under the same CinderX version
+      - let `pip` choose the correct wheel for the interpreter
+  - concrete blockers to multi-minor release today:
+    - packaging metadata excludes `3.16` and does not advertise `3.15`
+    - wheel build config only emits `cp314`
+    - OSS CI does not exercise `3.15`
+    - some expectations and feature defaults are hardcoded specifically for `3.14`
+    - no centralized compatibility table drives setup/build/release/test decisions
+  - recommended implementation direction:
+    - do not pursue a universal wheel
+    - instead, make one release version produce:
+      - `cp314` wheel
+      - `cp315` wheel
+      - later `cp316` wheel
+      - plus sdist
+    - introduce a compatibility policy that declares:
+      - supported minors
+      - supported patches per minor
+      - default build baseline per minor
+      - feature availability per minor
+    - refactor setup/build/test/release workflows to consume that policy instead of handwritten minor checks
+  - sequencing suggestion:
+    - first:
+      - make one version support both `3.14` and `3.15`
+    - then:
+      - generalize `setup.py`/CI/cibuildwheel so adding `3.16` is policy/config work plus new minor resources, not a repository-wide special-case hunt
+  - verification note:
+    - analysis only in this turn; no remote build/test executed
+    - future implementation verification should still use the unified ARM path:
+      - `scripts/push_to_arm.ps1`
+      - `scripts/arm/remote_update_build_test.sh`
+
+- 2026-04-03 analysis: concrete implementation gap map for multi-minor release support
+  - immediate source-level gates that currently block "3.14 + 3.15 + future 3.16" from being policy-driven:
+    - `cinderx/PythonLib/cinderx/__init__.py`
+      - `is_supported_runtime()` explicitly whitelists `(3, 14)` and `(3, 15)`
+      - implication:
+        - adding `3.16` is currently a code change, not a config-only change
+    - `setup.py`
+      - `is_314plus = py_version == "3.14" or py_version == "3.15"`
+      - feature default helpers (`should_enable_adaptive_static_python`, `should_enable_lightweight_frames`) encode point-in-time rollout decisions directly in Python code
+      - implication:
+        - supported-minor logic and feature-policy logic are mixed together
+    - `cinderx/PythonLib/test_cinderx/test_oss_quick.py`
+      - runtime expectation logic is explicitly modeled around `3.14` ARM behavior
+      - implication:
+        - once `3.15` becomes a first-class OSS target, this test needs to become matrix-driven, not `3.14`-specific
+  - packaging/release gaps:
+    - `pyproject.toml`
+      - `requires-python = ">= 3.14.0, < 3.16"`
+      - classifier advertises only `Python :: 3.14`
+      - cibuildwheel builds only `cp314-*`
+      - implication:
+        - even if the source can build on `3.15`, the package metadata and artifacts do not expose that support
+    - `.github/workflows/publish.yml`
+      - sdist build job is pinned to `3.14.3`
+      - wheel build job has no explicit multi-minor validation stage before publish
+      - implication:
+        - release pipeline is still operationally anchored to one minor family
+    - `README.md`
+      - user-facing requirement still says `Python 3.14.3 or later`
+      - implication:
+        - external support statement is inconsistent with the desired multi-minor product model
+  - test coverage gaps:
+    - OSS CI (`.github/workflows/ci.yml`) only exercises `3.14.0` ~ `3.14.3`
+    - there is no OSS `3.15` matrix leg
+    - there is `test_python314_bytecodes.py` but no parallel `test_python315_bytecodes.py`
+    - implication:
+      - repository structure suggests `3.15` support intent, but OSS validation evidence is still `3.14`-centric
+  - maturity signal for `3.15`:
+    - positive:
+      - `Interpreter/3.15` exists with generated cases and interpreter sources
+      - `borrowed-3.15.gen_cached.c` and `generators_borrowed_3.15.gen_cached.c` exist
+      - internal build script `cinderx/TestScripts/test_builds.sh` includes `3.15`
+    - caution:
+      - existence of resources is necessary but not sufficient for product-level support
+      - without OSS CI/publish/runtime gating, `3.15` should be treated as implementation-in-progress, not yet externally guaranteed support
+  - recommended refactor shape:
+    - split support policy into two orthogonal concerns:
+      - concern A:
+        - is this CPython minor supported at all?
+      - concern B:
+        - which features are enabled by default on this supported minor and architecture?
+    - today those concerns are entangled in:
+      - `setup.py`
+      - `cinderx/PythonLib/cinderx/__init__.py`
+      - selected OSS tests
+    - a compatibility matrix should drive both, but through separate fields, e.g.:
+      - supported runtime minors
+      - published wheel targets
+      - default-on features per minor/arch
+      - validated patch list per minor
+  - practical phase split:
+    - phase A: make `3.15` a first-class supported OSS minor
+      - widen metadata
+      - widen wheel build targets
+      - widen CI matrix
+      - fix tests hardcoded to `3.14`
+    - phase B: make future `3.16` onboarding mostly declarative
+      - remove explicit `3.14`/`3.15` special-case checks from support gates
+      - move to table-driven support registration
+      - still allow `3.16` implementation family resources to be added explicitly
+  - verification note:
+    - analysis only; no runtime command executed this turn
+    - future implementation work should record:
+      - per-minor build/import success
+      - per-minor wheel artifacts
+      - unified ARM remote verification output
+      - in `findings.md`
+
+- 2026-04-03 prioritization update: stabilize `3.14.x` first, defer `3.15`, leave `3.16` extension points
+  - agreed priority:
+    - phase 1:
+      - make `3.14.x` support explicit, wide, and operationally consistent
+    - phase 2:
+      - promote `3.15` later after `3.14.x` model is proven
+    - phase 3:
+      - leave `3.16` extensibility hooks now, but do not attempt `3.16` support in this round
+  - implication for scope:
+    - in scope now:
+      - `3.14.x` patch-wide compatibility
+      - remove remaining operational `3.14.3` pinning where it blocks `3.14.x`
+      - introduce compatibility abstractions that are reusable for `3.15` / `3.16`
+    - explicitly out of scope now:
+      - publishing OSS `cp315` wheels
+      - advertising `3.15` as supported
+      - implementing `3.16` family resources
+  - recommended near-term deliverable:
+    - support statement should become conceptually:
+      - current supported OSS runtime family: `3.14.x`
+      - future families: `3.15`, `3.16` reserved by architecture, not yet committed by product support
+  - concrete work split for phase 1:
+    - compatibility policy:
+      - create one source of truth for:
+        - supported minor families
+        - validated patch list per family
+        - default build baseline patch per family
+      - initially populate only:
+        - `3.14`
+    - build and packaging:
+      - remove hardcoded `3.14.3` assumptions from docs/getdeps/release paths where they conflict with `3.14.x` support
+      - keep wheel publishing on `cp314` only in this phase
+    - runtime gating:
+      - keep Python runtime support gate focused on `3.14` for OSS support
+      - avoid widening public support gate to `3.15` until CI/release/testing are ready
+    - tests:
+      - keep OSS CI centered on `3.14.x`
+      - use oldest-supported + latest-supported `3.14` patch coverage as the minimum compatibility matrix
+      - keep remote ARM verification on the unified entrypoint but parameterize it so different `3.14.x` baselines can be selected later
+    - code structure:
+      - refactor hardcoded minor checks into table-driven helpers even if the table currently contains only `3.14`
+      - this is the main extensibility investment for later `3.15` / `3.16`
+  - why this sequencing is preferred:
+    - it avoids mixing two types of change in one round:
+      - widening patch support inside an existing family
+      - enabling a new minor family
+    - it creates one validated compatibility framework on the lower-risk `3.14` path first
+    - once that framework exists, `3.15` becomes a controlled onboarding exercise instead of another one-off policy change
+  - implementation principle:
+    - "design for many minors, ship only `3.14.x` now"
+    - i.e.:
+      - abstraction should be future-facing
+      - product commitment should remain intentionally narrow until validated
+
+- 2026-04-03 verification: 3.14.x compatibility stabilization
+  - local verification (Windows host, compatibility-only checks):
+    - command:
+      - `uv run --python 3.12 --no-project --with pytest --with setuptools python -m py_compile cinderx/PythonLib/cinderx/_compat.py cinderx/PythonLib/cinderx/__init__.py cinderx/PythonLib/test_cinderx/test_oss_quick.py`
+      - `uv run --python 3.12 --no-project --with pytest --with setuptools python -m pytest tests/test_compat_policy.py tests/test_setup_adaptive_static_python.py tests/test_setup_lightweight_frames.py tests/test_runtime_support_policy.py tests/test_project_metadata.py tests/test_remote_entrypoint_contract.py -q`
+    - result:
+      - `24 passed`
+      - `10 subtests passed`
+    - additional local check:
+      - `scripts/push_to_arm.ps1` parsed successfully via PowerShell parser API
+  - unified remote entrypoint baseline run:
+    - host:
+      - `124.70.162.35`
+    - runtime:
+      - `/opt/python-3.14/bin/python3.14`
+      - version: `Python 3.14.3`
+    - driver venv:
+      - `/root/venv-cinderx314`
+    - upload method:
+      - current working tree was packed into `cinderx-update.tar` manually because validation needed uncommitted local changes, including new files
+    - remote entrypoint:
+      - `/root/work/incoming/remote_update_build_test.sh`
+    - targeted test command:
+      - `python -m pip install -q pytest && python -m pytest tests/test_compat_policy.py tests/test_setup_adaptive_static_python.py tests/test_setup_lightweight_frames.py tests/test_runtime_support_policy.py tests/test_project_metadata.py cinderx/PythonLib/test_cinderx/test_oss_quick.py -q`
+    - result:
+      - PASS
+      - remote targeted pytest summary:
+        - `26 passed`
+        - `10 subtests passed`
+    - notable infrastructure change needed for this run:
+      - added `SKIP_ARM_RUNTIME_VALIDATION=1`
+      - when combined with `SKIP_PYPERF=1`, the unified remote entrypoint now performs a compatibility-only early exit after `EXTRA_TEST_CMD` / `EXTRA_VERIFY_CMD`
+      - reason:
+        - the host's built-in ARM JIT runtime smoke was failing for unrelated pre-existing reasons (`Cinder JIT is not installed`), which blocked compatibility-only verification from reaching the targeted tests
+  - additional validated `3.14.x` patch run:
+    - runtime:
+      - `/root/work/compat-python/cpython-3.14.0/bin/python3.14`
+      - version: `Python 3.14.0`
+    - driver venv:
+      - `/root/venv-cinderx3140-compat`
+    - provisioning method:
+      - source build from GitHub tag tarball:
+        - `https://github.com/python/cpython/archive/refs/tags/v3.14.0.tar.gz`
+      - isolated install prefix:
+        - `/root/work/compat-python/cpython-3.14.0`
+      - isolated build workspace:
+        - `/tmp/cpython-3140-build`
+      - isolated venv:
+        - `/root/venv-cinderx3140-compat`
+    - isolation note:
+      - this did not modify the shared baseline interpreter:
+        - `/opt/python-3.14/bin/python3.14`
+      - and did not reuse the shared baseline driver venv:
+        - `/root/venv-cinderx314`
+    - unified entrypoint result:
+      - PASS
+      - remote targeted pytest summary:
+        - `26 passed`
+        - `10 subtests passed`
+      - extra test command for this isolated environment also installed:
+        - `setuptools`
+        - `pytest`
+      - reason:
+        - the freshly created isolated venv did not initially contain `setuptools`, which is required because the setup-related tests import `setup.py`
+  - compatibility verification conclusion:
+    - unified remote entrypoint verification is now complete for two `3.14.x` patch points:
+      - baseline:
+        - `3.14.3`
+      - additional validated patch:
+        - `3.14.0`
+    - current evidence supports the narrowed OSS statement:
+      - `3.14.x` is the supported family
+      - `3.14.3` is the default build/release baseline, not the only validated patch
+
+- 2026-04-03 implementation + validation: onboarding `3.15`
+  - code and policy changes:
+    - `cinderx/PythonLib/cinderx/_compat.py`
+      - registered `3.15` as an OSS-supported family
+      - current validated baseline recorded as `3.15.0a6+`
+      - no ARM-only default features enabled for `3.15`
+    - `cinderx/PythonLib/cinderx/__init__.py`
+      - runtime support gate now accepts `3.15`
+    - `pyproject.toml`
+      - widened `requires-python` back to `>= 3.14.0, < 3.16`
+      - added `Programming Language :: Python :: 3.15`
+      - enabled `cp315` wheel targets in cibuildwheel config
+    - `README.md`
+      - updated support statement to mention `3.14.x and 3.15`
+    - `cinderx/Jit/hir/builder.h`
+    - `cinderx/Jit/hir/builder.cpp`
+      - gated `tryInlineAnyGenexprCall()` declaration/call site off for `PY_VERSION_HEX >= 0x030F0000`
+      - root cause:
+        - `3.15` build was leaving an undefined symbol because the definition stayed under `< 0x030F0000` while the declaration/call site remained unconditional
+    - `cinderx/Interpreter/3.15/binary_slice_compat.c`
+    - `cinderx/UpstreamBorrow/borrowed.h`
+      - added local compatibility wrappers for `_PyList_BinarySlice`, `_PyTuple_BinarySlice`, `_PyUnicode_BinarySlice`
+      - root cause:
+        - current `3.15` validation runtime lacked those symbols even though the checked-in generated interpreter cases referred to them
+    - `cinderx/UpstreamBorrow/borrowed-3.15.gen_cached.c`
+      - removed dependency on `tstate->datastack_cached_chunk` in `push_chunk()`
+      - root cause:
+        - current `3.15` validation runtime did not expose that field in `PyThreadState`
+  - local verification (Windows host):
+    - command:
+      - `uv run --python 3.12 --no-project --with pytest --with setuptools python -m pytest tests/test_compat_policy.py tests/test_setup_adaptive_static_python.py tests/test_setup_lightweight_frames.py tests/test_runtime_support_policy.py tests/test_project_metadata.py tests/test_remote_entrypoint_contract.py -q`
+    - result:
+      - `26 passed`
+      - `10 subtests passed`
+  - isolated remote `3.15` environment:
+    - runtime source:
+      - `/opt/python-3.15/bin/python3.15`
+      - version: `Python 3.15.0a6+`
+    - isolated build venv:
+      - `/root/venv-cinderx315-build`
+    - isolated driver venv:
+      - `/root/venv-cinderx315-compat`
+    - isolated workdir:
+      - `/root/work/cinderx315-compat`
+    - impact note:
+      - did not modify the shared `3.14` baseline interpreter or driver venv
+  - remote build verification:
+    - successful manual wheel build in isolated workdir:
+      - `/root/work/cinderx315-compat/dist/cinderx-2026.4.3.0-cp315-cp315-linux_aarch64.whl`
+    - successful isolated install:
+      - `pip install --force-reinstall dist/cinderx-2026.4.3.0-cp315-cp315-linux_aarch64.whl`
+    - direct import check:
+      - `cinderx.is_initialized() == True`
+      - `cinderx.get_import_error() == None`
+    - targeted pytest in isolated `3.15` driver venv:
+      - result:
+        - `28 passed`
+        - `10 subtests passed`
+  - unified remote entrypoint note:
+    - the updated entrypoint was still used as the primary transport/build harness for `3.15`
+    - however, end-to-end `remote_update_build_test.sh` returned non-zero in the `3.15` compatibility-only scenario even after the build artifacts were produced
+    - the isolated manual install + pytest run in the same `3.15` environment passed
+    - interpretation:
+      - current evidence supports `3.15` code/runtime compatibility
+      - there is likely still a harness-level issue in the `3.15` compatibility-only path of `remote_update_build_test.sh`
+
+## 2026-04-05 `pyperformance go` JIT gap re-analysis
+
+### Requested validation path
+
+- Unified remote entrypoint in this repo:
+  - Windows wrapper:
+    - `scripts/push_to_arm.ps1`
+    - exposes:
+      - `ArmHost`
+      - `Benchmark`
+      - `ExtraTestCmd`
+      - `ExtraVerifyCmd`
+  - remote executor:
+    - `scripts/arm/remote_update_build_test.sh`
+    - consumes:
+      - `BENCH`
+      - `EXTRA_TEST_CMD`
+      - `EXTRA_VERIFY_CMD`
+    - runs:
+      - targeted extra commands
+      - pyperformance `jitlist` / `autojit` gates via `--debug-single-value`
+
+### Fresh verification status
+
+- Attempted direct connectivity check from this environment:
+  - command:
+    - `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@124.70.162.35 "echo remote-ok"`
+  - result:
+    - `ssh: connect to host 124.70.162.35 port 22: Connection timed out`
+- Current implication:
+  - fresh remote rerun through the requested entrypoint is blocked by network
+    reachability, not by local repository state
+  - the analysis below therefore combines:
+    - current source inspection
+    - previously validated issue45 / issue49 / issue60 artifacts already stored
+      in this repository
+
+### Source-backed root cause
+
+- The core regression trigger is the exact-only gate in
+  `canUseMethodWithValuesFastPath()`:
+  - current source keeps the fast path only for
+    `hasStableExactReceiverType(receiver)`
+- That is safe for polymorphic receiver sites, but it loses the hot `go`
+  benchmark shape when the receiver is:
+  - attr-derived
+  - runtime-monomorphic
+  - not exact in HIR
+- The important `go` call shape is the attr-derived recursive receiver:
+  - `self.reference.find(update)`
+- When that receiver misses the fast path, lowering falls back from:
+  - `LOAD_ATTR_METHOD_WITH_VALUES -> const descr + VectorCall`
+  to:
+  - `LoadMethodCached + CallMethod`
+- This matters because the HIR inliner only considers:
+  - `VectorCall`
+  - `InvokeStaticFunction`
+- Result:
+  - the recursive `find()` hot chain becomes non-inlinable
+  - `go` loses the HIR-first win that earlier issue45 work had recovered
+
+### Existing repair state already present in the branch
+
+- The current branch already contains the issue60 profile-driven recovery path:
+  - non-exact `LOAD_ATTR_METHOD_WITH_VALUES` sites can leave a pending profiled
+    method-with-values call record
+  - the following `CALL` can split into:
+    - fast profiled `VectorCall`
+    - generic `CallMethod` fallback
+- That pending state carries:
+  - `receiver`
+  - `callable`
+  - `descr`
+  - `type_version`
+  - `keys_version`
+- The recovery is intentionally conservative:
+  - it is only enabled for the outer function body
+  - already-inlined callees stay on generic method load/call
+- Reason for the conservative boundary:
+  - earlier broader shapes reopened polymorphic
+    `LOAD_ATTR_METHOD_WITH_VALUES` deopt storms
+  - the first profile-driven implementation also crashed after inlining because
+    the synthetic call blocks lacked a dominating `Snapshot`
+  - the current code fixes that by emitting a leading `Snapshot` before both
+    fast and fallback call blocks
+
+### Historical validated evidence relevant to the diagnosis
+
+- Issue45 established that the intended `go` shape is profitable once the hot
+  path becomes inlinable again:
+  - standard pyperformance smoke:
+    - `go`: `350 ms -> 276 ms`
+  - full matrix A/B:
+    - `go`: `336 ms -> 265 ms`
+- Issue49 then tightened method-with-values lowering to exact receivers to stop
+  polymorphic deopts:
+  - that fixed the unsafe polymorphic shape
+  - but it also removed the `go` attr-derived monomorphic fast path
+- Issue60 documented the exact recovery experiments:
+  - rejected:
+    - `attr-derived + owner-has-no-subclasses`
+    - `recursive same-method only`
+  - viable:
+    - profile-driven call-site split using interpreter specialization-cache
+      facts plus generic fallback
+- Issue60 round-4 repository evidence shows:
+  - targeted regressions: all `OK`
+  - direct `bm_go.versus_cpu()` probe:
+    - base: `1.744004352 s`
+    - current candidate: `1.693260981 s`
+    - delta: about `-2.91%`
+  - direct pyperformance `go` single-value:
+    - `127 ms -> 127 ms`
+  - interpretation:
+    - the profile-driven recovery restored the issue-specific hot path
+    - the coarse pyperformance `go` result became roughly flat rather than
+      obviously regressed
+
+### Most likely remaining bottleneck
+
+- If `go` still has a residual JIT gap on the current branch, the highest
+  probability source is:
+  - the nested attr-derived recursive call that still intentionally remains on
+    generic `CallMethod` after the outer call is recovered
+- In other words:
+  - the branch likely fixed the outermost lost-inline problem
+  - but it deliberately stops short of reopening the same mechanism inside the
+    already-inlined callee
+
+### Ranked repair options
+
+- Recommended next option:
+  - extend the existing profile-driven recovery so it can safely cover the next
+    nested attr-derived recursive call inside already-inlined callees
+  - keep the generic fallback
+  - preserve the current polymorphic regression tests
+- Good longer-term option:
+  - plumb richer per-call-site receiver monomorphism/profile information into
+    builder decisions instead of relying on the current pending handoff between
+    `LOAD_ATTR_METHOD_WITH_VALUES` and the following `CALL`
+- Not recommended:
+  - reopening broad static heuristics such as:
+    - `attr-derived`
+    - `owner has no subclasses`
+    - narrow same-method-only heuristics as a landing strategy
+  - repository evidence already shows those shapes are brittle and can reopen
+    polymorphic deopt storms or broader benchmark regressions
+
+### TDD requirements for the next change round
+
+- Keep or extend:
+  - `test_attr_derived_monomorphic_method_load_restores_inlining`
+  - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`
+  - `test_polymorphic_virtual_method_avoids_method_with_values_guard_deopts`
+  - `test_polymorphic_method_load_avoids_method_with_values_deopts`
+  - `test_polymorphic_loop_local_method_load_avoids_method_with_values_deopts`
+- Add, if the nested recovery is attempted:
+  - a dedicated regression that proves the inner recursive attr-derived call is
+    recovered without reintroducing polymorphic deopts or snapshot-related
+    compile failures

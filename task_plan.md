@@ -67,6 +67,119 @@ Tiered-JIT functionality quality pass: prioritize completing the unified per-fun
 - Status:
   - issue31 is ready for review / merge as a closed fix
 
+## Session: 2026-04-05 performance-go JIT analysis
+
+### Goal
+- Explain why CinderX JIT underperforms on pyperformance `go`.
+- Converge on the safest repair direction before making code changes.
+- Keep all verification aligned with the unified remote entrypoint when connectivity allows.
+
+### Current Phase
+- Phase 4 completed with fresh remote evidence.
+- Root-cause analysis, design review, and future TDD shape are complete.
+
+### Phases
+
+#### Phase 1: Context recovery
+- [x] Read repo guidance and prior issue60 artifacts.
+- [x] Read the current builder/inliner/test code paths.
+- [x] Confirm the unified remote validation path.
+- Status: completed
+
+#### Phase 2: Brainstorming
+- [x] Compare static-heuristic, hybrid, and profile-driven repair directions.
+- [x] Decide which direction is technically safe enough to recommend.
+- Status: completed
+
+#### Phase 3: TDD and planning
+- [x] Identify the existing regression tests that define the safe envelope.
+- [x] Identify the next regression shapes needed before any broader change.
+- [x] Write design and implementation-plan docs under `docs/plans/`.
+- Status: completed
+
+#### Phase 4: Fresh remote verification
+- [x] Re-run the current branch through the unified remote entrypoint for `go`.
+- [x] Capture fresh `go` benchmark numbers and targeted method-load regression results.
+- Status: completed
+
+### Key Current Conclusion
+- The historical issue60 evidence still points to the same core bottleneck:
+  attr-derived but runtime-monomorphic receivers in `go` lose the
+  `LOAD_ATTR_METHOD_WITH_VALUES -> VectorCall -> inline` chain when the JIT
+  only trusts exact HIR receiver types.
+- The safest proven repair direction is the profile-driven call-site split
+  already captured in the issue60 artifacts, not another broader static
+  heuristic.
+- The most plausible residual gap is that the current implementation only
+  recovers the outer attr-derived recursive call and intentionally leaves the
+  nested inlined recursive call on the generic `CallMethod` path for safety.
+- Fresh ARM reruns now show:
+  - the unified `go` benchmark gate completes with JIT enabled and
+    `main_compile_count = 34`
+  - a focused `attr_derived_polymorphic` issue60 regression still segfaults
+    after the test body reports `ok`, with the native stack pointing into
+    `outputTypeWithRecursiveCoroHint -> reflowTypes -> SSAify::Run`
+- Additional narrowing:
+  - the crash is reproducible via direct
+    `force_compile(_colorize.can_colorize.__annotate__)`
+  - `PYTHONJITAUTO=1000000` avoids the outer unittest crash, which shows the
+    harness is auto-jitting unrelated code paths
+  - the most likely immediate bug is in `pass.cpp`, where a shared opcode case
+    block treats non-`Send` instructions as `Send`
+- That means the next change round should first lock down compiler stability on
+  the issue60 safety path, then revisit any deeper nested-call recovery.
+- Current local fix set:
+  - `cinderx/Jit/hir/pass.cpp`
+  - `cinderx/Jit/hir/annotation_index.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+- Fresh targeted remote results after the fix set:
+  - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`
+    passes
+  - `test_specialized_opcodes_do_not_eagerly_execute_annotation_thunks`
+    passes
+- Fresh benchmark remote result after the harness fix:
+  - `go_jitlist_20260405_181404.json`: `0.5156086859933566 s`
+  - `go_autojit50_20260405_181404.json`: `0.5089590209972812 s`
+  - compile summary:
+    - `main_compile_count = 34`
+- Same-host A/B follow-up completed:
+  - baseline `HEAD`:
+    - jitlist: `0.24918644900026266 s`
+    - autojit50: `0.4742307880005683 s`
+  - fixed working tree:
+    - jitlist: `0.25993193100293865 s`
+    - autojit50: `0.25297167700045975 s`
+- Same-host direct issue-specific follow-up completed:
+  - baseline `bm_go.versus_cpu()` median:
+    - `0.5150911270000051 s`
+  - fixed `bm_go.versus_cpu()` median:
+    - `0.17598324100003992 s`
+  - delta:
+    - about `-65.83%`
+- Remaining work:
+  - if we want a commit-ready performance claim, capture a multi-sample rerun
+    under tighter host-load control
+  - otherwise, the remaining `go` work is no longer “find the crash”, but
+    “decide whether the residual perf signal justifies deeper optimization”
+  - if ARM connectivity returns, add a direct `bm_go.versus_cpu()`-style probe
+    for a cleaner issue-specific measurement
+- Requested broad regression sweep status:
+  - baseline vs fixed subset run completed for:
+    - `generators,coroutines,comprehensions,richards,richards_super,float,go,deltablue,raytrace,nqueens,nbody,unpack_sequence,fannkuch,coverage,scimark,spectral_norm,chaos,logging`
+  - only initial candidate above `5%` was `fannkuch`
+  - focused `fannkuch` rerun cleared that signal
+  - current conclusion:
+    - no confirmed large regression remains in the requested set
+
+### Errors Encountered
+| Error | Attempt | Resolution |
+|-------|---------|------------|
+| `ssh root@124.70.162.35` timed out on port 22 during fresh remote verification | 1 | Retried later after connectivity returned |
+| PowerShell quoting broke the first manual remote-entry invocation | 1 | Re-ran with format-string based shell command construction |
+| Focused remote `attr_derived_polymorphic` regression exits with `SIGSEGV` after reporting `ok` | 1 | Captured a `PYTHONFAULTHANDLER=1` stack trace showing `outputTypeWithRecursiveCoroHint -> reflowTypes -> SSAify::Run` and treated it as the current blocker |
+| Direct `force_compile(_colorize.can_colorize.__annotate__)` also exits with `SIGSEGV` | 1 | Used it to prove the crash is broader than the issue60 benchmark shape and likely rooted in `pass.cpp` send-case handling |
+| Combined multi-test remote suites showed outer-harness contamination after the first test | 1 | Switched authoritative verification to one-targeted-test-per-run through the same unified remote entrypoint |
+
 ## Raytrace Follow-up: polymorphic method loads
 
 ### Goal
@@ -226,6 +339,19 @@ Tiered-JIT functionality quality pass: prioritize completing the unified per-fun
 ### Goal
 - Analyze current `pyperformance bm_nqueens` HIR/LIR bottlenecks on ARM.
 - Identify the next highest-value optimization beyond the existing `set(genexpr)` work.
+
+## 2026-04-05 post-fix update
+
+- Minimal targeted fix implemented:
+  - `cinderx/Jit/hir/pass.cpp`
+  - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+- Remote targeted verification on the fixed working-tree snapshot:
+  - `test_force_compile_annotation_thunk_does_not_crash`: pass
+  - `test_attr_derived_polymorphic_method_load_avoids_method_with_values_deopts`: pass
+- Remaining blocker:
+  - fresh same-build `go` pyperformance validation is still blocked by a
+    harness-layer shell error in `remote_update_build_test.sh` during the
+    pyperformance setup phase
 - Land the smallest safe improvement with remote-only verification and record the result in `findings.md`.
 
 ### Workflow

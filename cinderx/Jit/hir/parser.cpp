@@ -42,7 +42,10 @@ void HIRParser::expect(std::string_view expected) {
 Register* HIRParser::allocateRegister(std::string_view name) {
   JIT_CHECK(
       name[0] == 'v', "invalid register name (must be v[0-9]+): {}", name);
-  auto opt_id = parseNumber<int>(name.substr(1));
+  // HIR test inputs may annotate destination registers like `v0:Object`.
+  // The register identity is still the numeric prefix before `:`.
+  auto reg_name = name.substr(0, name.find(':'));
+  auto opt_id = parseNumber<int>(reg_name.substr(1));
   JIT_CHECK(
       opt_id.has_value(), "Cannot parse register '{}' into an integer", name);
   auto id = *opt_id;
@@ -469,6 +472,37 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
       instruction = newInstr<LoadAttrCached>(dst, receiver, idx);
       break;
     }
+    case Opcode::kLoadField: {
+      expect("<");
+      auto name_and_offset = GetNextToken();
+      auto at = name_and_offset.find('@');
+      JIT_CHECK(
+          at != std::string_view::npos,
+          "Invalid LoadField token: {}",
+          name_and_offset);
+      std::string name{name_and_offset.substr(0, at)};
+      auto offset_str = name_and_offset.substr(at + 1);
+      auto opt_offset = parseNumber<std::size_t>(offset_str);
+      JIT_CHECK(opt_offset.has_value(), "Invalid LoadField offset: {}", offset_str);
+      expect(",");
+      Type type = parseType(GetNextToken());
+      bool borrowed = true;
+      if (peekNextToken() == ",") {
+        expect(",");
+        auto ownership = GetNextToken();
+        if (ownership == "borrowed") {
+          borrowed = true;
+        } else if (ownership == "owned") {
+          borrowed = false;
+        } else {
+          JIT_ABORT("Invalid LoadField ownership: {}", ownership);
+        }
+      }
+      expect(">");
+      auto receiver = ParseRegister();
+      NEW_INSTR(LoadField, dst, receiver, name, *opt_offset, type, borrowed);
+      break;
+    }
     case Opcode::kLoadConst: {
       expect("<");
       Type ty = parseType(GetNextToken());
@@ -615,6 +649,15 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
       instruction = newInstr<Compare>(dst, op, left, right);
       break;
     }
+    case Opcode::kCompareBool: {
+      expect("<");
+      CompareOp op = ParseCompareOpName(GetNextToken());
+      expect(">");
+      auto left = ParseRegister();
+      auto right = ParseRegister();
+      instruction = newInstr<CompareBool>(dst, op, left, right);
+      break;
+    }
     case Opcode::kFloatCompare: {
       expect("<");
       CompareOp op = ParseCompareOpName(GetNextToken());
@@ -670,6 +713,22 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
       auto start = ParseRegister();
       auto stop = ParseRegister();
       NEW_INSTR(ListSlice, dst, list, start, stop, FrameState{});
+      break;
+    }
+    case Opcode::kBuildSlice: {
+      expect("<");
+      int num_operands = GetNextInteger();
+      expect(">");
+      std::vector<Register*> args(num_operands);
+      std::generate(
+          args.begin(),
+          args.end(),
+          std::bind(std::mem_fn(&HIRParser::ParseRegister), this));
+      auto instr = BuildSlice::create(num_operands, dst, FrameState{});
+      instruction = instr;
+      for (int i = 0; i < num_operands; i++) {
+        instruction->SetOperand(i, args[i]);
+      }
       break;
     }
     case Opcode::kIntConvert: {
@@ -1055,7 +1114,6 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
     case Opcode::kBeginInlinedFunction:
     case Opcode::kBitCast:
     case Opcode::kBuildInterpolation:
-    case Opcode::kBuildSlice:
     case Opcode::kBuildString:
     case Opcode::kBuildTemplate:
     case Opcode::kCallCFunc:
@@ -1069,7 +1127,6 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
     case Opcode::kCheckFreevar:
     case Opcode::kCheckField:
     case Opcode::kCIntToCBool:
-    case Opcode::kCompareBool:
     case Opcode::kCopyDictWithoutKeys:
     case Opcode::kCondBranchIterNotDone:
     case Opcode::kConvertValue:
@@ -1093,7 +1150,6 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
     case Opcode::kLoadAttrSpecial:
     case Opcode::kLoadAttrSuper:
     case Opcode::kLoadCellItem:
-    case Opcode::kLoadField:
     case Opcode::kLoadFunctionIndirect:
     case Opcode::kLoadModuleAttrCached:
     case Opcode::kLoadModuleMethodCached:

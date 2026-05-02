@@ -4,8 +4,23 @@ import platform
 import sys
 import unittest
 
+from cinderx import _compat
+
 # This is just a quick test to see if CinderX works. It's intended purpose is
 # for quick and basic validation of OSS builds.
+
+
+def expected_oss_runtime_features() -> tuple[bool, bool]:
+    machine = platform.machine().lower()
+    is_meta_312 = "+meta" in sys.version and sys.version_info[:2] == (3, 12)
+    if is_meta_312:
+        return (True, True)
+
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    return (
+        _compat.is_oss_feature_enabled(version, machine, "adaptive_static_python"),
+        _compat.is_oss_feature_enabled(version, machine, "lightweight_frames"),
+    )
 
 
 class CinderXOSSTest(unittest.TestCase):
@@ -28,9 +43,7 @@ class CinderXOSSTest(unittest.TestCase):
         self.assertIsInstance(enabled, bool)
 
         machine = platform.machine().lower()
-        is_meta_312 = "+meta" in sys.version and sys.version_info[:2] == (3, 12)
-        is_314_arm = sys.version_info[:2] == (3, 14) and machine in {"aarch64", "arm64"}
-        expected = is_meta_312 or is_314_arm
+        expected, _ = expected_oss_runtime_features()
         if hasattr(cinderx, "is_static_python_enabled") and not cinderx.is_static_python_enabled():
             expected = False
         self.assertEqual(
@@ -51,9 +64,7 @@ class CinderXOSSTest(unittest.TestCase):
         self.assertIsInstance(enabled, bool)
 
         machine = platform.machine().lower()
-        is_meta_312 = "+meta" in sys.version and sys.version_info[:2] == (3, 12)
-        is_314_arm = sys.version_info[:2] == (3, 14) and machine in {"aarch64", "arm64"}
-        expected = is_meta_312 or is_314_arm
+        _, expected = expected_oss_runtime_features()
         self.assertEqual(
             enabled,
             expected,

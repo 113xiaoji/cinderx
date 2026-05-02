@@ -48,6 +48,8 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
+        # Use the current 3.14.x baseline for release packaging. This does not
+        # define the full supported OSS patch range on its own.
         python-version: ['3.14.3']
 
     steps:

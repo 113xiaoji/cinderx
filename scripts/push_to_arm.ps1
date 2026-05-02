@@ -30,8 +30,16 @@ param(
   # Keep builds stable on small ARM boxes.
   [int]$CmakeParallel = 1,
 
+  [string]$Profile = "",
+  [ValidateSet("baseline", "optimized")]
+  [string]$Lane = "baseline",
+
   [switch]$SkipPyperformance,
-  [switch]$RecreatePyperfVenv
+  [switch]$SkipArmRuntimeValidation,
+  [switch]$RecreatePyperfVenv,
+
+  [string]$ExtraTestCmd = "",
+  [string]$ExtraVerifyCmd = ""
 )
 
 Set-StrictMode -Version Latest
@@ -48,6 +56,12 @@ function ExecPwsh {
   param([string]$Cmd)
   Write-Host ">> $Cmd"
   Invoke-Expression $Cmd
+}
+
+function QuoteForPosixShell {
+  param([string]$Value)
+  $singleQuoteEscape = "'" + '"' + "'" + '"' + "'"
+  return "'" + (($Value -split "'") -join $singleQuoteEscape) + "'"
 }
 
 if (-not (Test-Path $RepoPath)) {
@@ -109,20 +123,59 @@ try {
   # Ensure LF line endings on the ARM host (Windows checkouts often use CRLF).
   Exec ("ssh {0} {1}@{2} `"tr -d '\r' < {3}/remote_update_build_test.sh > {3}/remote_update_build_test.sh.lf && mv {3}/remote_update_build_test.sh.lf {3}/remote_update_build_test.sh`"" -f $sshOpts, $User, $ArmHost, $RemoteIncomingDir)
 
-  $skip = $(if ($SkipPyperformance) { 1 } else { 0 })
-  $recreate = $(if ($RecreatePyperfVenv) { 1 } else { 0 })
+  $remoteEnv = [ordered]@{
+    INCOMING_DIR = $RemoteIncomingDir
+    WORKDIR = $RemoteWorkDir
+    PYTHON = $RemotePython
+    DRIVER_VENV = $RemoteDriverVenv
+    BENCH = $Benchmark
+    AUTOJIT = [string]$AutoJit
+    PARALLEL = [string]$CmakeParallel
+  }
 
-  $envPrefix = @(
-    "INCOMING_DIR=$RemoteIncomingDir",
-    "WORKDIR=$RemoteWorkDir",
-    "PYTHON=$RemotePython",
-    "DRIVER_VENV=$RemoteDriverVenv",
-    "BENCH=$Benchmark",
-    "AUTOJIT=$AutoJit",
-    "PARALLEL=$CmakeParallel",
-    "SKIP_PYPERF=$skip",
-    "RECREATE_PYPERF_VENV=$recreate"
-  ) -join " "
+  if ($Profile) {
+    $profilePath = Join-Path $PSScriptRoot "arm\\py314_functional_assurance_profiles.json"
+    if (-not (Test-Path $profilePath)) {
+      throw "Missing profile file: $profilePath"
+    }
+
+    $profileData = Get-Content -Path $profilePath -Raw | ConvertFrom-Json
+    $profileConfig = $profileData.profiles.$Profile
+    if (-not $profileConfig) {
+      throw "Unknown profile '$Profile' in $profilePath"
+    }
+
+    $laneConfig = $profileConfig.$Lane
+    if (-not $laneConfig) {
+      throw "Profile '$Profile' does not define lane '$Lane'"
+    }
+
+    foreach ($prop in $laneConfig.remote_env.PSObject.Properties) {
+      $remoteEnv[$prop.Name] = [string]$prop.Value
+    }
+  }
+
+  if ($SkipPyperformance) {
+    $remoteEnv["SKIP_PYPERF"] = "1"
+  }
+  if ($SkipArmRuntimeValidation) {
+    $remoteEnv["SKIP_ARM_RUNTIME_VALIDATION"] = "1"
+    $remoteEnv["SKIP_ARM_RUNTIME"] = "1"
+    $remoteEnv["SKIP_JIT_EFFECTIVENESS_SMOKE"] = "1"
+  }
+  if ($RecreatePyperfVenv) {
+    $remoteEnv["RECREATE_PYPERF_VENV"] = "1"
+  }
+  if ($ExtraTestCmd) {
+    $remoteEnv["EXTRA_TEST_CMD"] = $ExtraTestCmd
+  }
+  if ($ExtraVerifyCmd) {
+    $remoteEnv["EXTRA_VERIFY_CMD"] = $ExtraVerifyCmd
+  }
+
+  $envPrefix = ($remoteEnv.GetEnumerator() | ForEach-Object {
+    "{0}={1}" -f $_.Key, (QuoteForPosixShell ([string]$_.Value))
+  }) -join " "
 
   $runCmd = @(
     "chmod +x $RemoteIncomingDir/remote_update_build_test.sh",

@@ -5,6 +5,11 @@ import setup
 
 
 class AdaptiveStaticDefaultTests(unittest.TestCase):
+    def test_supported_oss_minor_is_314_only(self) -> None:
+        self.assertTrue(setup.is_supported_oss_minor("3.14"))
+        self.assertTrue(setup.is_supported_oss_minor("3.15"))
+        self.assertFalse(setup.is_supported_oss_minor("3.16"))
+
     def test_enable_for_314_aarch64(self) -> None:
         self.assertTrue(
             setup.should_enable_adaptive_static_python(

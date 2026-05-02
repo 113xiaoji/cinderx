@@ -4,6 +4,8 @@
 name = python-3_14
 
 [download]
+# This manifest intentionally pins the default build baseline to 3.14.3.
+# The wider OSS support range is tracked separately as CPython 3.14.x.
 url = https://github.com/python/cpython/archive/refs/tags/v3.14.3.tar.gz
 sha256 = f229a232052ae318d2fc8eb0aca4a02d631e7e1a8790ef1f9b65e1632743a469
 

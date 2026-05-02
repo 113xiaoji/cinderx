@@ -115,6 +115,9 @@
 #define _PyTraceBack_FromFrame _CiTraceBack_FromFrame
 #define _Py_CalculateSuggestions _Ci_CalculateSuggestions
 #if PY_VERSION_HEX >= 0x030F0000
+#define _PyList_BinarySlice _CiList_BinarySlice
+#define _PyTuple_BinarySlice _CiTuple_BinarySlice
+#define _PyUnicode_BinarySlice _CiUnicode_BinarySlice
 #define Cix_PyObjectDict_SetItem _PyObjectDict_SetItem
 #define _PyDict_LookupIndexAndValue _CixDict_LookupIndexAndValue
 #else
@@ -138,6 +141,11 @@ extern "C" {
 #endif
 PyObject* _PyNumber_InPlacePowerNoMod(PyObject* lhs, PyObject* rhs);
 PyObject* _PyNumber_PowerNoMod(PyObject* lhs, PyObject* rhs);
+#if PY_VERSION_HEX >= 0x030F0000
+PyObject* _CiList_BinarySlice(PyObject* container, PyObject* start, PyObject* stop);
+PyObject* _CiTuple_BinarySlice(PyObject* container, PyObject* start, PyObject* stop);
+PyObject* _CiUnicode_BinarySlice(PyObject* container, PyObject* start, PyObject* stop);
+#endif
 #ifdef __cplusplus
 }
 #endif

@@ -99,7 +99,7 @@ fun test {
 --- Expected 3.14 ---
 fun test {
   bb 0 {
-    v0:TupleExact = LoadArg<0; "t", TupleExact>
+    v0:TupleExact = LoadArg<0, TupleExact>
     v1:Object = LoadTupleItem<0> v0
     Return v1
   }
@@ -168,8 +168,8 @@ fun test {
 --- Expected 3.14 ---
 fun test {
   bb 0 {
-    v0:UnicodeExact = LoadArg<0; "s", UnicodeExact>
-    v1:Object = LoadMethodCached<0; "upper"> v0 {
+    v0:UnicodeExact = LoadArg<0, UnicodeExact>
+    v1:Object = LoadMethodCached<0> v0 {
       FrameState {
         CurInstrOffset -2
       }
@@ -269,8 +269,8 @@ fun test {
 --- Expected 3.14 ---
 fun test {
   bb 0 {
-    v0:UnicodeExact = LoadArg<0; "s", UnicodeExact>
-    v1:Object = LoadMethodCached<0; "upper"> v0 {
+    v0:UnicodeExact = LoadArg<0, UnicodeExact>
+    v1:Object = LoadMethodCached<0> v0 {
       FrameState {
         CurInstrOffset -2
       }
@@ -281,7 +281,7 @@ fun test {
         CurInstrOffset -2
       }
     }
-    v4:Object = LoadMethodCached<0; "upper"> v0 {
+    v4:Object = LoadMethodCached<0> v0 {
       FrameState {
         CurInstrOffset -2
       }
@@ -390,7 +390,7 @@ fun test {
 fun test {
   bb 0 {
     v0:Object = LoadArg<0>
-    v1:CBool = LoadArg<1; "cond", CBool>
+    v1:CBool = LoadArg<1, CBool>
     CondBranch<1, 2> v1
   }
 
