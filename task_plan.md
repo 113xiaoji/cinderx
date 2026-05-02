@@ -43,6 +43,68 @@ Tiered-JIT functionality quality pass: prioritize completing the unified per-fun
     later activation, not within the same hot loop
   - focused review follow-up plus full ARM/tiering verification passed through
     the remote entrypoint
+- [x] Expose OSR cooldown resume deferral in tier-state telemetry:
+  - add a focused RED test showing the deferred state is not observable today
+  - expose a read-only `compile_failure_osr_resume_deferred` field through
+    `jit.get_function_tier_state()`
+  - keep the field false for clean fallback/no-JIT paths
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Expose pending fallback state after type invalidation:
+  - add a focused RED test for the gap between type patching and the first
+    runtime fallback
+  - expose `fallback_pending` and `fallback_pending_reason` through
+    `jit.get_function_tier_state()`
+  - clear the pending flag when the runtime fallback is observed or when the
+    function is recompiled/uncompiled
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Gate reopt/resume paths through tier policy:
+  - add RED coverage showing a deopt-budget-exhausted function can still be
+    reoptimized through `reoptFunc()`/enable-resume today
+  - route reoptimization through `shouldAttemptOptimizedPromotion()` before
+    finalizing optimized code
+  - preserve explicit resume behavior for healthy compiled functions
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Classify permanent compile failures separately from transient cooldown:
+  - identify a stable unsupported-shape failure that should not blindly enter
+    transient cooldown semantics
+  - add RED coverage for the new policy state and code-change reset path
+  - keep resource/temporary failures on bounded cooldown
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Harden unsupported compile-failure policy across promotion entrypoints:
+  - cover `precompile_all` as an unsupported-failure producer, not only
+    `force_compile`
+  - verify subsequent promotion attempts stay permanently blocked with zero
+    transient cooldown/backoff
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Prevent management APIs from bypassing tier policy:
+  - add RED coverage showing `jit_unsuppress()` on an already-unsuppressed
+    function must not reset compile-failure/deopt policy
+  - reset policy only when the suppress flag actually changes
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Gate dependent/static target compilation through tier policy:
+  - add RED coverage where a caller compile would otherwise retry an
+    unsupported static callee
+  - skip policy-blocked dependent targets without incrementing compile failure
+    counters again
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Continue tier-policy maturity scan for remaining bypasses:
+  - inspect all optimized compile/reopt/preload entrypoints for missing policy
+    checks
+  - add RED coverage before any new production change
+  - keep verification on the unified remote ARM entrypoint
+- [x] Address review-minor maturity test gaps:
+  - cover non-suppressed unsupported code shapes resetting through
+    `__code__` replacement
+  - cover shared-runtime pending fallback ownership cleanup
+  - verify focused and full tiering behavior through the remote ARM entrypoint
+- [x] Close remaining tier-state maturity review findings:
+  - count deopt-budget-exhaustion policy resets when `function_modified`
+    restores a function to ready state
+  - keep shared-runtime runtime-fallback observation per-function so one owner
+    does not clear another owner's pending fallback state
+  - add maturity tests for unsupported permanent blocks, deopt reset, shared
+    disable cleanup, and observed-owner fallback cleanup
+  - verify RED/GREEN through the remote ARM entrypoint
 
 ## Phases
 
@@ -700,6 +762,12 @@ Tiered-JIT functionality quality pass: prioritize completing the unified per-fun
   - [x] remove stale CodeRuntime owner mappings when functions are destroyed, uncompiled, or deopted
   - [x] focused remote GREEN: `test_jit_tiering`, `Ran 14 tests in 2.101s`, `OK`
   - [x] broader remote guard: tiering + OSR + method-with-values suite, `Ran 26 tests in 5.330s`, `OK`
+  - [x] maturity follow-up: owner-specific runtime fallback telemetry avoids
+    clearing sibling owners when the observed runtime owner can be identified
+  - [x] maturity follow-up remote guard:
+    - focused adjacent tier-state group `Ran 8 tests in 0.518s`, `OK`
+    - default ARM runtime `Ran 102 tests in 16.417s`, `OK (skipped=3)`
+    - full `test_jit_tiering` `Ran 40 tests in 11.014s`, `OK`
   - outcome: feature/quality closure for tier-state MVP is materially stronger; no performance claim made in this phase
 - Lookup-free tiny bool mutator retry:
   - [x] RED: tightened the state-mutator test to require `CallMethod == 0`, `LoadMethodCached + LoadMethod == 0`, and direct `StoreField` operations

@@ -7321,3 +7321,455 @@ Conclusion:
   - the tier policy now has review-covered reset semantics, observable cooldown
     expiry, OSR-only recovery, and a guard against a single huge interpreted
     hot loop burning through cooldown and promoting in the same activation.
+
+## 2026-05-02 OSR deferred telemetry maturity
+
+- Gap addressed:
+  - hot-loop OSR cooldown expiry already defers promotion until a later
+    activation, but external tier-state telemetry could not directly explain
+    the ready/unblocked-but-not-compiled state.
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused run:
+    - `test_hot_loop_osr_resume_deferral_is_observable`
+  - expected failure:
+    - `KeyError: 'compile_failure_osr_resume_deferred'`
+- Implementation:
+  - native `jit.get_function_tier_state()` now exposes
+    `compile_failure_osr_resume_deferred`.
+  - Python fallback/no-JIT API surface returns the same field with `False`.
+  - behavior is intentionally unchanged; this is observability maturity for
+    tier policy debugging.
+- GREEN verification:
+  - first GREEN attempt proved the behavior was present but caught a test-slice
+    mistake (`lines[-11:]` while asserting a 12-line lifecycle).
+  - focused rerun after correcting the assertion:
+    - `test_hot_loop_osr_resume_deferral_is_observable ... ok`
+    - `Ran 1 test in 0.082s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 16.569s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 27 tests in 5.660s`
+      - `OK`
+- Maturity impact:
+  - tier-state telemetry now tells the full story for OSR compile-failure
+    recovery: cooldown can be expired, promotion unblocked, policy ready, and
+    OSR resume deliberately deferred until the next activation.
+
+## 2026-05-02 pending fallback tier-state maturity
+
+- Gap addressed:
+  - type invalidation previously recorded `type_invalidation`, but the
+    intermediate state between patching and the first runtime fallback was only
+    inferable.
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused run:
+    - `test_type_invalidation_updates_tier_state`
+  - expected failure:
+    - `KeyError: 'fallback_pending'`
+- Implementation:
+  - `FunctionTierState` now exposes:
+    - `fallback_pending`
+    - `fallback_pending_reason`
+  - `recordTypeInvalidation()` marks pending fallback with the invalidation
+    reason.
+  - `recordRuntimeFallback()`, optimized compile, and uncompile clear the
+    pending state.
+  - Python fallback/no-JIT tier state returns `False` and `"none"` for the new
+    fields.
+- GREEN verification:
+  - focused type-invalidation run:
+    - `test_type_invalidation_updates_tier_state ... ok`
+    - `Ran 1 test in 0.075s`
+    - `OK`
+  - hardening focused pair:
+    - `test_type_invalidation_updates_tier_state`
+    - `test_uncompile_clears_pending_type_fallback_state`
+    - `Ran 2 tests in 0.145s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 17.166s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 28 tests in 5.736s`
+      - `OK`
+- Maturity impact:
+  - invalidation/fallback telemetry now distinguishes “patch happened and a
+    fallback is expected” from “fallback already happened”, without charging
+    deopt budget until the actual runtime fallback is observed.
+
+## 2026-05-02 reopt policy gate maturity
+
+- Gap addressed:
+  - `reoptFunc()` could reattach an existing optimized code object during
+    enable/resume without consulting tier policy, bypassing deopt-budget and
+    compile-failure gates.
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused run:
+    - `test_reopt_respects_deopt_budget_exhaustion_on_enable_resume`
+  - expected failure:
+    - after `jit.disable(deopt_all=True); jit.enable()`, a function with
+      exhausted deopt budget returned to `active_tier == "optimized"` with
+      `compiled == True`.
+- Implementation:
+  - `reoptFunc()` now checks
+    `shouldAttemptOptimizedPromotion(func, "reopt")` before finalizing an
+    existing compiled function.
+  - successful reopt records a promotion attempt with reason `reopt`.
+  - policy-blocked reopt leaves the function interpreted/deopted and records
+    `last_promotion_decision == "blocked"`.
+  - if no compiled code exists to attach, the old stale deopt-marker cleanup is
+    preserved.
+- GREEN verification:
+  - focused blocked reopt:
+    - `test_reopt_respects_deopt_budget_exhaustion_on_enable_resume ... ok`
+    - `Ran 1 test in 0.064s`
+    - `OK`
+  - focused blocked + healthy pair:
+    - `test_reopt_respects_deopt_budget_exhaustion_on_enable_resume`
+    - `test_enable_resume_reopts_healthy_deopted_function`
+    - `Ran 2 tests in 0.114s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 16.999s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 30 tests in 5.901s`
+      - `OK`
+- Maturity impact:
+  - policy gate coverage now includes force/lazy/precompile/hot-loop OSR and
+    enable/resume reopt paths, reducing the chance of a blocked function
+    silently returning to optimized code through a side door.
+
+## 2026-05-02 compile-failure taxonomy maturity
+
+- Gap addressed:
+  - compile failures previously all flowed into the same bounded cooldown
+    bucket. That is reasonable for transient/resource failures such as code
+    size limits, but misleading for unsupported shapes such as
+    `cannot_specialize`, where repeated promotion attempts should stay blocked
+    until an explicit code-shape reset.
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused unsupported-policy test showed old behavior:
+    - `CANNOT_SPECIALIZE` was reported as `last_compile_failure`.
+    - policy state was still `compile_failure_cooldown`.
+    - backoff/cooldown counters were non-zero.
+    - `jit_unsuppress()` did not expose a clean policy reset.
+- Implementation:
+  - added `compile_failure_unsupported` to native tier-policy state.
+  - mapped `cannot_specialize` failures to unsupported policy state with
+    zero transient cooldown/backoff.
+  - kept `compile_failure_cooldown` semantics for code-size/resource failures.
+  - routed `jit_unsuppress()` through `resetFunctionTierPolicy(func,
+    "jit_unsuppress")`.
+- GREEN verification:
+  - focused unsupported-policy test:
+    - `Ran 1 test in 0.051s`
+    - `OK`
+  - focused compile-failure group after correcting an assertion slice bug:
+    - `test_unsupported_compile_failure_blocks_until_unsuppress ... ok`
+    - `test_compile_failure_cooldown_expires_and_allows_repromotion ... ok`
+    - `test_repeated_compile_failures_grow_policy_backoff ... ok`
+    - `Ran 3 tests in 0.153s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 16.578s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 31 tests in 5.919s`
+      - `OK`
+- Maturity impact:
+  - tier policy now has separate transient and permanent compile-failure
+    states, which makes promotion/fallback telemetry explain not only that a
+    function is blocked, but whether retrying later is expected to help.
+
+## 2026-05-02 unsupported policy entrypoint hardening
+
+- Gap addressed:
+  - the new unsupported compile-failure taxonomy was first proven through
+    direct `force_compile()`. A mature tier policy also needs identical behavior
+    when the failure is produced by batch/precompile entrypoints.
+- Added coverage:
+  - `test_precompile_all_unsupported_failure_blocks_later_promotions`.
+  - The test registers a `jit_suppress()`ed function through `lazy_compile()`,
+    lets `precompile_all()` produce `cannot_specialize`, then verifies a later
+    `force_compile()` observes the existing unsupported block instead of trying
+    another compile or aging transient cooldown.
+- Verification through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused hardening test:
+    - `test_precompile_all_unsupported_failure_blocks_later_promotions ... ok`
+    - `Ran 1 test in 4.488s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 16.736s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 32 tests in 10.405s`
+      - `OK`
+- Maturity impact:
+  - unsupported failure behavior is now locked across direct and batch
+    promotion paths, with zero transient backoff/cooldown and no repeated
+    compile attempts after the permanent block is established.
+
+## 2026-05-02 management API policy bypass hardening
+
+- Gap addressed:
+  - `jit_unsuppress(func)` reset tier policy even when `func` was not currently
+    suppressed. That meant an unrelated management call could clear
+    compile-failure cooldown/backoff and deopt policy.
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused run:
+    - `test_unsuppress_without_suppression_does_not_reset_policy`
+  - expected failure:
+    - a never-suppressed function in `compile_failure_cooldown` became
+      `policy_state == "ready"` after `jit_unsuppress()`.
+    - `compile_failure_backoff` and
+      `compile_failure_cooldown_remaining` both became `0`.
+    - `policy_resets` became `1`.
+- Implementation:
+  - `jit_unsuppress()` now records whether `CI_CO_SUPPRESS_JIT` was set before
+    clearing it.
+  - `resetFunctionTierPolicy(func, "jit_unsuppress")` is called only if the
+    suppress flag actually changed.
+- GREEN verification:
+  - focused rerun:
+    - `test_unsuppress_without_suppression_does_not_reset_policy ... ok`
+    - `Ran 1 test in 0.051s`
+    - `OK`
+  - suppress/unsupported regression group:
+    - `test_unsupported_compile_failure_blocks_until_unsuppress ... ok`
+    - `test_precompile_all_unsupported_failure_blocks_later_promotions ... ok`
+    - `test_unsuppress_without_suppression_does_not_reset_policy ... ok`
+    - `Ran 3 tests in 4.605s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 16.580s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 33 tests in 10.504s`
+      - `OK`
+- Maturity impact:
+  - tier policy reset is now tied to an actual eligibility/code-shape change,
+    closing a management API side door around cooldown/backoff.
+
+## 2026-05-02 dependent static compile policy hardening
+
+- Gap addressed:
+  - dependent/static target compilation inside `compile_func()` did not consult
+    tier policy before calling `compilePreloader()`.
+  - a caller compile could therefore retry a callee already blocked in
+    `compile_failure_unsupported`, incrementing `compile_failures` again and
+    reporting the wrong telemetry (`force_compile` / `attempt`).
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - `test_dependent_compile_respects_unsupported_policy` initially needed a
+    test-shape fix: static functions created with bare `exec_static()` globals
+    were not resolvable by the preloader as module `m`.
+  - after registering a real `types.ModuleType("m")` in `sys.modules`, the
+    focused RED failed as intended:
+    - expected `compile_failures == 1`; observed `2`.
+    - expected `last_promotion_reason == "dependent_compile"`; observed
+      `"force_compile"`.
+    - expected `last_promotion_decision == "blocked"`; observed `"attempt"`.
+- Implementation:
+  - `cinderx/Jit/pyjit.cpp`
+    - before compiling `target != func` static dependencies, call
+      `shouldAttemptPreloadedUnit(target, "dependent_compile")`.
+    - skip policy-blocked dependencies without recording another compile
+      failure.
+    - leave primary target policy checks at their existing entrypoints to avoid
+      double-counting.
+- GREEN verification:
+  - focused remote run:
+    - `test_dependent_compile_respects_unsupported_policy ... ok`
+    - `Ran 1 test in 0.158s`
+    - `OK`
+  - adjacent policy group:
+    - dependent compile, unsupported reset, `precompile_all` unsupported, and
+      unsuppress bypass tests
+    - `Ran 4 tests in 4.774s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 16.677s`
+      - `OK (skipped=3)`
+    - full `test_jit_tiering`:
+      - `Ran 34 tests in 10.685s`
+      - `OK`
+- Maturity impact:
+  - force/lazy/precompile/hot-loop OSR/reopt and dependent static compilation
+    now all route policy-blocked optimized promotion attempts into the unified
+    decision telemetry instead of silently retrying through side paths.
+
+## 2026-05-02 review-minor maturity test closure
+
+- Independent review result:
+  - Critical: none.
+  - Important: none.
+  - Minor follow-ups:
+    - unsupported taxonomy reset should be covered by a non-`jit_suppress`
+      unsupported code shape.
+    - shared-runtime pending fallback cleanup should prove uncompile clears
+      only the selected owner.
+- Added test-only hardening:
+  - `test_unsupported_code_shape_resets_after_code_change`
+    - unsupported producer: `async def ...: yield`, which reaches
+      `cannot_specialize` without `jit_suppress()`.
+    - reset path: assign a normal `replacement.__code__`.
+    - expected result: policy becomes `ready`, `policy_reset` reason is
+      `function_modified`, and later `force_compile()` succeeds.
+  - `test_shared_runtime_uncompile_clears_only_that_owner_pending_fallback`
+    - two functions share one compiled code runtime.
+    - type invalidation marks `fallback_pending` on both.
+    - `force_uncompile(first)` clears `first` only; `second` remains compiled
+      and pending with reason `type_modified`.
+- Verification through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused owner-pending cleanup:
+    - `test_shared_runtime_uncompile_clears_only_that_owner_pending_fallback ... ok`
+    - `Ran 1 test in 0.072s`
+    - `OK`
+  - focused reviewer-minor pair:
+    - `test_unsupported_code_shape_resets_after_code_change ... ok`
+    - `test_shared_runtime_uncompile_clears_only_that_owner_pending_fallback ... ok`
+    - `Ran 2 tests in 0.125s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime:
+      - `Ran 102 tests in 16.890s`
+      - `OK (skipped=3)`
+    - full `test_jit_tiering`:
+      - `Ran 36 tests in 11.422s`
+      - `OK`
+- Maturity impact:
+  - the policy reset and pending fallback lifecycle are now covered beyond
+    their simplest direct-entrypoint cases, reducing the chance that future
+    refactors regress shared-runtime owner bookkeeping or unsupported taxonomy
+    semantics.
+
+## 2026-05-02 tier-state maturity closure
+
+- Independent review found one Important state-model gap:
+  - `recordRuntimeFallback(CodeRuntime*)` cleared `fallback_pending` and
+    incremented `runtime_fallbacks` for every owner sharing a runtime.
+  - That made per-function TierState misleading: one function observing a
+    patched fallback made sibling functions look as if they had also observed
+    it.
+- Additional telemetry gap found by TDD:
+  - `function_modified` reset a `deopt_budget_exhausted` function back to
+    ready with a full deopt budget, but `policy_resets` stayed unchanged.
+  - This meant the last event said `policy_reset` while the reset counter said
+    no policy reset happened.
+- Implementation:
+  - added `hasDeoptBudgetPolicy()` and counted deopt-budget resets in
+    `Context::resetFunctionTierPolicy()` without double-counting existing
+    compile-failure resets.
+  - changed `Context::recordRuntimeFallback()` to accept the observed function
+    owner.
+  - changed the deopt trampoline to pass the current frame function when it can
+    be identified.
+  - retained the old all-owner fallback behavior when no concrete owner can be
+    identified, preserving safety for unusual frames.
+- New tests:
+  - `test_unsupported_failure_does_not_age_with_repeated_attempts`
+  - `test_function_code_change_resets_deopt_budget_exhaustion`
+  - `test_disable_deopt_all_clears_shared_runtime_pending_fallbacks`
+  - `test_shared_runtime_fallback_clears_only_observed_owner_pending`
+- Remote evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - maturity group RED:
+    - `test_unsupported_failure_does_not_age_with_repeated_attempts ... ok`
+    - `test_function_code_change_resets_deopt_budget_exhaustion ... FAIL`
+    - `test_disable_deopt_all_clears_shared_runtime_pending_fallbacks ... ok`
+    - failure: expected `policy_resets > 0`, observed `False`.
+  - maturity group GREEN after reset-counter fix:
+    - `Ran 3 tests in 0.186s`, `OK`
+  - shared-runtime observed-owner RED:
+    - expected sibling owner `runtime_fallbacks == 0` and
+      `fallback_pending == True`.
+    - observed sibling owner `runtime_fallbacks == 1` and
+      `fallback_pending == False`.
+  - shared-runtime observed-owner GREEN after owner-specific fallback fix:
+    - `Ran 1 test in 0.072s`, `OK`
+  - adjacent tier-state regression group:
+    - included the four new tests plus existing runtime fallback,
+      deopt-budget exhaustion, type invalidation, and shared-runtime pending
+      cleanup tests.
+    - `Ran 8 tests in 0.517s`, `OK`
+  - final full remote entrypoint:
+    - default ARM runtime `Ran 102 tests in 16.235s`, `OK (skipped=3)`
+    - full `test_jit_tiering` `Ran 40 tests in 10.999s`, `OK`
+  - diff hygiene:
+    - `git diff --check` exit code 0
+    - only CRLF conversion warnings were reported by Git
+- Review evidence:
+  - Sagan final code review reported no Critical, Important, or Minor
+    actionable findings.
+  - Reviewer specifically checked owner discovery, BorrowedRef lifetime,
+    conservative broadcast fallback, and shared-owner pending fallback /
+    deopt-budget consistency.
+
+## 2026-05-03 tier-state maturity pre-commit verification
+
+- Scope:
+  - prepared the tier-state maturity closure for commit and SSH push.
+  - left `arm-results/` untracked as an evidence directory.
+- Fresh verification:
+  - `git diff --check` exit code 0; Git reported CRLF conversion warnings
+    only.
+  - remote entrypoint `/root/work/incoming/remote_update_build_test.sh`:
+    - default ARM runtime `Ran 102 tests in 16.610s`, `OK (skipped=3)`.
+    - full `test_jit_tiering` `Ran 40 tests in 11.068s`, `OK`.
+
+## 2026-05-02 runtime fallback owner review follow-up
+
+- Review finding:
+  - using only the current frame function for `recordRuntimeFallback()` is not
+    sufficient for inlined/lightweight-frame deopts, because the current frame
+    may be an inlined callee and not one of the `CodeRuntime` owners.
+  - in a shared-runtime owner set, that can fall through to the conservative
+    broadcast path and again make sibling tier states look as if they observed
+    a fallback.
+- Implementation adjustment:
+  - the deopt trampoline now walks interpreter frames and prefers a function
+    whose code, builtins, and globals match `CodeRuntime::frameState()`.
+  - `Context::recordRuntimeFallback()` also handles the single-owner runtime
+    case explicitly, avoiding unnecessary broadcast when owner identity is
+    otherwise unavailable.
+  - ambiguous multi-owner runtimes still broadcast rather than guessing.
+- Errors and fixes:
+  - remote ARM build initially failed on pointer-type comparisons in
+    `gen_asm.cpp`; fixed by comparing runtime frame-state pointers as
+    `PyObject*`.
+  - a focused unittest invocation initially used stale class name
+    `TierPolicyTests`; corrected to `TieringApiTests`.
+  - remote entrypoint consumes `cinderx-update.tar`, so repeated runs require a
+    fresh upload.
+- Remote evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused adjacent tier-state regression group:
+    - `test_unsupported_failure_does_not_age_with_repeated_attempts ... ok`
+    - `test_function_code_change_resets_deopt_budget_exhaustion ... ok`
+    - `test_disable_deopt_all_clears_shared_runtime_pending_fallbacks ... ok`
+    - `test_shared_runtime_fallback_clears_only_observed_owner_pending ... ok`
+    - `test_runtime_fallback_updates_tier_state ... ok`
+    - `test_deopt_budget_exhaustion_blocks_repromotion ... ok`
+    - `test_type_invalidation_updates_tier_state ... ok`
+    - `test_shared_runtime_uncompile_clears_only_that_owner_pending_fallback ... ok`
+    - `Ran 8 tests in 0.518s`
+    - `OK`
+  - full remote entrypoint after owner-discovery fix:
+    - default ARM runtime `Ran 102 tests in 16.417s`, `OK (skipped=3)`
+    - full `test_jit_tiering` `Ran 40 tests in 11.014s`, `OK`
+  - diff hygiene:
+    - `git diff --check` exit code 0
+    - only CRLF conversion warnings were reported by Git

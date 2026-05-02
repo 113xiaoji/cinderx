@@ -332,6 +332,37 @@ void ensureInitializedPreviousFrames(_PyInterpreterFrame* frame) {
 
 #endif
 
+BorrowedRef<PyFunctionObject> findRuntimeFallbackOwner(
+    CodeRuntime* code_runtime,
+    CiPyFrameObjType* frame) {
+#if PY_VERSION_HEX >= 0x030C0000
+  const RuntimeFrameState* runtime_state = code_runtime->frameState();
+  BorrowedRef<PyFunctionObject> first_func;
+  for (_PyInterpreterFrame* frame_iter = frame; frame_iter != nullptr;
+       frame_iter = frame_iter->previous) {
+    PyObject* func_obj = frameFunction(frame_iter);
+    if (func_obj == nullptr || !PyFunction_Check(func_obj)) {
+      continue;
+    }
+    BorrowedRef<PyFunctionObject> func{func_obj};
+    if (first_func == nullptr) {
+      first_func = func;
+    }
+    if (func->func_code ==
+            reinterpret_cast<PyObject*>(runtime_state->code().get()) &&
+        func->func_builtins ==
+            reinterpret_cast<PyObject*>(runtime_state->builtins().get()) &&
+        func->func_globals ==
+            reinterpret_cast<PyObject*>(runtime_state->globals().get())) {
+      return func;
+    }
+  }
+  return first_func;
+#else
+  return nullptr;
+#endif
+}
+
 CiPyFrameObjType* prepareForDeopt(
     const uint64_t* regs,
     CodeRuntime* code_runtime,
@@ -384,7 +415,10 @@ CiPyFrameObjType* prepareForDeopt(
   Ref<> deopt_obj = profileDeopt(deopt_meta, mem);
   auto ctx = getContext();
   ctx->recordDeopt(code_runtime, deopt_idx, deopt_obj);
-  ctx->recordRuntimeFallback(code_runtime, deoptReasonName(deopt_meta.reason));
+  ctx->recordRuntimeFallback(
+      code_runtime,
+      findRuntimeFallbackOwner(code_runtime, frame),
+      deoptReasonName(deopt_meta.reason));
   releaseRefs(deopt_meta, mem);
 #if PY_VERSION_HEX >= 0x030C0000
   if (_PyFrame_GetCode(frame)->co_flags & kCoFlagsAnyGenerator) {

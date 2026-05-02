@@ -1008,14 +1008,21 @@ bool reoptFunc(BorrowedRef<PyFunctionObject> func) {
     return false;
   }
 
-  // Might be a nested function that was never explicitly deopted, so ignore the
-  // result of this.
-  jitCtx()->removeDeoptedFunc(func);
-
   if (CompiledFunction* compiled = jitCtx()->lookupFunc(func)) {
+    if (!jitCtx()->shouldAttemptOptimizedPromotion(func, "reopt")) {
+      return false;
+    }
+    jitCtx()->recordPromotionAttempt(func, "reopt");
+    // Might be a nested function that was never explicitly deopted, so ignore
+    // the result of this.
+    jitCtx()->removeDeoptedFunc(func);
     jitCtx()->finalizeFunc(func, *compiled);
     return true;
   }
+  // Preserve the historical behavior for deopted functions whose compiled code
+  // has already been forgotten: a reopt lookup with nothing to attach clears the
+  // stale deopt marker.
+  jitCtx()->removeDeoptedFunc(func);
   return false;
 }
 
@@ -2307,6 +2314,10 @@ PyObject* get_function_tier_state(PyObject* /* self */, PyObject* arg) {
       !set_string("last_transition", state.last_transition.c_str()) ||
       !set_size("runtime_fallbacks", state.runtime_fallbacks) ||
       !set_string("last_fallback_reason", state.last_fallback_reason.c_str()) ||
+      !set_bool("fallback_pending", state.fallback_pending) ||
+      !set_string(
+          "fallback_pending_reason",
+          state.fallback_pending_reason.c_str()) ||
       !set_size("deopt_budget", state.deopt_budget) ||
       !set_size("compile_failures", state.compile_failures) ||
       !set_size("compile_failure_streak", state.compile_failure_streak) ||
@@ -2314,6 +2325,9 @@ PyObject* get_function_tier_state(PyObject* /* self */, PyObject* arg) {
       !set_size(
           "compile_failure_cooldown_remaining",
           state.compile_failure_cooldown_remaining) ||
+      !set_bool(
+          "compile_failure_osr_resume_deferred",
+          state.compile_failure_osr_resume_deferred) ||
       !set_string("last_compile_failure", state.last_compile_failure.c_str()) ||
       !set_size("invalidations", state.invalidations) ||
       !set_string(
@@ -3135,7 +3149,14 @@ PyObject* jit_unsuppress(PyObject* /* self */, PyObject* arg) {
   }
 
   BorrowedRef<PyCodeObject> code{func->func_code};
+  bool was_suppressed = (code->co_flags & CI_CO_SUPPRESS_JIT) != 0;
   code->co_flags &= ~CI_CO_SUPPRESS_JIT;
+  if (was_suppressed) {
+    auto* ctx = jitCtx();
+    if (ctx != nullptr) {
+      ctx->resetFunctionTierPolicy(func, "jit_unsuppress");
+    }
+  }
 
   Py_INCREF(arg);
   return arg;
@@ -3901,6 +3922,11 @@ Result compile_func(BorrowedRef<PyFunctionObject> func) {
     // Don't compile functions that were preloaded purely for inlining.
     bool is_static = preloader->code()->co_flags & CI_CO_STATICALLY_COMPILED;
     if (target != func && !is_static) {
+      continue;
+    }
+
+    if (target != func &&
+        !shouldAttemptPreloadedUnit(target, "dependent_compile")) {
       continue;
     }
 

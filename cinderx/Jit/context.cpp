@@ -48,6 +48,8 @@ const char* tierPolicyStateName(TierPolicyState state) {
       return "ready";
     case TierPolicyState::kCompileFailureCooldown:
       return "compile_failure_cooldown";
+    case TierPolicyState::kCompileFailureUnsupported:
+      return "compile_failure_unsupported";
     case TierPolicyState::kDeoptBudgetExhausted:
       return "deopt_budget_exhausted";
   }
@@ -65,6 +67,10 @@ std::size_t compileFailureBackoffForStreak(std::size_t streak) {
     backoff = std::min(backoff * 2, kMaxCompileFailureBackoff);
   }
   return backoff;
+}
+
+bool isUnsupportedCompileFailure(const char* reason) {
+  return std::strcmp(reason, "cannot_specialize") == 0;
 }
 
 void clearPromotionBlock(FunctionTierState& state) {
@@ -90,7 +96,14 @@ bool hasCompileFailurePolicy(const FunctionTierState& state) {
       state.compile_failure_backoff != 0 ||
       state.compile_failure_cooldown_remaining != 0 ||
       state.policy_state == TierPolicyState::kCompileFailureCooldown ||
+      state.policy_state == TierPolicyState::kCompileFailureUnsupported ||
       state.promotion_blocked_reason == "compile_failure_cooldown";
+}
+
+bool hasDeoptBudgetPolicy(const FunctionTierState& state) {
+  return state.deopt_budget != kDefaultDeoptBudget ||
+      state.policy_state == TierPolicyState::kDeoptBudgetExhausted ||
+      state.promotion_blocked_reason == "deopt_budget_exhausted";
 }
 
 void resetCompileFailurePolicy(FunctionTierState& state) {
@@ -104,6 +117,11 @@ void resetCompileFailurePolicy(FunctionTierState& state) {
     state.policy_resets++;
   }
   clearPromotionBlock(state);
+}
+
+void clearPendingFallback(FunctionTierState& state) {
+  state.fallback_pending = false;
+  state.fallback_pending_reason = "none";
 }
 
 bool shouldConsumeCompileFailureCooldown(
@@ -877,6 +895,7 @@ void Context::noteUncompiledFunc(
   state.baseline_scheduled = false;
   state.compiled = false;
   state.deopted = false;
+  clearPendingFallback(state);
   state.last_transition = reason;
   for (const CodeRuntime* runtime : forgetCodeRuntimeOwner(func)) {
     forgetTypeDeoptPatchersForRuntime(runtime);
@@ -911,9 +930,6 @@ void Context::recordCompileFailure(
   FunctionTierState& state = tierStateFor(func);
   state.compile_failures++;
   state.compile_failure_streak++;
-  state.compile_failure_backoff =
-      compileFailureBackoffForStreak(state.compile_failure_streak);
-  state.compile_failure_cooldown_remaining = state.compile_failure_backoff;
   state.compile_failure_last_osr_cooldown_epoch = kNoOsrEpoch;
   state.compile_failure_osr_resume_deferred = false;
   state.last_compile_failure = reason;
@@ -921,6 +937,19 @@ void Context::recordCompileFailure(
   state.last_policy_event = "compile_failure";
   state.last_policy_reason = reason;
   state.last_transition = "compile_failed";
+  if (isUnsupportedCompileFailure(reason)) {
+    state.compile_failure_backoff = 0;
+    state.compile_failure_cooldown_remaining = 0;
+    blockPromotion(
+        state,
+        TierPolicyState::kCompileFailureUnsupported,
+        "compile_failure_unsupported",
+        "compile_failure_unsupported");
+    return;
+  }
+  state.compile_failure_backoff =
+      compileFailureBackoffForStreak(state.compile_failure_streak);
+  state.compile_failure_cooldown_remaining = state.compile_failure_backoff;
   if (state.compile_failures >= kCompileFailureBackoffThreshold) {
     blockPromotion(
         state,
@@ -935,8 +964,13 @@ void Context::resetFunctionTierPolicy(
     const char* reason) {
   ThreadedCompileSerialize guard;
   FunctionTierState& state = tierStateFor(func);
+  bool had_deopt_policy = hasDeoptBudgetPolicy(state);
+  std::size_t resets_before = state.policy_resets;
   state.deopt_budget = kDefaultDeoptBudget;
   resetCompileFailurePolicy(state);
+  if (had_deopt_policy && state.policy_resets == resets_before) {
+    state.policy_resets++;
+  }
   state.last_policy_event = "policy_reset";
   state.last_policy_reason = reason;
 }
@@ -1015,16 +1049,18 @@ void Context::recordPromotionAttempt(
 
 void Context::recordRuntimeFallback(
     CodeRuntime* code_runtime,
+    BorrowedRef<PyFunctionObject> func,
     const char* reason) {
   ThreadedCompileSerialize guard;
   auto owners_it = code_runtime_funcs_.find(code_runtime);
   if (owners_it == code_runtime_funcs_.end()) {
     return;
   }
-  for (BorrowedRef<PyFunctionObject> func : owners_it->second) {
-    FunctionTierState& state = tierStateFor(func);
+  auto record_owner = [&](BorrowedRef<PyFunctionObject> owner) {
+    FunctionTierState& state = tierStateFor(owner);
     state.runtime_fallbacks++;
     state.last_fallback_reason = reason;
+    clearPendingFallback(state);
     state.last_policy_event = "runtime_fallback";
     state.last_policy_reason = reason;
     if (state.deopt_budget > 0) {
@@ -1038,6 +1074,20 @@ void Context::recordRuntimeFallback(
           "deopt_budget_exhausted");
     }
     state.last_transition = "runtime_fallback";
+  };
+
+  if (func != nullptr && owners_it->second.contains(func)) {
+    record_owner(func);
+    return;
+  }
+
+  if (owners_it->second.size() == 1) {
+    record_owner(*owners_it->second.begin());
+    return;
+  }
+
+  for (BorrowedRef<PyFunctionObject> owner : owners_it->second) {
+    record_owner(owner);
   }
 }
 
@@ -1054,6 +1104,8 @@ void Context::recordTypeInvalidation(
     state.invalidations++;
     state.last_invalidation_reason = reason;
     state.last_fallback_reason = reason;
+    state.fallback_pending = true;
+    state.fallback_pending_reason = reason;
     state.last_policy_event = "type_invalidation";
     state.last_policy_reason = reason;
     state.last_transition = "type_invalidation";
@@ -1095,6 +1147,7 @@ bool Context::addCompiledFunc(BorrowedRef<PyFunctionObject> func) {
     state.compiled = true;
     state.deopted = false;
     state.baseline_scheduled = false;
+    clearPendingFallback(state);
     state.last_transition = "optimized";
   }
   return inserted;
@@ -1108,6 +1161,7 @@ bool Context::removeCompiledFunc(BorrowedRef<PyFunctionObject> func) {
     if (!baseline_funcs_.contains(func)) {
       state.active_tier = FunctionTier::kInterp;
     }
+    clearPendingFallback(state);
     for (const CodeRuntime* runtime : forgetCodeRuntimeOwner(func)) {
       forgetTypeDeoptPatchersForRuntime(runtime);
     }

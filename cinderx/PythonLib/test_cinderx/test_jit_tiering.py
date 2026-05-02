@@ -478,7 +478,7 @@ class TieringApiTests(unittest.TestCase):
             """,
         )
 
-        self.assertEqual(lines[-11:], [
+        self.assertEqual(lines[-12:], [
             str((50000 * 50001) // 2),
             "0",
             "0",
@@ -679,6 +679,396 @@ class TieringApiTests(unittest.TestCase):
             "True",
         ])
 
+    def test_unsupported_compile_failure_blocks_until_unsuppress(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "unsupported_compile_failure_policy",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            def blocked_compile(x):
+                return x + 1
+
+            jit.jit_suppress(blocked_compile)
+            try:
+                jit.force_compile(blocked_compile)
+            except RuntimeError as exc:
+                print("CANNOT_SPECIALIZE" in str(exc))
+
+            failed = jit.get_function_tier_state(blocked_compile)
+            print(failed["policy_state"])
+            print(failed["promotion_blocked"])
+            print(failed["promotion_blocked_reason"])
+            print(failed["compile_failure_backoff"])
+            print(failed["compile_failure_cooldown_remaining"])
+            print(failed["last_compile_failure"])
+
+            print(jit.force_compile(blocked_compile))
+            blocked = jit.get_function_tier_state(blocked_compile)
+            print(blocked["last_promotion_decision"])
+            print(blocked["last_policy_event"])
+
+            jit.jit_unsuppress(blocked_compile)
+            reset = jit.get_function_tier_state(blocked_compile)
+            print(reset["policy_state"])
+            print(reset["promotion_blocked"])
+            print(reset["last_policy_event"])
+            print(reset["last_policy_reason"])
+
+            print(jit.force_compile(blocked_compile))
+            recovered = jit.get_function_tier_state(blocked_compile)
+            print(recovered["active_tier"])
+            print(recovered["compiled"])
+            print(recovered["policy_state"])
+            """,
+        )
+
+        self.assertEqual(lines[-18:], [
+            "True",
+            "compile_failure_unsupported",
+            "True",
+            "compile_failure_unsupported",
+            "0",
+            "0",
+            "cannot_specialize",
+            "False",
+            "blocked",
+            "promotion_blocked",
+            "ready",
+            "False",
+            "policy_reset",
+            "jit_unsuppress",
+            "True",
+            "optimized",
+            "True",
+            "ready",
+        ])
+
+    def test_unsupported_code_shape_resets_after_code_change(self) -> None:
+        lines = self.run_tiering_script(
+            "unsupported_code_shape_policy_reset",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            async def blocked_compile():
+                yield 1
+
+            try:
+                jit.force_compile(blocked_compile)
+            except RuntimeError as exc:
+                print("CANNOT_SPECIALIZE" in str(exc))
+
+            failed = jit.get_function_tier_state(blocked_compile)
+            print(failed["policy_state"])
+            print(failed["promotion_blocked"])
+            print(failed["promotion_blocked_reason"])
+            print(failed["last_compile_failure"])
+
+            def replacement():
+                return 42
+
+            blocked_compile.__code__ = replacement.__code__
+            changed = jit.get_function_tier_state(blocked_compile)
+            print(changed["policy_state"])
+            print(changed["promotion_blocked"])
+            print(changed["policy_resets"] > 0)
+            print(changed["last_policy_event"])
+            print(changed["last_policy_reason"])
+
+            print(jit.force_compile(blocked_compile))
+            recovered = jit.get_function_tier_state(blocked_compile)
+            print(recovered["active_tier"])
+            print(recovered["compiled"])
+            print(recovered["policy_state"])
+            print(blocked_compile())
+            """,
+        )
+
+        self.assertEqual(lines[-15:], [
+            "True",
+            "compile_failure_unsupported",
+            "True",
+            "compile_failure_unsupported",
+            "cannot_specialize",
+            "ready",
+            "False",
+            "True",
+            "policy_reset",
+            "function_modified",
+            "True",
+            "optimized",
+            "True",
+            "ready",
+            "42",
+        ])
+
+    def test_unsupported_failure_does_not_age_with_repeated_attempts(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "unsupported_failure_does_not_age",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            def blocked_compile(x):
+                return x + 1
+
+            jit.jit_suppress(blocked_compile)
+            try:
+                jit.force_compile(blocked_compile)
+            except RuntimeError:
+                pass
+
+            failed = jit.get_function_tier_state(blocked_compile)
+            print(failed["policy_state"])
+            print(failed["compile_failures"])
+            print(failed["compile_failure_cooldown_remaining"])
+            print(failed["promotion_blocked_attempts"])
+
+            for _ in range(3):
+                print(jit.force_compile(blocked_compile))
+
+            repeated = jit.get_function_tier_state(blocked_compile)
+            print(repeated["policy_state"])
+            print(repeated["promotion_blocked"])
+            print(repeated["compile_failures"])
+            print(repeated["compile_failure_cooldown_remaining"])
+            print(
+                repeated["promotion_blocked_attempts"]
+                > failed["promotion_blocked_attempts"]
+            )
+            print(repeated["last_promotion_decision"])
+            print(repeated["last_policy_event"])
+            print(repeated["last_policy_reason"])
+            """,
+        )
+
+        self.assertEqual(lines[-15:], [
+            "compile_failure_unsupported",
+            "1",
+            "0",
+            "0",
+            "False",
+            "False",
+            "False",
+            "compile_failure_unsupported",
+            "True",
+            "1",
+            "0",
+            "True",
+            "blocked",
+            "promotion_blocked",
+            "compile_failure_unsupported",
+        ])
+
+    def test_precompile_all_unsupported_failure_blocks_later_promotions(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "precompile_all_unsupported_failure_policy",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            def blocked_compile(x):
+                return x + 1
+
+            jit.jit_suppress(blocked_compile)
+            print(jit.lazy_compile(blocked_compile))
+            print(jit.precompile_all())
+
+            failed = jit.get_function_tier_state(blocked_compile)
+            print(failed["policy_state"])
+            print(failed["promotion_blocked"])
+            print(failed["promotion_blocked_reason"])
+            print(failed["compile_failures"])
+            print(failed["last_compile_failure"])
+            print(failed["compile_failure_backoff"])
+            print(failed["compile_failure_cooldown_remaining"])
+
+            print(jit.force_compile(blocked_compile))
+            blocked = jit.get_function_tier_state(blocked_compile)
+            print(blocked["policy_state"])
+            print(blocked["promotion_blocked"])
+            print(blocked["last_promotion_decision"])
+            print(blocked["last_policy_event"])
+            print(blocked["last_policy_reason"])
+            print(blocked["compile_failures"])
+            print(blocked["compile_failure_backoff"])
+            print(blocked["compile_failure_cooldown_remaining"])
+            """,
+        )
+
+        self.assertEqual(lines[-18:], [
+            "True",
+            "True",
+            "compile_failure_unsupported",
+            "True",
+            "compile_failure_unsupported",
+            "1",
+            "cannot_specialize",
+            "0",
+            "0",
+            "False",
+            "compile_failure_unsupported",
+            "True",
+            "blocked",
+            "promotion_blocked",
+            "compile_failure_unsupported",
+            "1",
+            "0",
+            "0",
+        ])
+
+    def test_unsuppress_without_suppression_does_not_reset_policy(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "unsuppress_without_suppression_keeps_policy",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            original_limit = jit.get_allocator_stats()["max_bytes"]
+            try:
+                jit.set_max_code_size(0)
+
+                def consumes_code_bytes():
+                    return 42
+
+                assert jit.force_compile(consumes_code_bytes)
+                jit.set_max_code_size(5)
+
+                def blocked_compile():
+                    return 43
+
+                try:
+                    jit.force_compile(blocked_compile)
+                except RuntimeError:
+                    pass
+
+                failed = jit.get_function_tier_state(blocked_compile)
+                print(failed["policy_state"])
+                print(failed["promotion_blocked"])
+                print(failed["compile_failure_backoff"])
+                print(failed["compile_failure_cooldown_remaining"])
+                print(failed["policy_resets"])
+
+                jit.jit_unsuppress(blocked_compile)
+                unchanged = jit.get_function_tier_state(blocked_compile)
+                print(unchanged["policy_state"])
+                print(unchanged["promotion_blocked"])
+                print(unchanged["compile_failure_backoff"])
+                print(unchanged["compile_failure_cooldown_remaining"])
+                print(unchanged["policy_resets"])
+                print(unchanged["last_policy_event"])
+                print(unchanged["last_policy_reason"])
+            finally:
+                jit.set_max_code_size(original_limit)
+            """,
+        )
+
+        self.assertEqual(lines[-12:], [
+            "compile_failure_cooldown",
+            "True",
+            "2",
+            "2",
+            "0",
+            "compile_failure_cooldown",
+            "True",
+            "2",
+            "2",
+            "0",
+            "compile_failure_cooldown",
+            "compile_failure_cooldown",
+        ])
+
+    def test_dependent_compile_respects_unsupported_policy(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "dependent_compile_respects_unsupported_policy",
+            """
+            import cinderx.jit as jit
+            import sys
+            import textwrap
+            import types
+            from cinderx.compiler.static import exec_static
+
+            module = types.ModuleType("m")
+            sys.modules["m"] = module
+            ns = module.__dict__
+            exec_static(
+                textwrap.dedent('''
+                from __static__ import int64
+
+                def callee(x: int64) -> int64:
+                    return x + 1
+
+                def caller(x: int64) -> int64:
+                    return callee(x) + 1
+                '''),
+                ns,
+                ns,
+                "m",
+            )
+            callee = ns["callee"]
+            caller = ns["caller"]
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+            jit.jit_suppress(callee)
+
+            try:
+                jit.force_compile(callee)
+            except RuntimeError as exc:
+                print("CANNOT_SPECIALIZE" in str(exc))
+
+            failed = jit.get_function_tier_state(callee)
+            print(failed["policy_state"])
+            print(failed["compile_failures"])
+
+            print(jit.force_compile(caller))
+
+            blocked = jit.get_function_tier_state(callee)
+            print(blocked["policy_state"])
+            print(blocked["promotion_blocked"])
+            print(blocked["compile_failures"])
+            print(blocked["last_promotion_reason"])
+            print(blocked["last_promotion_decision"])
+            print(blocked["last_policy_event"])
+            print(blocked["last_policy_reason"])
+            """,
+        )
+
+        self.assertEqual(lines[-11:], [
+            "True",
+            "compile_failure_unsupported",
+            "1",
+            "True",
+            "compile_failure_unsupported",
+            "True",
+            "1",
+            "dependent_compile",
+            "blocked",
+            "promotion_blocked",
+            "compile_failure_unsupported",
+        ])
+
     def test_hot_loop_osr_cooldown_ages_across_calls(self) -> None:
         lines = self.run_tiering_script(
             "hot_loop_osr_cooldown_ages",
@@ -749,6 +1139,76 @@ class TieringApiTests(unittest.TestCase):
             "optimized",
             "True",
             "ready",
+        ])
+
+    def test_hot_loop_osr_resume_deferral_is_observable(self) -> None:
+        lines = self.run_tiering_script(
+            "hot_loop_osr_resume_deferral_observable",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            original_limit = jit.get_allocator_stats()["max_bytes"]
+            try:
+                jit.set_max_code_size(0)
+
+                def consumes_code_bytes():
+                    return 42
+
+                assert jit.force_compile(consumes_code_bytes)
+                jit.set_max_code_size(5)
+
+                def hot(n: int, acc: int) -> int:
+                    while n > 0:
+                        acc = acc + n
+                        n = n - 1
+                    return acc
+
+                try:
+                    jit.force_compile(hot)
+                except RuntimeError:
+                    pass
+
+                jit.set_max_code_size(0)
+
+                print(hot(50000, 0))
+                first = jit.get_function_tier_state(hot)
+                print(first["compile_failure_osr_resume_deferred"])
+
+                print(hot(50000, 0))
+                deferred = jit.get_function_tier_state(hot)
+                print(deferred["compile_failure_cooldown_remaining"])
+                print(deferred["promotion_blocked"])
+                print(deferred["policy_state"])
+                print(deferred["compile_failure_osr_resume_deferred"])
+                print(deferred["last_policy_event"])
+                print(jit.is_jit_compiled(hot))
+
+                print(hot(50000, 0))
+                recovered = jit.get_function_tier_state(hot)
+                print(recovered["active_tier"])
+                print(recovered["compile_failure_osr_resume_deferred"])
+            finally:
+                jit.set_max_code_size(original_limit)
+            """,
+        )
+
+        total = str((50000 * 50001) // 2)
+        self.assertEqual(lines[-12:], [
+            total,
+            "False",
+            total,
+            "0",
+            "False",
+            "ready",
+            "True",
+            "compile_failure_cooldown_resume_deferred",
+            "False",
+            total,
+            "optimized",
+            "False",
         ])
 
     def test_repeated_compile_failures_grow_policy_backoff(self) -> None:
@@ -882,6 +1342,77 @@ class TieringApiTests(unittest.TestCase):
             "44",
             "optimized",
             "True",
+        ])
+
+    def test_function_code_change_resets_deopt_budget_exhaustion(self) -> None:
+        lines = self.run_tiering_script(
+            "function_code_change_deopt_budget_reset",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self, x):
+                    self.x = x
+
+                def getx(self):
+                    return self.x
+
+            point = Point(1)
+            for _ in range(20000):
+                point.getx()
+
+            assert jit.force_compile(Point.getx)
+
+            class SubPoint(Point):
+                pass
+
+            for i in range(20):
+                SubPoint(i).getx()
+
+            exhausted = jit.get_function_tier_state(Point.getx)
+            print(exhausted["promotion_blocked"])
+            print(exhausted["policy_state"])
+            print(exhausted["deopt_budget"])
+
+            def replacement(self):
+                return self.x + 100
+
+            Point.getx.__code__ = replacement.__code__
+            changed = jit.get_function_tier_state(Point.getx)
+            print(changed["policy_state"])
+            print(changed["promotion_blocked"])
+            print(changed["deopt_budget"])
+            print(changed["policy_resets"] > 0)
+            print(changed["last_policy_event"])
+            print(changed["last_policy_reason"])
+
+            print(jit.force_compile(Point.getx))
+            recovered = jit.get_function_tier_state(Point.getx)
+            print(recovered["active_tier"])
+            print(recovered["compiled"])
+            print(recovered["policy_state"])
+            print(point.getx())
+            """,
+        )
+
+        self.assertEqual(lines[-14:], [
+            "True",
+            "deopt_budget_exhausted",
+            "0",
+            "ready",
+            "False",
+            "16",
+            "True",
+            "policy_reset",
+            "function_modified",
+            "True",
+            "optimized",
+            "True",
+            "ready",
+            "101",
         ])
 
     def test_threaded_precompile_worker_optional_python_api_guards(self) -> None:
@@ -1055,6 +1586,122 @@ class TieringApiTests(unittest.TestCase):
             "promotion_blocked",
         ])
 
+    def test_reopt_respects_deopt_budget_exhaustion_on_enable_resume(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "reopt_respects_deopt_budget",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self, x):
+                    self.x = x
+
+                def getx(self):
+                    return self.x
+
+            point = Point(1)
+            for _ in range(20000):
+                point.getx()
+
+            assert jit.force_compile(Point.getx)
+
+            class SubPoint(Point):
+                pass
+
+            for i in range(20):
+                SubPoint(i).getx()
+
+            exhausted = jit.get_function_tier_state(Point.getx)
+            print(exhausted["promotion_blocked"])
+            print(exhausted["policy_state"])
+
+            jit.disable(deopt_all=True)
+            deopted = jit.get_function_tier_state(Point.getx)
+            print(deopted["active_tier"])
+            print(deopted["compiled"])
+            print(deopted["deopted"])
+
+            jit.enable()
+            resumed = jit.get_function_tier_state(Point.getx)
+            print(resumed["active_tier"])
+            print(resumed["compiled"])
+            print(resumed["deopted"])
+            print(resumed["promotion_blocked"])
+            print(resumed["promotion_blocked_reason"])
+            print(resumed["policy_state"])
+            print(resumed["last_promotion_reason"])
+            print(resumed["last_promotion_decision"])
+            print(resumed["last_transition"])
+            """,
+        )
+
+        self.assertEqual(lines[-14:], [
+            "True",
+            "deopt_budget_exhausted",
+            "interp",
+            "False",
+            "True",
+            "interp",
+            "False",
+            "True",
+            "True",
+            "deopt_budget_exhausted",
+            "deopt_budget_exhausted",
+            "reopt",
+            "blocked",
+            "promotion_blocked",
+        ])
+
+    def test_enable_resume_reopts_healthy_deopted_function(self) -> None:
+        lines = self.run_tiering_script(
+            "enable_resume_reopts_healthy_deopted",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            def helper(x):
+                return x + 1
+
+            assert jit.force_compile(helper)
+
+            jit.disable(deopt_all=True)
+            deopted = jit.get_function_tier_state(helper)
+            print(deopted["active_tier"])
+            print(deopted["compiled"])
+            print(deopted["deopted"])
+
+            jit.enable()
+            resumed = jit.get_function_tier_state(helper)
+            print(resumed["active_tier"])
+            print(resumed["compiled"])
+            print(resumed["deopted"])
+            print(resumed["last_promotion_reason"])
+            print(resumed["last_promotion_decision"])
+            print(resumed["last_transition"])
+            print(helper(41))
+            """,
+        )
+
+        self.assertEqual(lines[-10:], [
+            "interp",
+            "False",
+            "True",
+            "optimized",
+            "True",
+            "False",
+            "reopt",
+            "attempt",
+            "optimized",
+            "42",
+        ])
+
     def test_type_invalidation_updates_tier_state(self) -> None:
         lines = self.run_tiering_script(
             "type_invalidation_tier_state",
@@ -1099,6 +1746,8 @@ class TieringApiTests(unittest.TestCase):
             print(patched["invalidations"])
             print(patched["last_invalidation_reason"])
             print(patched["last_fallback_reason"])
+            print(patched["fallback_pending"])
+            print(patched["fallback_pending_reason"])
             print(patched["last_transition"])
 
             jit.get_and_clear_runtime_stats()
@@ -1106,21 +1755,87 @@ class TieringApiTests(unittest.TestCase):
             after_call = jit.get_function_tier_state(Point.dist)
             print(after_call["runtime_fallbacks"])
             print(after_call["last_fallback_reason"])
+            print(after_call["fallback_pending"])
+            print(after_call["fallback_pending_reason"])
             print(after_call["last_transition"])
             """,
         )
 
-        self.assertEqual(lines[-11], "0")
-        self.assertEqual(lines[-10], "optimized")
+        self.assertEqual(lines[-15], "0")
+        self.assertEqual(lines[-14], "optimized")
+        self.assertEqual(lines[-13], "True")
+        self.assertGreaterEqual(int(lines[-12]), 1)
+        self.assertEqual(lines[-11], "type_modified")
+        self.assertEqual(lines[-10], "type_modified")
         self.assertEqual(lines[-9], "True")
-        self.assertGreaterEqual(int(lines[-8]), 1)
-        self.assertEqual(lines[-7], "type_modified")
-        self.assertEqual(lines[-6], "type_modified")
-        self.assertEqual(lines[-5], "type_invalidation")
-        self.assertEqual(float(lines[-4]), 5.196152422706632)
-        self.assertGreaterEqual(int(lines[-3]), 1)
-        self.assertEqual(lines[-2], "GuardFailure")
+        self.assertEqual(lines[-8], "type_modified")
+        self.assertEqual(lines[-7], "type_invalidation")
+        self.assertEqual(float(lines[-6]), 5.196152422706632)
+        self.assertGreaterEqual(int(lines[-5]), 1)
+        self.assertEqual(lines[-4], "GuardFailure")
+        self.assertEqual(lines[-3], "False")
+        self.assertEqual(lines[-2], "none")
         self.assertEqual(lines[-1], "runtime_fallback")
+
+    def test_uncompile_clears_pending_type_fallback_state(self) -> None:
+        lines = self.run_tiering_script(
+            "uncompile_clears_pending_type_fallback",
+            """
+            import math
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self, x=0.0, y=0.0, z=0.0):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+
+                def dist(self, other):
+                    return math.sqrt(
+                        (self.x - other.x) ** 2
+                        + (self.y - other.y) ** 2
+                        + (self.z - other.z) ** 2
+                    )
+
+            a = Point(1.0, 2.0, 3.0)
+            b = Point(4.0, 5.0, 6.0)
+            for _ in range(20000):
+                a.dist(b)
+
+            assert jit.force_compile(Point.dist)
+
+            class MovedPoint:
+                pass
+
+            a.__class__ = MovedPoint
+            pending = jit.get_function_tier_state(Point.dist)
+            print(pending["fallback_pending"])
+            print(pending["fallback_pending_reason"])
+
+            print(jit.force_uncompile(Point.dist))
+            cleared = jit.get_function_tier_state(Point.dist)
+            print(cleared["active_tier"])
+            print(cleared["compiled"])
+            print(cleared["fallback_pending"])
+            print(cleared["fallback_pending_reason"])
+            print(cleared["last_transition"])
+            """,
+        )
+
+        self.assertEqual(lines[-8:], [
+            "True",
+            "type_modified",
+            "True",
+            "interp",
+            "False",
+            "False",
+            "none",
+            "uncompile",
+        ])
 
     def test_shared_runtime_keeps_type_invalidation_after_one_owner_uncompiled(
         self,
@@ -1191,4 +1906,226 @@ class TieringApiTests(unittest.TestCase):
         self.assertEqual(lines[-2:], [
             "type_modified",
             "type_invalidation",
+        ])
+
+    def test_disable_deopt_all_clears_shared_runtime_pending_fallbacks(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "disable_deopt_all_clears_shared_pending_fallbacks",
+            """
+            import math
+            import types
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self, x=0.0, y=0.0, z=0.0):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+
+                def dist(self, other):
+                    return math.sqrt(
+                        (self.x - other.x) ** 2
+                        + (self.y - other.y) ** 2
+                        + (self.z - other.z) ** 2
+                    )
+
+            first = Point.dist
+            second = types.FunctionType(Point.dist.__code__, globals())
+            a = Point(1.0, 2.0, 3.0)
+            b = Point(4.0, 5.0, 6.0)
+            for _ in range(20000):
+                a.dist(b)
+
+            assert jit.force_compile(first)
+            assert jit.force_compile(second)
+
+            class MovedPoint:
+                pass
+
+            a.__class__ = MovedPoint
+            first_pending = jit.get_function_tier_state(first)
+            second_pending = jit.get_function_tier_state(second)
+            print(first_pending["fallback_pending"])
+            print(second_pending["fallback_pending"])
+
+            jit.disable(deopt_all=True)
+            first_cleared = jit.get_function_tier_state(first)
+            second_cleared = jit.get_function_tier_state(second)
+            print(first_cleared["active_tier"])
+            print(first_cleared["compiled"])
+            print(first_cleared["deopted"])
+            print(first_cleared["fallback_pending"])
+            print(first_cleared["fallback_pending_reason"])
+            print(second_cleared["active_tier"])
+            print(second_cleared["compiled"])
+            print(second_cleared["deopted"])
+            print(second_cleared["fallback_pending"])
+            print(second_cleared["fallback_pending_reason"])
+            """,
+        )
+
+        self.assertEqual(lines[-12:], [
+            "True",
+            "True",
+            "interp",
+            "False",
+            "True",
+            "False",
+            "none",
+            "interp",
+            "False",
+            "True",
+            "False",
+            "none",
+        ])
+
+    def test_shared_runtime_fallback_clears_only_observed_owner_pending(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "shared_runtime_fallback_observed_owner_cleanup",
+            """
+            import math
+            import types
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self, x=0.0, y=0.0, z=0.0):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+
+                def dist(self, other):
+                    return math.sqrt(
+                        (self.x - other.x) ** 2
+                        + (self.y - other.y) ** 2
+                        + (self.z - other.z) ** 2
+                    )
+
+            first = Point.dist
+            second = types.FunctionType(Point.dist.__code__, globals())
+            a = Point(1.0, 2.0, 3.0)
+            b = Point(4.0, 5.0, 6.0)
+            for _ in range(20000):
+                a.dist(b)
+
+            assert jit.force_compile(first)
+            assert jit.force_compile(second)
+
+            class MovedPoint:
+                pass
+
+            a.__class__ = MovedPoint
+            first_pending = jit.get_function_tier_state(first)
+            second_pending = jit.get_function_tier_state(second)
+            print(first_pending["fallback_pending"])
+            print(second_pending["fallback_pending"])
+
+            jit.get_and_clear_runtime_stats()
+            print(first(a, b))
+            first_observed = jit.get_function_tier_state(first)
+            second_still_pending = jit.get_function_tier_state(second)
+            print(first_observed["runtime_fallbacks"])
+            print(first_observed["fallback_pending"])
+            print(first_observed["fallback_pending_reason"])
+            print(second_still_pending["runtime_fallbacks"])
+            print(second_still_pending["fallback_pending"])
+            print(second_still_pending["fallback_pending_reason"])
+            """,
+        )
+
+        self.assertEqual(lines[-9], "True")
+        self.assertEqual(lines[-8], "True")
+        self.assertEqual(float(lines[-7]), 5.196152422706632)
+        self.assertGreaterEqual(int(lines[-6]), 1)
+        self.assertEqual(lines[-5:], [
+            "False",
+            "none",
+            "0",
+            "True",
+            "type_modified",
+        ])
+
+    def test_shared_runtime_uncompile_clears_only_that_owner_pending_fallback(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "shared_runtime_pending_fallback_owner_cleanup",
+            """
+            import math
+            import types
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Point:
+                def __init__(self, x=0.0, y=0.0, z=0.0):
+                    self.x = x
+                    self.y = y
+                    self.z = z
+
+                def dist(self, other):
+                    return math.sqrt(
+                        (self.x - other.x) ** 2
+                        + (self.y - other.y) ** 2
+                        + (self.z - other.z) ** 2
+                    )
+
+            first = Point.dist
+            second = types.FunctionType(Point.dist.__code__, globals())
+            a = Point(1.0, 2.0, 3.0)
+            b = Point(4.0, 5.0, 6.0)
+            for _ in range(20000):
+                a.dist(b)
+
+            assert jit.force_compile(first)
+            assert jit.force_compile(second)
+
+            class MovedPoint:
+                pass
+
+            a.__class__ = MovedPoint
+            first_pending = jit.get_function_tier_state(first)
+            second_pending = jit.get_function_tier_state(second)
+            print(first_pending["fallback_pending"])
+            print(first_pending["fallback_pending_reason"])
+            print(second_pending["fallback_pending"])
+            print(second_pending["fallback_pending_reason"])
+
+            print(jit.force_uncompile(first))
+            first_cleared = jit.get_function_tier_state(first)
+            second_still_pending = jit.get_function_tier_state(second)
+            print(first_cleared["compiled"])
+            print(first_cleared["fallback_pending"])
+            print(first_cleared["fallback_pending_reason"])
+            print(second_still_pending["compiled"])
+            print(second_still_pending["fallback_pending"])
+            print(second_still_pending["fallback_pending_reason"])
+            """,
+        )
+
+        self.assertEqual(lines[-11:], [
+            "True",
+            "type_modified",
+            "True",
+            "type_modified",
+            "True",
+            "False",
+            "False",
+            "none",
+            "True",
+            "True",
+            "type_modified",
         ])

@@ -108,6 +108,7 @@ const char* functionTierName(FunctionTier tier);
 enum class TierPolicyState {
   kReady,
   kCompileFailureCooldown,
+  kCompileFailureUnsupported,
   kDeoptBudgetExhausted,
 };
 
@@ -122,6 +123,8 @@ struct FunctionTierState {
   std::string last_transition{"none"};
   std::size_t runtime_fallbacks{0};
   std::string last_fallback_reason{"none"};
+  bool fallback_pending{false};
+  std::string fallback_pending_reason{"none"};
   std::size_t deopt_budget{16};
   std::size_t compile_failures{0};
   std::size_t compile_failure_streak{0};
@@ -240,7 +243,10 @@ class Context : public IJitContext {
   void recordPromotionAttempt(
       BorrowedRef<PyFunctionObject> func,
       const char* reason);
-  void recordRuntimeFallback(CodeRuntime* code_runtime, const char* reason);
+  void recordRuntimeFallback(
+      CodeRuntime* code_runtime,
+      BorrowedRef<PyFunctionObject> func,
+      const char* reason);
   void recordTypeInvalidation(CodeRuntime* code_runtime, const char* reason);
   bool hasCodeRuntimeOwners(const CodeRuntime* code_runtime);
   FunctionTierState getFunctionTierState(BorrowedRef<PyFunctionObject> func);
