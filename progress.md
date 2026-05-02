@@ -1492,3 +1492,37 @@
   - Object-workload optimization changes should stay as a separate commit or draft slice because performance evidence is mixed.
   - `arm-results/` should remain untracked evidence, not source.
 
+## Session Update: 2026-05-02 (tier policy maturity slice)
+
+- Goal:
+  - move tier policy from observable result fields toward explainable decision
+    telemetry.
+- Selected narrow slice:
+  - add promotion decision count
+  - add blocked promotion attempt count
+  - add last promotion decision
+  - add last policy event/reason
+- Plan file:
+  - `docs/superpowers/plans/2026-05-02-tier-policy-decision-telemetry.md`
+- Verification rule:
+  - RED and GREEN evidence must use `/root/work/incoming/remote_update_build_test.sh`.
+- RED evidence:
+  - focused remote entrypoint run covered:
+    - `test_function_tier_state_reports_lifecycle`
+    - `test_compile_failure_backoff_blocks_precompile_all_repromotion`
+  - result failed as expected with:
+    - `KeyError: 'promotion_decisions'`
+  - this proves the new tests require telemetry not present in the current API.
+- Implementation:
+  - extended `FunctionTierState` with decision-level policy telemetry.
+  - exposed new fields through `jit.get_function_tier_state()`.
+  - counted blocked promotion decisions separately from real compile attempts.
+- GREEN evidence:
+  - focused remote entrypoint:
+    - same two tests
+    - `Ran 2 tests in 2.392s`
+    - `OK`
+  - full remote entrypoint:
+    - default ARM runtime `Ran 102 tests in 16.246s`, `OK (skipped=3)`
+    - full `test_jit_tiering` `Ran 21 tests in 5.309s`, `OK`
+

@@ -127,7 +127,12 @@ struct FunctionTierState {
   std::size_t invalidations{0};
   std::string last_invalidation_reason{"none"};
   std::size_t promotion_attempts{0};
+  std::size_t promotion_decisions{0};
+  std::size_t promotion_blocked_attempts{0};
+  std::string last_promotion_decision{"none"};
   std::string last_promotion_reason{"none"};
+  std::string last_policy_event{"none"};
+  std::string last_policy_reason{"none"};
   bool promotion_blocked{false};
   std::string promotion_blocked_reason{"none"};
 };

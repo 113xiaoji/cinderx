@@ -2292,9 +2292,18 @@ PyObject* get_function_tier_state(PyObject* /* self */, PyObject* arg) {
           "last_invalidation_reason",
           state.last_invalidation_reason.c_str()) ||
       !set_size("promotion_attempts", state.promotion_attempts) ||
+      !set_size("promotion_decisions", state.promotion_decisions) ||
+      !set_size(
+          "promotion_blocked_attempts",
+          state.promotion_blocked_attempts) ||
+      !set_string(
+          "last_promotion_decision",
+          state.last_promotion_decision.c_str()) ||
       !set_string(
           "last_promotion_reason",
           state.last_promotion_reason.c_str()) ||
+      !set_string("last_policy_event", state.last_policy_event.c_str()) ||
+      !set_string("last_policy_reason", state.last_policy_reason.c_str()) ||
       !set_bool("promotion_blocked", state.promotion_blocked) ||
       !set_string(
           "promotion_blocked_reason",

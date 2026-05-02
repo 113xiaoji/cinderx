@@ -59,10 +59,13 @@ void clearPromotionBlock(FunctionTierState& state) {
 void blockPromotion(
     FunctionTierState& state,
     TierPolicyState policy_state,
-    const char* reason) {
+    const char* reason,
+    const char* event) {
   state.promotion_blocked = true;
   state.promotion_blocked_reason = reason;
   state.policy_state = policy_state;
+  state.last_policy_event = event;
+  state.last_policy_reason = reason;
 }
 
 } // namespace
@@ -835,11 +838,14 @@ void Context::recordCompileFailure(
   state.compile_failures++;
   state.last_compile_failure = reason;
   state.last_fallback_reason = reason;
+  state.last_policy_event = "compile_failure";
+  state.last_policy_reason = reason;
   state.last_transition = "compile_failed";
   if (state.compile_failures >= kCompileFailureBackoffThreshold) {
     blockPromotion(
         state,
         TierPolicyState::kCompileFailureCooldown,
+        "compile_failure_cooldown",
         "compile_failure_cooldown");
   }
 }
@@ -849,17 +855,26 @@ bool Context::shouldAttemptOptimizedPromotion(
     const char* reason) {
   ThreadedCompileSerialize guard;
   FunctionTierState& state = tierStateFor(func);
+  state.promotion_decisions++;
   state.last_promotion_reason = reason;
   if (state.deopt_budget == 0 && !state.promotion_blocked) {
     blockPromotion(
         state,
         TierPolicyState::kDeoptBudgetExhausted,
+        "deopt_budget_exhausted",
         "deopt_budget_exhausted");
   }
   if (state.promotion_blocked) {
+    state.promotion_blocked_attempts++;
+    state.last_promotion_decision = "blocked";
+    state.last_policy_event = "promotion_blocked";
+    state.last_policy_reason = state.promotion_blocked_reason;
     state.last_transition = "promotion_blocked";
     return false;
   }
+  state.last_promotion_decision = "attempt";
+  state.last_policy_event = "promotion_allowed";
+  state.last_policy_reason = reason;
   return true;
 }
 
@@ -869,7 +884,10 @@ void Context::recordPromotionAttempt(
   ThreadedCompileSerialize guard;
   FunctionTierState& state = tierStateFor(func);
   state.promotion_attempts++;
+  state.last_promotion_decision = "attempt";
   state.last_promotion_reason = reason;
+  state.last_policy_event = "promotion_attempt";
+  state.last_policy_reason = reason;
   state.last_transition = "promotion_attempt";
 }
 
@@ -885,6 +903,8 @@ void Context::recordRuntimeFallback(
     FunctionTierState& state = tierStateFor(func);
     state.runtime_fallbacks++;
     state.last_fallback_reason = reason;
+    state.last_policy_event = "runtime_fallback";
+    state.last_policy_reason = reason;
     if (state.deopt_budget > 0) {
       state.deopt_budget--;
     }
@@ -892,6 +912,7 @@ void Context::recordRuntimeFallback(
       blockPromotion(
           state,
           TierPolicyState::kDeoptBudgetExhausted,
+          "deopt_budget_exhausted",
           "deopt_budget_exhausted");
     }
     state.last_transition = "runtime_fallback";
@@ -911,6 +932,8 @@ void Context::recordTypeInvalidation(
     state.invalidations++;
     state.last_invalidation_reason = reason;
     state.last_fallback_reason = reason;
+    state.last_policy_event = "type_invalidation";
+    state.last_policy_reason = reason;
     state.last_transition = "type_invalidation";
   }
 }

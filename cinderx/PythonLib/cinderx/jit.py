@@ -191,7 +191,12 @@ except ImportError:
             "invalidations": 0,
             "last_invalidation_reason": "none",
             "promotion_attempts": 0,
+            "promotion_decisions": 0,
+            "promotion_blocked_attempts": 0,
+            "last_promotion_decision": "none",
             "last_promotion_reason": "none",
+            "last_policy_event": "none",
+            "last_policy_reason": "none",
             "promotion_blocked": False,
             "promotion_blocked_reason": "none",
         }

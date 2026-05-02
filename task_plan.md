@@ -25,6 +25,11 @@ Tiered-JIT functionality quality pass: prioritize completing the unified per-fun
 - [x] Preserve policy/backoff state across explicit uncompile so blocked functions do not blindly promote again.
 - [x] Clean stale type-deopt patchers when compiled runtime owners are removed, closing the invalidation/fallback lifecycle hole found by the deopt-budget test.
 - [x] Review submit-readiness for the current dirty worktree, fix shared CodeRuntime uncompile ownership, and record a pushable commit split.
+- [x] Add mature tier policy decision telemetry:
+  - count promotion policy decisions
+  - count blocked promotion attempts separately from real compile attempts
+  - expose last promotion decision plus last policy event/reason
+  - verify RED/GREEN through the remote ARM entrypoint
 
 ## Phases
 

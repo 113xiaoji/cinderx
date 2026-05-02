@@ -234,6 +234,12 @@ class TieringApiTests(unittest.TestCase):
         self.assertTrue(state["compiled"])
         self.assertFalse(state["deopted"])
         self.assertEqual(state["last_transition"], "baseline_to_optimized")
+        self.assertEqual(state["promotion_decisions"], 1)
+        self.assertEqual(state["promotion_attempts"], 1)
+        self.assertEqual(state["promotion_blocked_attempts"], 0)
+        self.assertEqual(state["last_promotion_decision"], "attempt")
+        self.assertEqual(state["last_policy_event"], "promotion_attempt")
+        self.assertEqual(state["last_policy_reason"], "force_compile")
 
         self.assertTrue(jit.force_uncompile(helper))
         state = jit.get_function_tier_state(helper)
@@ -523,24 +529,34 @@ class TieringApiTests(unittest.TestCase):
                 print(state["compiled"])
                 print(state["compile_failures"])
                 print(state["promotion_attempts"])
+                print(state["promotion_decisions"])
+                print(state["promotion_blocked_attempts"])
+                print(state["last_promotion_decision"])
                 print(state["last_promotion_reason"])
                 print(state["promotion_blocked"])
                 print(state["promotion_blocked_reason"])
+                print(state["last_policy_event"])
+                print(state["last_policy_reason"])
                 print(state["last_transition"])
             finally:
                 jit.set_max_code_size(original_limit)
             """,
         )
 
-        self.assertEqual(lines[-10:], [
+        self.assertEqual(lines[-15:], [
             "True",
             "False",
             "interp",
             "False",
             "1",
             "1",
+            "2",
+            "1",
+            "blocked",
             "precompile_all",
             "True",
+            "compile_failure_cooldown",
+            "promotion_blocked",
             "compile_failure_cooldown",
             "promotion_blocked",
         ])

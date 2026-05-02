@@ -7128,3 +7128,69 @@ Conclusion:
     - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
     - `Ran 21 tests in 5.293s`
     - `OK`
+
+## 2026-05-02 tier policy decision telemetry maturity slice
+
+- Goal:
+  - mature the tier policy model from "current result state" toward
+    explainable policy decisions.
+  - answer both:
+    - why promotion was attempted
+    - why promotion was blocked
+- Design:
+  - keep all data in the existing per-function `FunctionTierState`.
+  - add:
+    - `promotion_decisions`
+    - `promotion_blocked_attempts`
+    - `last_promotion_decision`
+    - `last_policy_event`
+    - `last_policy_reason`
+  - update these fields at the existing policy boundaries:
+    - `shouldAttemptOptimizedPromotion()`
+    - `recordPromotionAttempt()`
+    - compile-failure cooldown
+    - runtime fallback / deopt-budget exhaustion
+    - type invalidation
+- TDD RED:
+  - remote entrypoint:
+    - `/root/work/incoming/remote_update_build_test.sh`
+  - focused tests:
+    - `test_function_tier_state_reports_lifecycle`
+    - `test_compile_failure_backoff_blocks_precompile_all_repromotion`
+  - result:
+    - failed as expected with `KeyError: 'promotion_decisions'`
+  - interpretation:
+    - the test required telemetry that was not yet exposed by
+      `jit.get_function_tier_state()`.
+- Implementation:
+  - `cinderx/Jit/context.h`
+    - extended `FunctionTierState`.
+  - `cinderx/Jit/context.cpp`
+    - decision count increments on every optimized-promotion policy check.
+    - blocked decisions increment `promotion_blocked_attempts` without
+      incrementing real compile `promotion_attempts`.
+    - blocker paths record a policy event/reason.
+  - `cinderx/Jit/pyjit.cpp`
+    - exposes new fields through `get_function_tier_state()`.
+  - `cinderx/PythonLib/cinderx/jit.py`
+    - adds matching fallback defaults.
+- GREEN verification:
+  - focused remote run:
+    - same two tests
+    - `Ran 2 tests in 2.392s`
+    - `OK`
+  - full remote run:
+    - default ARM runtime suite:
+      - `Ran 102 tests in 16.246s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 21 tests in 5.309s`
+      - `OK`
+- Maturity impact:
+  - promotion policy can now distinguish:
+    - an allowed promotion decision
+    - a real compile attempt
+    - a blocked promotion decision
+  - this closes one more gap toward a mature tier policy state machine without
+    adding time-based cooldown or automatic backoff reset semantics yet.
