@@ -7073,3 +7073,58 @@ Conclusion:
   - a dedicated regression that proves the inner recursive attr-derived call is
     recovered without reintroducing polymorphic deopts or snapshot-related
     compile failures
+
+## 2026-05-02 SSH push merge and final ARM verification
+
+- Trigger:
+  - HTTPS push to `github.com` failed due network connectivity on port `443`.
+  - SSH push to `git@github.com:113xiaoji/cinderx.git` reached GitHub but was
+    rejected as non-fast-forward.
+  - Remote branch had `31` unique commits; local branch had `33` unique commits.
+- Merge action:
+  - fetched remote branch over SSH into `ssh/bench-cur-7c361dce`
+  - merged without force-push
+  - resolved conflicts in:
+    - `cinderx/PythonLib/test_cinderx/test_arm_runtime.py`
+    - `scripts/arm/remote_update_build_test.sh`
+    - `findings.md`
+  - kept remote Python 3.14/ARM assurance updates and local tier-state work.
+- First post-merge remote validation:
+  - unified remote entrypoint:
+    - `/root/work/incoming/remote_update_build_test.sh`
+  - command shape:
+    - `SKIP_PYPERF=1 SKIP_PYPERF_SETUP=1`
+    - `EXTRA_VERIFY_CMD='PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v'`
+  - default ARM runtime suite:
+    - `Ran 102 tests in 15.655s`
+    - `OK (skipped=3)`
+  - extra `test_jit_tiering` suite failed with two worker-thread crashes:
+    - `test_compile_failure_backoff_blocks_precompile_all_repromotion`
+    - `test_threaded_precompile_worker_optional_python_api_guards`
+    - subprocess return code: `-11`
+- Root cause:
+  - `gdb` backtrace on ARM showed a threaded precompile worker entering:
+    - `HIRBuilder::tryEmitDeepcopyDictSubscrRewrite`
+    - `JITRT_GetDictItemMissSentinel`
+    - `PyCapsule_New`
+    - `_PyObject_Malloc`
+  - the deepcopy dict-subscript rewrite initialized a Python capsule sentinel
+    from a worker thread while the main thread owned the GIL.
+  - this is unsafe because worker-thread precompile must not allocate Python
+    objects or rely on main-thread Python error/allocation state.
+- Fix:
+  - `cinderx/Jit/hir/builder.cpp`
+  - skip the deepcopy dict-subscript rewrite during threaded precompile via
+    `RETURN_MULTITHREADED_COMPILE(false)`.
+  - serial compilation still keeps the optimization; workers keep the generic
+    dict-subscript path.
+- Final remote verification:
+  - unified remote entrypoint:
+    - `/root/work/incoming/remote_update_build_test.sh`
+  - default ARM runtime suite:
+    - `Ran 102 tests in 15.749s`
+    - `OK (skipped=3)`
+  - extra tiering suite:
+    - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+    - `Ran 21 tests in 5.293s`
+    - `OK`
