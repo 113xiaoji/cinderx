@@ -60,6 +60,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <thread>
 #include <unordered_set>
@@ -108,6 +109,28 @@ uint64_t countCalls(PyCodeObject* code) {
   auto extra = codeExtra(code);
   return extra != nullptr ? Ci_code_extra_get_calls(extra) : 0;
 #endif
+}
+
+constexpr std::size_t kNoHotLoopOsrPolicyEpoch =
+    std::numeric_limits<std::size_t>::max();
+std::atomic<std::size_t> g_hot_loop_osr_policy_epoch{1};
+
+std::size_t nextHotLoopOsrPolicyEpoch(_PyInterpreterFrame* frame) {
+  // _PyInterpreterFrame::visited is reset for each frame initialization in
+  // the bundled interpreter and is otherwise unused by this tree. Reuse it as
+  // a one-bit latch so the tier policy ages OSR cooldown once per activation
+  // rather than once per backedge check.
+  if (frame->visited != 0) {
+    return kNoHotLoopOsrPolicyEpoch;
+  }
+  frame->visited = 1;
+  std::size_t epoch =
+      g_hot_loop_osr_policy_epoch.fetch_add(1, std::memory_order_relaxed);
+  if (epoch == kNoHotLoopOsrPolicyEpoch) {
+    epoch =
+        g_hot_loop_osr_policy_epoch.fetch_add(1, std::memory_order_relaxed);
+  }
+  return epoch;
 }
 
 const char* resultName(Result result) {
@@ -2286,6 +2309,11 @@ PyObject* get_function_tier_state(PyObject* /* self */, PyObject* arg) {
       !set_string("last_fallback_reason", state.last_fallback_reason.c_str()) ||
       !set_size("deopt_budget", state.deopt_budget) ||
       !set_size("compile_failures", state.compile_failures) ||
+      !set_size("compile_failure_streak", state.compile_failure_streak) ||
+      !set_size("compile_failure_backoff", state.compile_failure_backoff) ||
+      !set_size(
+          "compile_failure_cooldown_remaining",
+          state.compile_failure_cooldown_remaining) ||
       !set_string("last_compile_failure", state.last_compile_failure.c_str()) ||
       !set_size("invalidations", state.invalidations) ||
       !set_string(
@@ -2304,6 +2332,7 @@ PyObject* get_function_tier_state(PyObject* /* self */, PyObject* arg) {
           state.last_promotion_reason.c_str()) ||
       !set_string("last_policy_event", state.last_policy_event.c_str()) ||
       !set_string("last_policy_reason", state.last_policy_reason.c_str()) ||
+      !set_size("policy_resets", state.policy_resets) ||
       !set_bool("promotion_blocked", state.promotion_blocked) ||
       !set_string(
           "promotion_blocked_reason",
@@ -4147,7 +4176,10 @@ extern "C" int _PyJIT_TryHotLoopOSR(
   if (!isJitCompiled(func)) {
     auto* ctx = jitCtx();
     if (ctx != nullptr &&
-        !ctx->shouldAttemptOptimizedPromotion(func, "hot_loop_osr")) {
+        !ctx->shouldAttemptOptimizedPromotion(
+            func,
+            "hot_loop_osr",
+            nextHotLoopOsrPolicyEpoch(frame))) {
       return 0;
     }
     if (ctx != nullptr) {
@@ -4724,6 +4756,9 @@ void funcModified(BorrowedRef<PyFunctionObject> func) {
   // func->func_code and call scheduleCompile() to re-register with the new
   // code.
   unregisterFunctionCodes(func);
+  if (jitCtx() != nullptr) {
+    jitCtx()->resetFunctionTierPolicy(func, "function_modified");
+  }
 }
 
 void typeDestroyed(BorrowedRef<PyTypeObject> type) {

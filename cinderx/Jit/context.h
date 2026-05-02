@@ -26,6 +26,7 @@
 #include "cinderx/Jit/type_deopt_patchers.h"
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -123,6 +124,12 @@ struct FunctionTierState {
   std::string last_fallback_reason{"none"};
   std::size_t deopt_budget{16};
   std::size_t compile_failures{0};
+  std::size_t compile_failure_streak{0};
+  std::size_t compile_failure_backoff{0};
+  std::size_t compile_failure_cooldown_remaining{0};
+  std::size_t compile_failure_last_osr_cooldown_epoch{
+      std::numeric_limits<std::size_t>::max()};
+  bool compile_failure_osr_resume_deferred{false};
   std::string last_compile_failure{"none"};
   std::size_t invalidations{0};
   std::string last_invalidation_reason{"none"};
@@ -133,6 +140,7 @@ struct FunctionTierState {
   std::string last_promotion_reason{"none"};
   std::string last_policy_event{"none"};
   std::string last_policy_reason{"none"};
+  std::size_t policy_resets{0};
   bool promotion_blocked{false};
   std::string promotion_blocked_reason{"none"};
 };
@@ -222,9 +230,13 @@ class Context : public IJitContext {
   void recordCompileFailure(
       BorrowedRef<PyFunctionObject> func,
       const char* reason);
-  bool shouldAttemptOptimizedPromotion(
+  void resetFunctionTierPolicy(
       BorrowedRef<PyFunctionObject> func,
       const char* reason);
+  bool shouldAttemptOptimizedPromotion(
+      BorrowedRef<PyFunctionObject> func,
+      const char* reason,
+      std::size_t osr_epoch = std::numeric_limits<std::size_t>::max());
   void recordPromotionAttempt(
       BorrowedRef<PyFunctionObject> func,
       const char* reason);

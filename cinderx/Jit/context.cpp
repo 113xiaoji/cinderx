@@ -17,12 +17,18 @@
 #include <sys/mman.h>
 #endif
 
+#include <algorithm>
+#include <cstring>
+
 namespace jit {
 
 AotContext g_aot_ctx;
 
 constexpr std::size_t kDefaultDeoptBudget = 16;
 constexpr std::size_t kCompileFailureBackoffThreshold = 1;
+constexpr std::size_t kInitialCompileFailureBackoff = 2;
+constexpr std::size_t kMaxCompileFailureBackoff = 8;
+constexpr std::size_t kNoOsrEpoch = std::numeric_limits<std::size_t>::max();
 
 const char* functionTierName(FunctionTier tier) {
   switch (tier) {
@@ -50,6 +56,17 @@ const char* tierPolicyStateName(TierPolicyState state) {
 
 namespace {
 
+std::size_t compileFailureBackoffForStreak(std::size_t streak) {
+  if (streak == 0) {
+    return 0;
+  }
+  std::size_t backoff = kInitialCompileFailureBackoff;
+  for (std::size_t i = 1; i < streak; i++) {
+    backoff = std::min(backoff * 2, kMaxCompileFailureBackoff);
+  }
+  return backoff;
+}
+
 void clearPromotionBlock(FunctionTierState& state) {
   state.promotion_blocked = false;
   state.promotion_blocked_reason = "none";
@@ -66,6 +83,63 @@ void blockPromotion(
   state.policy_state = policy_state;
   state.last_policy_event = event;
   state.last_policy_reason = reason;
+}
+
+bool hasCompileFailurePolicy(const FunctionTierState& state) {
+  return state.compile_failure_streak != 0 ||
+      state.compile_failure_backoff != 0 ||
+      state.compile_failure_cooldown_remaining != 0 ||
+      state.policy_state == TierPolicyState::kCompileFailureCooldown ||
+      state.promotion_blocked_reason == "compile_failure_cooldown";
+}
+
+void resetCompileFailurePolicy(FunctionTierState& state) {
+  bool had_policy = hasCompileFailurePolicy(state);
+  state.compile_failure_streak = 0;
+  state.compile_failure_backoff = 0;
+  state.compile_failure_cooldown_remaining = 0;
+  state.compile_failure_last_osr_cooldown_epoch = kNoOsrEpoch;
+  state.compile_failure_osr_resume_deferred = false;
+  if (had_policy) {
+    state.policy_resets++;
+  }
+  clearPromotionBlock(state);
+}
+
+bool shouldConsumeCompileFailureCooldown(
+    FunctionTierState& state,
+    const char* reason,
+    std::size_t osr_epoch) {
+  // Hot-loop OSR can re-check policy many times during one interpreted
+  // activation. Age cooldown at most once per activation epoch so one hot loop
+  // cannot burn through the backoff, while later interpreted calls can recover.
+  if (std::strcmp(reason, "hot_loop_osr") != 0) {
+    return true;
+  }
+  if (osr_epoch == kNoOsrEpoch ||
+      state.compile_failure_last_osr_cooldown_epoch == osr_epoch) {
+    return false;
+  }
+  state.compile_failure_last_osr_cooldown_epoch = osr_epoch;
+  return true;
+}
+
+bool shouldDeferReadyHotLoopOsr(
+    FunctionTierState& state,
+    const char* reason,
+    std::size_t osr_epoch) {
+  if (!state.compile_failure_osr_resume_deferred) {
+    return false;
+  }
+  if (std::strcmp(reason, "hot_loop_osr") != 0) {
+    state.compile_failure_osr_resume_deferred = false;
+    return false;
+  }
+  if (osr_epoch != kNoOsrEpoch) {
+    state.compile_failure_osr_resume_deferred = false;
+    return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -525,7 +599,7 @@ void Context::finalizeFunc(
   state.deopted = false;
   state.baseline_scheduled = false;
   state.deopt_budget = kDefaultDeoptBudget;
-  clearPromotionBlock(state);
+  resetCompileFailurePolicy(state);
   state.last_transition = was_baseline ? "baseline_to_optimized" : "optimized";
   code_runtime_funcs_[compiled.runtime()].emplace(func);
   baseline_funcs_.erase(func);
@@ -836,6 +910,12 @@ void Context::recordCompileFailure(
   ThreadedCompileSerialize guard;
   FunctionTierState& state = tierStateFor(func);
   state.compile_failures++;
+  state.compile_failure_streak++;
+  state.compile_failure_backoff =
+      compileFailureBackoffForStreak(state.compile_failure_streak);
+  state.compile_failure_cooldown_remaining = state.compile_failure_backoff;
+  state.compile_failure_last_osr_cooldown_epoch = kNoOsrEpoch;
+  state.compile_failure_osr_resume_deferred = false;
   state.last_compile_failure = reason;
   state.last_fallback_reason = reason;
   state.last_policy_event = "compile_failure";
@@ -850,13 +930,32 @@ void Context::recordCompileFailure(
   }
 }
 
-bool Context::shouldAttemptOptimizedPromotion(
+void Context::resetFunctionTierPolicy(
     BorrowedRef<PyFunctionObject> func,
     const char* reason) {
   ThreadedCompileSerialize guard;
   FunctionTierState& state = tierStateFor(func);
+  state.deopt_budget = kDefaultDeoptBudget;
+  resetCompileFailurePolicy(state);
+  state.last_policy_event = "policy_reset";
+  state.last_policy_reason = reason;
+}
+
+bool Context::shouldAttemptOptimizedPromotion(
+    BorrowedRef<PyFunctionObject> func,
+    const char* reason,
+    std::size_t osr_epoch) {
+  ThreadedCompileSerialize guard;
+  FunctionTierState& state = tierStateFor(func);
   state.promotion_decisions++;
   state.last_promotion_reason = reason;
+  if (state.policy_state == TierPolicyState::kCompileFailureCooldown &&
+      state.promotion_blocked &&
+      state.compile_failure_cooldown_remaining == 0) {
+    clearPromotionBlock(state);
+    state.last_policy_event = "compile_failure_cooldown_expired";
+    state.last_policy_reason = reason;
+  }
   if (state.deopt_budget == 0 && !state.promotion_blocked) {
     blockPromotion(
         state,
@@ -864,11 +963,34 @@ bool Context::shouldAttemptOptimizedPromotion(
         "deopt_budget_exhausted",
         "deopt_budget_exhausted");
   }
-  if (state.promotion_blocked) {
+  if (shouldDeferReadyHotLoopOsr(state, reason, osr_epoch)) {
     state.promotion_blocked_attempts++;
     state.last_promotion_decision = "blocked";
-    state.last_policy_event = "promotion_blocked";
-    state.last_policy_reason = state.promotion_blocked_reason;
+    state.last_policy_event = "compile_failure_cooldown_resume_deferred";
+    state.last_policy_reason = reason;
+    state.last_transition = "promotion_blocked";
+    return false;
+  }
+  if (state.promotion_blocked) {
+    bool cooldown_expired = false;
+    if (state.policy_state == TierPolicyState::kCompileFailureCooldown &&
+        state.compile_failure_cooldown_remaining > 0 &&
+        shouldConsumeCompileFailureCooldown(state, reason, osr_epoch)) {
+      state.compile_failure_cooldown_remaining--;
+      if (state.compile_failure_cooldown_remaining == 0) {
+        clearPromotionBlock(state);
+        state.compile_failure_osr_resume_deferred =
+            std::strcmp(reason, "hot_loop_osr") == 0;
+        cooldown_expired = true;
+      }
+    }
+    state.promotion_blocked_attempts++;
+    state.last_promotion_decision = "blocked";
+    state.last_policy_event =
+        cooldown_expired ? "compile_failure_cooldown_expired"
+                         : "promotion_blocked";
+    state.last_policy_reason =
+        cooldown_expired ? reason : state.promotion_blocked_reason;
     state.last_transition = "promotion_blocked";
     return false;
   }

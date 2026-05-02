@@ -561,6 +561,329 @@ class TieringApiTests(unittest.TestCase):
             "promotion_blocked",
         ])
 
+    def test_successful_compile_without_failure_does_not_count_policy_reset(
+        self,
+    ) -> None:
+        lines = self.run_tiering_script(
+            "successful_compile_without_failure_reset",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            def plain_compile():
+                return 47
+
+            print(jit.force_compile(plain_compile))
+            state = jit.get_function_tier_state(plain_compile)
+            print(state["policy_resets"])
+            print(state["policy_state"])
+            print(state["promotion_blocked"])
+            print(state["compile_failure_streak"])
+            print(state["compile_failure_backoff"])
+            print(state["compile_failure_cooldown_remaining"])
+            """,
+        )
+
+        self.assertEqual(lines[-7:], [
+            "True",
+            "0",
+            "ready",
+            "False",
+            "0",
+            "0",
+            "0",
+        ])
+
+    def test_compile_failure_cooldown_expires_and_allows_repromotion(self) -> None:
+        lines = self.run_tiering_script(
+            "compile_failure_cooldown_expires",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            original_limit = jit.get_allocator_stats()["max_bytes"]
+            try:
+                jit.set_max_code_size(0)
+
+                def consumes_code_bytes():
+                    return 42
+
+                assert jit.force_compile(consumes_code_bytes)
+                jit.set_max_code_size(5)
+
+                def blocked_compile():
+                    return 43
+
+                try:
+                    jit.force_compile(blocked_compile)
+                except RuntimeError:
+                    pass
+
+                failed = jit.get_function_tier_state(blocked_compile)
+                print(failed["compile_failure_backoff"])
+                print(failed["compile_failure_cooldown_remaining"])
+                print(failed["compile_failure_streak"])
+                print(failed["policy_state"])
+                print(failed["promotion_blocked"])
+
+                jit.set_max_code_size(0)
+                print(jit.force_compile(blocked_compile))
+                first_block = jit.get_function_tier_state(blocked_compile)
+                print(first_block["compile_failure_cooldown_remaining"])
+
+                print(jit.force_compile(blocked_compile))
+                second_block = jit.get_function_tier_state(blocked_compile)
+                print(second_block["compile_failure_cooldown_remaining"])
+                print(second_block["promotion_blocked"])
+                print(second_block["policy_state"])
+
+                print(jit.force_compile(blocked_compile))
+                recovered = jit.get_function_tier_state(blocked_compile)
+                print(recovered["active_tier"])
+                print(recovered["compiled"])
+                print(recovered["policy_state"])
+                print(recovered["promotion_blocked"])
+                print(recovered["compile_failure_cooldown_remaining"])
+                print(recovered["compile_failure_backoff"])
+                print(recovered["compile_failure_streak"])
+                print(recovered["policy_resets"] > 0)
+            finally:
+                jit.set_max_code_size(original_limit)
+            """,
+        )
+
+        self.assertEqual(lines[-20:], [
+            "2",
+            "2",
+            "1",
+            "compile_failure_cooldown",
+            "True",
+            "False",
+            "1",
+            "False",
+            "0",
+            "False",
+            "ready",
+            "True",
+            "optimized",
+            "True",
+            "ready",
+            "False",
+            "0",
+            "0",
+            "0",
+            "True",
+        ])
+
+    def test_hot_loop_osr_cooldown_ages_across_calls(self) -> None:
+        lines = self.run_tiering_script(
+            "hot_loop_osr_cooldown_ages",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            original_limit = jit.get_allocator_stats()["max_bytes"]
+            try:
+                jit.set_max_code_size(0)
+
+                def consumes_code_bytes():
+                    return 42
+
+                assert jit.force_compile(consumes_code_bytes)
+                jit.set_max_code_size(5)
+
+                def hot(n: int, acc: int) -> int:
+                    while n > 0:
+                        acc = acc + n
+                        n = n - 1
+                    return acc
+
+                try:
+                    jit.force_compile(hot)
+                except RuntimeError:
+                    pass
+
+                jit.set_max_code_size(0)
+
+                print(hot(50000, 0))
+                first = jit.get_function_tier_state(hot)
+                print(first["compile_failure_cooldown_remaining"])
+                print(first["promotion_blocked"])
+                print(jit.is_jit_compiled(hot))
+
+                print(hot(50000, 0))
+                second = jit.get_function_tier_state(hot)
+                print(second["compile_failure_cooldown_remaining"])
+                print(second["promotion_blocked"])
+                print(second["policy_state"])
+                print(jit.is_jit_compiled(hot))
+
+                print(hot(50000, 0))
+                recovered = jit.get_function_tier_state(hot)
+                print(recovered["active_tier"])
+                print(recovered["compiled"])
+                print(recovered["policy_state"])
+            finally:
+                jit.set_max_code_size(original_limit)
+            """,
+        )
+
+        total = str((50000 * 50001) // 2)
+        self.assertEqual(lines[-13:], [
+            total,
+            "1",
+            "True",
+            "False",
+            total,
+            "0",
+            "False",
+            "ready",
+            "False",
+            total,
+            "optimized",
+            "True",
+            "ready",
+        ])
+
+    def test_repeated_compile_failures_grow_policy_backoff(self) -> None:
+        lines = self.run_tiering_script(
+            "compile_failure_backoff_growth",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            original_limit = jit.get_allocator_stats()["max_bytes"]
+            try:
+                jit.set_max_code_size(0)
+
+                def consumes_code_bytes():
+                    return 42
+
+                assert jit.force_compile(consumes_code_bytes)
+                jit.set_max_code_size(5)
+
+                def blocked_compile():
+                    return 43
+
+                try:
+                    jit.force_compile(blocked_compile)
+                except RuntimeError:
+                    pass
+
+                first = jit.get_function_tier_state(blocked_compile)
+                print(first["compile_failure_backoff"])
+                print(first["compile_failure_cooldown_remaining"])
+                print(first["compile_failure_streak"])
+
+                print(jit.force_compile(blocked_compile))
+                print(jit.force_compile(blocked_compile))
+                try:
+                    jit.force_compile(blocked_compile)
+                except RuntimeError:
+                    print("second_failure")
+
+                second = jit.get_function_tier_state(blocked_compile)
+                print(second["compile_failures"])
+                print(second["compile_failure_backoff"])
+                print(second["compile_failure_cooldown_remaining"])
+                print(second["compile_failure_streak"])
+                print(second["policy_state"])
+                print(second["promotion_blocked"])
+            finally:
+                jit.set_max_code_size(original_limit)
+            """,
+        )
+
+        self.assertEqual(lines[-12:], [
+            "2",
+            "2",
+            "1",
+            "False",
+            "False",
+            "second_failure",
+            "2",
+            "4",
+            "4",
+            "2",
+            "compile_failure_cooldown",
+            "True",
+        ])
+
+    def test_function_code_change_resets_policy_backoff(self) -> None:
+        lines = self.run_tiering_script(
+            "function_code_change_policy_reset",
+            """
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.compile_after_n_calls(1000000)
+
+            original_limit = jit.get_allocator_stats()["max_bytes"]
+            try:
+                jit.set_max_code_size(0)
+
+                def consumes_code_bytes():
+                    return 42
+
+                assert jit.force_compile(consumes_code_bytes)
+                jit.set_max_code_size(5)
+
+                def blocked_compile():
+                    return 43
+
+                try:
+                    jit.force_compile(blocked_compile)
+                except RuntimeError:
+                    pass
+
+                failed = jit.get_function_tier_state(blocked_compile)
+                print(failed["policy_state"])
+                print(failed["promotion_blocked"])
+
+                def replacement():
+                    return 44
+
+                blocked_compile.__code__ = replacement.__code__
+                changed = jit.get_function_tier_state(blocked_compile)
+                print(changed["policy_state"])
+                print(changed["promotion_blocked"])
+                print(changed["deopt_budget"])
+                print(changed["compile_failure_cooldown_remaining"])
+                print(changed["policy_resets"] > 0)
+
+                jit.set_max_code_size(0)
+                print(jit.force_compile(blocked_compile))
+                print(blocked_compile())
+                recovered = jit.get_function_tier_state(blocked_compile)
+                print(recovered["active_tier"])
+                print(recovered["compiled"])
+            finally:
+                jit.set_max_code_size(original_limit)
+            """,
+        )
+
+        self.assertEqual(lines[-11:], [
+            "compile_failure_cooldown",
+            "True",
+            "ready",
+            "False",
+            "16",
+            "0",
+            "True",
+            "True",
+            "44",
+            "optimized",
+            "True",
+        ])
+
     def test_threaded_precompile_worker_optional_python_api_guards(self) -> None:
         lines = self.run_tiering_script(
             "threaded_precompile_worker_guards",

@@ -1526,3 +1526,64 @@
     - default ARM runtime `Ran 102 tests in 16.246s`, `OK (skipped=3)`
     - full `test_jit_tiering` `Ran 21 tests in 5.309s`, `OK`
 
+## Session Update: 2026-05-02 (tier policy lifecycle completion)
+
+- Goal:
+  - complete the tier policy MVP by adding a real compile-failure cooldown
+    lifecycle instead of a permanent promotion block.
+- Plan file:
+  - `docs/superpowers/plans/2026-05-02-tier-policy-lifecycle.md`
+- TDD target:
+  - add RED coverage for cooldown expiry, allowed re-promotion, and successful
+    policy reset before changing production code.
+- Implementation completed:
+  - added bounded compile-failure cooldown/backoff telemetry to the unified
+    per-function tier state.
+  - added policy reset on successful optimized compile and on function code
+    modification.
+  - preserved hot-loop OSR blocking while preventing a single interpreted hot
+    loop from consuming the entire compile-failure cooldown.
+- Debugging note:
+  - focused remote validation initially exposed a test assertion slice bug in
+    `test_repeated_compile_failures_grow_policy_backoff`; corrected the test
+    to assert the full 12-line lifecycle output.
+  - one full-run attempt failed before tests because the remote update tar had
+    already been consumed; re-uploaded the current snapshot and reran.
+- Verification:
+  - focused remote lifecycle set:
+    - `test_function_code_change_resets_policy_backoff`
+    - `test_compile_failure_backoff_blocks_hot_loop_osr`
+    - `test_compile_failure_cooldown_expires_and_allows_repromotion`
+    - `test_repeated_compile_failures_grow_policy_backoff`
+    - result: `Ran 4 tests in 0.219s`, `OK`
+  - full remote entrypoint:
+    - default ARM runtime `Ran 102 tests in 16.808s`, `OK (skipped=3)`
+    - full `test_jit_tiering` `Ran 24 tests in 5.500s`, `OK`
+
+## Session Update: 2026-05-02 (tier policy lifecycle review hardening)
+
+- Addressed review findings on the lifecycle slice before commit readiness:
+  - successful clean optimized compile no longer increments `policy_resets`.
+  - cooldown expiry now exposes ready/unblocked state immediately.
+  - OSR-only workloads now age cooldown across interpreted activations without
+    letting one hot loop burn through cooldown and promote in the same
+    activation.
+- Debugging sequence:
+  - remote RED focused tests caught all three review issues.
+  - ARM build rejected direct `code->co_mutable->ncalls` access for Py3.14.
+  - `countCalls(code)` built but did not advance reliably for this OSR policy
+    path.
+  - remote diagnostic showed one `hot(50000)` call performs `50000` OSR policy
+    checks, requiring a real per-activation latch.
+- Implementation:
+  - added a JIT-owned OSR policy epoch and a frame-activation latch in
+    `pyjit.cpp`.
+  - added internal `compile_failure_osr_resume_deferred` tier state so the
+    activation that expires cooldown remains interpreted, and the next
+    activation can promote.
+- Verification through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused review follow-up: `Ran 3 tests in 0.185s`, `OK`
+  - full remote entrypoint:
+    - default ARM runtime `Ran 102 tests in 16.401s`, `OK (skipped=3)`
+    - full `test_jit_tiering` `Ran 26 tests in 5.600s`, `OK`
+

@@ -30,6 +30,19 @@ Tiered-JIT functionality quality pass: prioritize completing the unified per-fun
   - count blocked promotion attempts separately from real compile attempts
   - expose last promotion decision plus last policy event/reason
   - verify RED/GREEN through the remote ARM entrypoint
+- [x] Complete tier policy lifecycle semantics:
+  - bounded compile-failure cooldown/backoff instead of a permanent latch
+  - explicit cooldown remaining, streak, backoff, and reset telemetry
+  - promotion allowed again only after the policy cooldown expires
+  - successful optimized compile resets compile-failure policy state
+  - RED/GREEN and full functional verification through the remote ARM entrypoint
+- [x] Harden tier policy lifecycle review findings:
+  - clean successful compile does not count as a policy reset
+  - cooldown expiry immediately exposes ready/unblocked state
+  - hot-loop OSR cooldown ages once per interpreted activation and resumes on a
+    later activation, not within the same hot loop
+  - focused review follow-up plus full ARM/tiering verification passed through
+    the remote entrypoint
 
 ## Phases
 

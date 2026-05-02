@@ -187,6 +187,9 @@ except ImportError:
             "last_fallback_reason": "none",
             "deopt_budget": 16,
             "compile_failures": 0,
+            "compile_failure_streak": 0,
+            "compile_failure_backoff": 0,
+            "compile_failure_cooldown_remaining": 0,
             "last_compile_failure": "none",
             "invalidations": 0,
             "last_invalidation_reason": "none",
@@ -197,6 +200,7 @@ except ImportError:
             "last_promotion_reason": "none",
             "last_policy_event": "none",
             "last_policy_reason": "none",
+            "policy_resets": 0,
             "promotion_blocked": False,
             "promotion_blocked_reason": "none",
         }

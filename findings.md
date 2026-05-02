@@ -7194,3 +7194,130 @@ Conclusion:
     - a blocked promotion decision
   - this closes one more gap toward a mature tier policy state machine without
     adding time-based cooldown or automatic backoff reset semantics yet.
+
+## 2026-05-02 tier policy lifecycle completion
+
+- Goal:
+  - finish the compile-failure policy lifecycle so promotion blocking is not a
+    permanent latch.
+  - keep all new evidence on the unified remote entrypoint:
+    - `/root/work/incoming/remote_update_build_test.sh`
+- Design:
+  - keep the state in the existing per-function `FunctionTierState`.
+  - add:
+    - `compile_failure_streak`
+    - `compile_failure_backoff`
+    - `compile_failure_cooldown_remaining`
+    - `policy_resets`
+  - reset compile-failure policy on successful optimized compile and function
+    code replacement.
+- TDD RED evidence:
+  - first focused cooldown/backoff RED failed with missing
+    `compile_failure_backoff` telemetry.
+  - code-change reset RED showed `blocked_compile.__code__ = replacement.__code__`
+    left the function in `compile_failure_cooldown`, with
+    `promotion_blocked == True` and a later `force_compile()` returning `False`.
+- Debugging evidence:
+  - a full remote tiering run exposed a real regression:
+    - `test_compile_failure_backoff_blocks_hot_loop_osr`
+    - symptom: a single hot-loop OSR path consumed the new cooldown and compiled
+      optimized immediately.
+  - root cause:
+    - `shouldAttemptOptimizedPromotion()` decremented compile-failure cooldown
+      for every blocked policy decision, and hot-loop OSR can re-check policy
+      many times during one interpreted call.
+  - fix:
+    - keep counting hot-loop OSR as a blocked decision, but do not consume
+      compile-failure cooldown when `reason == "hot_loop_osr"`.
+- Implementation:
+  - `cinderx/Jit/context.h`
+    - extended `FunctionTierState` with cooldown/backoff/reset fields.
+    - added `resetFunctionTierPolicy()`.
+  - `cinderx/Jit/context.cpp`
+    - added bounded compile-failure backoff: `2`, `4`, then capped at `8`.
+    - decrements cooldown only on non-OSR blocked decisions.
+    - clears compile-failure blocking only after cooldown reaches zero.
+    - resets policy after successful optimized compile.
+  - `cinderx/Jit/pyjit.cpp`
+    - exposes new state fields.
+    - resets policy on function code modification.
+  - `cinderx/PythonLib/cinderx/jit.py` and `cinderx/cinderjit.pyi`
+    - aligned Python fallback/stub API surface.
+- Final GREEN verification:
+  - focused lifecycle remote run:
+    - `test_function_code_change_resets_policy_backoff`
+    - `test_compile_failure_backoff_blocks_hot_loop_osr`
+    - `test_compile_failure_cooldown_expires_and_allows_repromotion`
+    - `test_repeated_compile_failures_grow_policy_backoff`
+    - result: `Ran 4 tests in 0.219s`, `OK`
+  - full remote run:
+    - default ARM runtime suite:
+      - `Ran 102 tests in 16.808s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 24 tests in 5.500s`
+      - `OK`
+- Harness note:
+  - one full-run attempt failed before testing because the remote tar snapshot
+    had already been consumed:
+    - `tar: /root/work/incoming/cinderx-update.tar: Cannot open`
+  - resolved by re-uploading the same current snapshot and rerunning the same
+    remote entrypoint.
+- Maturity impact:
+  - compile-failure policy now has bounded backoff, observable cooldown,
+    re-promotion after cooldown expiry, reset on success, reset on code change,
+    and OSR-safe blocking semantics.
+
+## 2026-05-02 tier policy lifecycle review follow-up
+
+- Review findings addressed:
+  - clean successful optimized compile no longer increments `policy_resets`
+    unless real compile-failure policy state existed.
+  - compile-failure cooldown reaching zero now clears `promotion_blocked` and
+    reports `policy_state == "ready"` immediately instead of requiring one more
+    promotion check to observe the ready state.
+  - hot-loop OSR cooldown is no longer permanent: it ages once per interpreted
+    activation and defers actual OSR promotion until the next activation after
+    cooldown reaches zero.
+- RED evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - focused review tests initially failed as expected:
+    - clean compile reported `policy_resets == 1` instead of `0`.
+    - cooldown expiry still showed `promotion_blocked == True` and
+      `policy_state == "compile_failure_cooldown"`.
+    - OSR-only recovery stayed blocked instead of aging across calls.
+- Debugging evidence:
+  - first GREEN attempt failed to build on ARM because the OSR epoch used
+    `code->co_mutable->ncalls`, which does not exist for this Py3.14 build.
+  - replacing that with `countCalls(code)` built, but remote focused testing
+    showed it was not a reliable activation epoch.
+  - remote diagnostic confirmed a single `hot(50000)` activation performs
+    `50000` OSR policy checks, so cooldown must be activation-gated rather than
+    check-gated.
+- Final implementation:
+  - `pyjit.cpp` uses the frame `visited` bit, which this bundled interpreter
+    resets on frame initialization and otherwise does not use, as a one-bit
+    per-activation OSR policy latch.
+  - a JIT-owned atomic epoch gives each first OSR check in an activation a
+    unique cooldown-aging token.
+  - `FunctionTierState` carries an internal
+    `compile_failure_osr_resume_deferred` bit so the activation that exhausts
+    cooldown does not immediately compile later in the same hot loop.
+- Final GREEN verification:
+  - focused review follow-up remote run:
+    - `test_successful_compile_without_failure_does_not_count_policy_reset`
+    - `test_compile_failure_cooldown_expires_and_allows_repromotion`
+    - `test_hot_loop_osr_cooldown_ages_across_calls`
+    - result: `Ran 3 tests in 0.185s`, `OK`
+  - full remote run:
+    - default ARM runtime suite:
+      - `Ran 102 tests in 16.401s`
+      - `OK (skipped=3)`
+    - full tiering suite:
+      - `PYTHONPATH=cinderx/PythonLib/test_cinderx $PYTHON -m unittest test_jit_tiering -v`
+      - `Ran 26 tests in 5.600s`
+      - `OK`
+- Maturity impact:
+  - the tier policy now has review-covered reset semantics, observable cooldown
+    expiry, OSR-only recovery, and a guard against a single huge interpreted
+    hot loop burning through cooldown and promoting in the same activation.
