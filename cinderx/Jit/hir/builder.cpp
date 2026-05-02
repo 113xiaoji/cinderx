@@ -3699,6 +3699,11 @@ bool HIRBuilder::tryEmitDeepcopyDictSubscrRewrite(
     return false;
   }
 
+  // This rewrite needs a Python capsule sentinel constant.  Worker-thread
+  // precompile cannot safely allocate Python objects while the main thread
+  // owns the GIL, so keep the generic dict-subscript path there.
+  RETURN_MULTITHREADED_COMPILE(false);
+
   bool is_dict_subscr_specialized =
 #if PY_VERSION_HEX >= 0x030E0000
       bc_instr.specializedOpcode() == BINARY_OP_SUBSCR_DICT;
