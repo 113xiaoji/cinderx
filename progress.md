@@ -1957,3 +1957,1608 @@
     - default ARM runtime `Ran 102 tests in 16.610s`, `OK (skipped=3)`.
     - full `test_jit_tiering` `Ran 40 tests in 11.068s`, `OK`.
 
+## Session Update: 2026-05-03 (pyperformance 30 percent tuning wave)
+
+- Entered performance tuning planning after tier-state maturity closure.
+- Defined the expanded JIT-relevant pyperformance benchmark set:
+  - `richards,go,deltablue,raytrace,nqueens,generators,coroutines,comprehensions,unpack_sequence,chaos,logging,coverage,nbody,spectral_norm,scimark,float,fannkuch,pickle,pickle_dict,pickle_list,json_dumps,json_loads`
+- Defined the stop criterion as candidate-versus-current-JIT-baseline geometric
+  mean speedup of at least 30%.
+- Added design and implementation-plan docs:
+  - `docs/superpowers/specs/2026-05-03-pyperformance-jit-30pct-design.md`
+  - `docs/superpowers/plans/2026-05-03-pyperformance-jit-30pct-plan.md`
+- Next action:
+  - implement benchmark scoreboard/geomean support with TDD-style dry-run
+    evidence, then run the current branch extended baseline through the remote
+    ARM entrypoint.
+
+## Session Update: 2026-05-03 (scoreboard harness)
+
+- Added RED tests for pyperformance subset tooling:
+  - ratio/geomean output in `scripts/arm/compare_pyperf_subset.py`
+  - explicit `MODE=nojit` worker support in `scripts/arm/run_pyperf_subset.sh`
+- Confirmed local RED with `2 failed`.
+- Implemented:
+  - per-benchmark time ratio and speedup output
+  - geometric mean time ratio and speedup output
+  - `MODE=autojit|nojit|jitlist` in the subset runner
+- Confirmed local GREEN with `python -m pytest tests/test_pyperf_subset_tools.py -q`:
+  - `2 passed in 0.08s`
+- Remote entrypoint verification:
+  - uploaded working-tree snapshot, excluding `arm-results/`
+  - ran `/root/work/incoming/remote_update_build_test.sh`
+  - extra command: `python -m pytest tests/test_pyperf_subset_tools.py -q && bash -n scripts/arm/run_pyperf_subset.sh`
+  - exit code: `0`
+- Next action:
+  - run extended current-JIT and no-JIT baseline matrices through the same
+    remote entrypoint.
+
+## Session Update: 2026-05-03 (extended baseline matrix)
+
+- Ran the expanded pyperformance matrix through the remote entrypoint:
+  - `/root/work/incoming/remote_update_build_test.sh`
+  - exit code: `0`
+- Produced remote evidence:
+  - `/root/work/arm-sync/pyperf_ext_autojit50_20260503_1.json`
+  - `/root/work/arm-sync/pyperf_ext_nojit_20260503_1.json`
+  - `/root/work/arm-sync/pyperf_ext_nojit_vs_autojit50_20260503_1.json`
+- Copied the JSON evidence locally under `arm-results/`; the directory remains
+  untracked.
+- Important discovery:
+  - selected filters expand to 28 concrete pyperformance rows.
+  - unfiltered `MODE=autojit AUTOJIT=50` versus no-JIT produced
+    `geomean_time_ratio = 6.711393718511059`.
+  - only `coverage` was a clear auto-JIT win.
+  - broad unfiltered auto-JIT is therefore not the right first optimization
+    target; the next step is a filtered `MODE=jitlist` baseline, followed by
+    compile-selection / tier-policy ranking.
+
+## Session Update: 2026-05-03 (filtered jitlist baseline)
+
+- First attempt at the filtered matrix failed before benchmarking:
+  - archive lacked the expected `cinderx-src/` prefix.
+  - inline `POST_PYPERF_CMD` quoting was split by the remote shell.
+  - fixed by repackaging the working tree with a `cinderx-src/` prefix and
+    using a short remote wrapper script to call the entrypoint.
+- Successful remote entrypoint run:
+  - `/root/work/incoming/remote_update_build_test.sh`
+  - exit code: `0`
+- Produced and copied evidence:
+  - `/root/work/arm-sync/pyperf_ext_jitlist_20260503_1.json`
+  - `/root/work/arm-sync/pyperf_ext_nojit_vs_jitlist_20260503_1.json`
+  - `/root/work/arm-sync/pyperf_ext_autojit50_vs_jitlist_20260503_1.json`
+- Result:
+  - filtered `jitlist` versus unfiltered `autojit50`:
+    `geomean_time_ratio = 0.2827850192670735`, about `71.7%` faster.
+  - filtered `jitlist` versus no-JIT:
+    `geomean_time_ratio = 1.8978816019980658`, still about `89.8%` slower.
+- Next action:
+  - inspect current pyperformance worker hook and JIT activation policy, then
+    rank a production compile-selection / tier-policy candidate before changing
+    HIR/LIR internals.
+
+## Session Update: 2026-05-03 (policy probes and ranking)
+
+- Ran `MODE=autojit AUTOJIT=1000` through the remote entrypoint.
+  - exit code: `0`
+  - versus unfiltered `autojit50`: `geomean_time_ratio = 0.9607331061251834`
+  - versus no-JIT: `geomean_time_ratio = 6.447858133614176`
+  - conclusion: high threshold alone is not enough.
+- Added TDD coverage for filtered delayed jitlist mode:
+  - RED: hook ignored `CINDERX_JITLIST_AUTOJIT=50` and still called
+    `compile_after_n_calls(0)`.
+  - GREEN: added `CINDERX_JITLIST_AUTOJIT` support and
+    `MODE=jitlist-autojit`.
+  - local verification: `3 passed in 0.06s`.
+- Ran `MODE=jitlist-autojit AUTOJIT=50 CINDERX_JITLIST_ENTRIES=__main__:*`
+  through the remote entrypoint with the tool tests and shell syntax check.
+  - exit code: `0`
+  - versus eager `jitlist`: `geomean_time_ratio = 3.3842760938756755`
+  - versus unfiltered `autojit50`: `geomean_time_ratio = 0.9570225804117289`
+  - versus no-JIT: `geomean_time_ratio = 6.422955334648523`
+  - conclusion: delayed jitlist is not useful for this single-value
+    pyperformance harness.
+- Subagent synthesis:
+  - compile-selection/filtering is a real first-order lever.
+  - simple global threshold and delayed filtered threshold are not enough.
+  - next high-value execution-cost candidate is exact list/tuple/range
+    `FOR_ITER` lowering, because filtered JIT still pays generic iterator
+    helper costs where the interpreter has specialized opcodes.
+
+## Session Update: 2026-05-03 (FOR_ITER list helper pivot)
+
+- Continued the first execution-cost candidate after remote failures.
+- Root-cause from the failed HIR-specialized attempt:
+  - remote build succeeded, but the focused GREEN test still reported
+    `InvokeIterNext=1`, `InvokeListIterNext=0`, result `10`.
+  - diagnostic `PYTHONJITDEBUG=1` showed C++ saw base `FOR_ITER` during
+    compilation even when Python adaptive disassembly showed `FOR_ITER_LIST`.
+- Decision:
+  - stop pursuing a builder-time `FOR_ITER_LIST -> InvokeListIterNext` path for
+    now.
+  - move the exact list-iterator fast path into existing `JITRT_InvokeIterNext`.
+- Code changes in progress:
+  - removed the temporary `InvokeListIterNext` HIR/LIR/runtime surface.
+  - added an exact `PyListIter_Type` fast path inside `JITRT_InvokeIterNext`.
+  - converted the focused ARM runtime test into a semantic guard for list
+    iterator mutation behavior under compiled `FOR_ITER`.
+- Next action:
+  - package the working tree and run focused ARM verification through
+    `/root/work/incoming/remote_update_build_test.sh`.
+  - if functional verification is green, run a same-harness pyperformance
+    comparison to see whether the runtime helper branch is net-positive.
+
+### Error log
+
+- First focused remote validation attempt was invalid before test execution:
+  - packaging used a PowerShell binary pipeline, `git archive HEAD | tar -xf -`,
+    which corrupted the tar stream and produced repeated
+    `tar.exe: Damaged tar archive` messages.
+  - local harness sanity still passed after the failed package attempt:
+    `python -m pytest tests/test_pyperf_subset_tools.py -q` -> `3 passed`.
+  - next attempt must use `git archive -o <file>.tar HEAD` and extract from the
+    file, not through a PowerShell pipeline.
+
+## Session Update: 2026-05-03 (list iterator fast path verification)
+
+- Fixed local packaging workflow for remote tests:
+  - replaced the bad PowerShell binary pipeline with
+    `git archive --format=tar -o <file>.tar HEAD` followed by file extraction.
+  - used remote wrapper scripts and `cmd.exe` redirection for long ssh runs so
+    normal remote stderr does not abort local PowerShell.
+- Remote focused verification through `/root/work/incoming/remote_update_build_test.sh`:
+  - `arm-results/list_iter_fastpath_green_20260503_4.log`
+  - `Ran 1 test in 0.058s`
+  - `OK`
+- Remote adjacent verification through the same entrypoint:
+  - `arm-results/list_iter_adjacent_green_20260503_2.log`
+  - `Ran 8 tests in 0.754s`
+  - `OK`
+- Remote pyperformance subset through the same entrypoint:
+  - `arm-results/list_iter_pyperf_20260503_1.log`
+  - output: `arm-results/pyperf_iter_fastpath_jitlist_20260503_1.json`
+  - comparison:
+    `arm-results/pyperf_ext_jitlist_vs_iter_fastpath_20260503_1.json`
+  - `MODE=jitlist`, `SAMPLES=3`
+  - subset:
+    `comprehensions,generators,nqueens,unpack_sequence,go,deltablue,richards,raytrace`
+  - geomean time ratio: `0.9849120157035239`
+  - geomean speedup: `1.5087984296476065%`
+  - no row exceeded the `5%` regression warning threshold.
+- Decision:
+  - keep the list iterator helper as a small safe win.
+  - continue performance tuning; this is not the 30% target.
+
+## Session Update: 2026-05-03 (tuple/range iterator extension)
+
+- Extended `JITRT_InvokeIterNext` to exact tuple and range iterators:
+  - tuple: direct `_PyTupleIterObject` field path plus `PyTuple_GET_ITEM`
+  - range: direct `_PyRangeIterObject` field path plus `PyLong_FromLong`
+  - all builtin iterator fast paths stay disabled for `Py_GIL_DISABLED`
+- Local sanity:
+  - `git diff --check`: exit code `0`
+  - `python -m pytest tests/test_pyperf_subset_tools.py -q`: `3 passed`
+- Remote focused verification:
+  - `arm-results/tuple_range_iter_green_20260503_1.log`
+  - `Ran 2 tests in 0.119s`
+  - `OK`
+- Remote adjacent verification:
+  - `arm-results/tuple_range_iter_adjacent_green_20260503_1.log`
+  - `Ran 9 tests in 0.817s`
+  - `OK`
+- Remote pyperformance subset:
+  - `arm-results/tuple_range_iter_pyperf_20260503_1.log`
+  - comparison:
+    `arm-results/pyperf_ext_jitlist_vs_iter_all_fastpath_20260503_1.json`
+  - `geomean_time_ratio = 0.9855222065914018`
+  - `geomean_speedup_pct = 1.4477793408598227%`
+  - no row exceeded the `5%` regression warning threshold.
+- Decision:
+  - keep the builtin iterator helper family as a small safe improvement.
+  - next candidate must target a larger cost center than generic iterator
+    helper internals.
+
+## Session Update: 2026-05-03 (loop-heavy policy simulation)
+
+- Built a loop-heavy jitlist simulation using the existing pyperformance hook,
+  saved at `arm-results/loop_heavy_jitlist_entries.txt`.
+- Remote pyperformance subset through `/root/work/incoming/remote_update_build_test.sh`:
+  - log: `arm-results/loop_heavy_pyperf_20260503_1.log`
+  - result: `arm-results/pyperf_loop_heavy_jitlist_20260503_1.json`
+  - comparisons:
+    - `arm-results/pyperf_ext_jitlist_vs_loop_heavy_20260503_1.json`
+    - `arm-results/pyperf_ext_nojit_vs_loop_heavy_20260503_1.json`
+- Result versus full eager `jitlist`:
+  - `geomean_time_ratio = 0.7474786908573173`
+  - `geomean_speedup_pct = 25.252130914268268%`
+  - big wins:
+    - `comprehensions`: `80.8348%`
+    - `deltablue`: `50.6325%`
+  - blocker:
+    - `go`: `-19.1681%` regression
+- Decision:
+  - compile-selection policy is the main lever.
+  - continue with a refined policy simulation that keeps loop-heavy wins but
+    restores go/object helper coverage.
+
+## Session Update: 2026-05-03 (refined policy simulation)
+
+- Built a refined jitlist simulation:
+  - start from loop-heavy entries
+  - add all `go` tiny/object helper methods
+  - omit `generators` and `richards` entries
+  - saved at `arm-results/refined_policy_jitlist_entries.txt`
+- Remote pyperformance subset through `/root/work/incoming/remote_update_build_test.sh`:
+  - log: `arm-results/refined_policy_pyperf_20260503_1.log`
+  - result: `arm-results/pyperf_refined_policy_jitlist_20260503_1.json`
+  - comparisons:
+    - `arm-results/pyperf_ext_jitlist_vs_refined_policy_20260503_1.json`
+    - `arm-results/pyperf_ext_nojit_vs_refined_policy_20260503_1.json`
+- Result versus full eager `jitlist`:
+  - `geomean_time_ratio = 0.775399315072543`
+  - `geomean_speedup_pct = 22.460068492745698%`
+  - `go` recovered to `0.6173%` speedup versus full eager `jitlist`
+  - blockers:
+    - `generators`: `-14.4289%`
+    - `richards`: `-30.4581%`
+- Decision:
+  - do not pursue a single positive-entry profile.
+  - next code-level candidate should be a generated-code/tiny-shape negative
+    policy with telemetry, then validate whether it keeps the clean
+    comprehension/deltablue wins without broad regressions.
+
+## Session Update: 2026-05-03 (tiny helper filter TDD)
+
+- Replaced the weak generated-`<listcomp>` characterization with a focused
+  opt-in tiny-helper scheduling test:
+  - `ArmRuntimeTests.test_tiny_helper_filter_skips_small_no_backedge_code`
+  - shape: wildcard `__main__:*` JIT list plus `PYTHONJITFILTERTINY=1`
+  - expected: loop-bearing `outer` compiles, tiny no-backedge
+    `tiny_predicate` remains interpreted.
+- RED verification through `/root/work/incoming/remote_update_build_test.sh`:
+  - log: `arm-results/tiny_filter_red_20260503_1.log`
+  - result: failed as expected with stdout `True` / `True`
+  - reason: current scheduler ignores `PYTHONJITFILTERTINY`, so the tiny
+    helper is still compiled.
+- Implementation direction:
+  - add a default-off scheduler filter in `scheduleJitCompile()`
+  - count instructions with `BytecodeInstructionBlock`
+  - skip only tiny functions with no backward jump
+  - keep explicit `force_compile()` unaffected because it bypasses the
+    scheduler.
+- GREEN verification through the same remote entrypoint:
+  - focused log: `arm-results/tiny_filter_green_20260503_1.log`
+  - result: `Ran 1 test in 0.059s`, `OK`
+  - adjacent log: `arm-results/tiny_filter_adjacent_green_20260503_1.log`
+  - result: `Ran 11 tests in 0.946s`, `OK`
+  - adjacent set covered the tiny filter, explicit force-compile escape hatch,
+    builtin iterator helper fast paths, and generator-expression HIR guards.
+
+### Error log
+
+- First pyperformance attempt for the tiny filter did not reach the remote
+  entrypoint:
+  - failure: `bash: -c: line 1: unexpected EOF while looking for matching "\""`
+  - cause: nested SSH quoting around a long `POST_PYPERF_CMD`
+  - next attempt must upload a remote wrapper script and execute that wrapper,
+    rather than embedding the whole post command in one SSH string.
+- Retried pyperformance with a remote wrapper script:
+  - log: `arm-results/tiny_filter_pyperf_20260503_2.log`
+  - comparison:
+    `arm-results/pyperf_ext_jitlist_vs_tiny_filter_20260503_2.json`
+  - result versus full eager `jitlist`:
+    `geomean_time_ratio = 0.9904433303920432`
+  - `raytrace` regressed `8.7154%`
+  - conclusion: blanket tiny/no-backedge filtering is not the main performance
+    lever; continue with threshold and loop-heavy/object-helper policy probes.
+- Threshold scout through the remote entrypoint:
+  - log: `arm-results/tiny_filter_threshold_scout_20260503_1.log`
+  - `PYTHONJITFILTERTINY=16`: geomean ratio `0.98243798561696`
+  - `PYTHONJITFILTERTINY=32`: geomean ratio `0.9836673858208844`
+  - `PYTHONJITFILTERTINY=64`: geomean ratio `0.9202948497851511`
+  - conclusion: higher no-backedge filtering is still far from 30% and creates
+    object-workload regressions.
+- Loop-heavy plus go-helper policy simulation:
+  - log: `arm-results/loop_go_policy_pyperf_20260503_1.log`
+  - comparison:
+    `arm-results/pyperf_ext_jitlist_vs_loop_go_policy_20260503_1.json`
+  - geomean ratio `1.0277203637549255`
+  - conclusion: static global positive jitlists are fragile because benchmark
+    helpers all run under `__main__`, so names collide across workloads.
+
+## Session Update: 2026-05-03 (shape profitability scheduler filter)
+
+- Implemented default-off opt-in scheduler policy flags:
+  - `PYTHONJITFILTERTINY` / `jit-filter-tiny`
+  - `PYTHONJITSHAPEPROFITFILTER` / `jit-shape-profit-filter`
+- Added bytecode-shape scanning in `scheduleJitCompile()`:
+  - tiny/no-backedge filter
+  - call/method/make_function/no-backedge shape filter
+  - explicit unpack-shape admission
+- Addressed subagent review finding:
+  - moved policy filters after `trackEligibleCodeObjects()`, `isJitCompiled()`,
+    and `reoptFunc()`
+  - added `test_shape_profit_filter_does_not_block_reopt_attachment`
+- Local sanity:
+  - `git diff --check`: exit code `0`
+  - `python -m pytest tests/test_pyperf_subset_tools.py -q`: `3 passed`
+- Remote RED/GREEN through `/root/work/incoming/remote_update_build_test.sh`:
+  - RED shape policy:
+    `arm-results/shape_profit_filter_red_20260503_1.log`
+  - RED reopt regression:
+    `arm-results/shape_profit_reopt_red_20260503_1.log`
+  - focused GREEN:
+    `arm-results/shape_profit_focused_green_20260503_1.log`,
+    `Ran 2 tests in 0.116s`, `OK`
+  - adjacent GREEN:
+    `arm-results/shape_profit_adjacent_green_20260503_2.log`,
+    `Ran 13 tests in 1.035s`, `OK`
+- Remote pyperformance:
+  - log: `arm-results/shape_profit_pyperf_20260503_2.log`
+  - comparison:
+    `arm-results/pyperf_ext_jitlist_vs_shape_profit_20260503_1.json`
+  - result versus full eager `jitlist`:
+    `geomean_time_ratio = 0.9653445942580665`
+  - wins: `comprehensions`, `deltablue`, `unpack_sequence`, `raytrace`
+  - regressions: `nqueens`, `richards`, `go`, `generators`
+- Decision:
+  - keep the opt-in mechanics/tests as useful scaffolding.
+  - do not treat the current shape policy as the 30% answer; the next round
+    needs per-workload/function-shape evidence for nqueens/go/richards recovery
+    while preserving comprehension/deltablue/unpack wins.
+- Error log:
+  - `shape_profit_adjacent_green_20260503_1.log`: remote tar already consumed.
+  - `shape_profit_pyperf_20260503_1.log`: wrapper tried to execute a
+    non-executable script directly; fixed by invoking it through `bash`.
+- State-helper admission retry:
+  - [x] added opt-in `PYTHONJITADMITSTATEHELPERS` / `jit-admit-state-helpers`
+  - [x] verified RED/GREEN for subscript-state helper admission under `PYTHONJITFILTERTINY=9999`
+  - [x] rejected broad attr+subscript admission after matrix regression
+  - [x] tightened to subscript-only and reran focused/adjacent remote GREEN
+  - [x] reran object-heavy pyperformance matrix through the remote entrypoint
+  - result versus full eager `jitlist`:
+    - `geomean_time_ratio = 0.886298242152134`
+    - `geomean_speedup_pct = 11.370175784786596`
+    - blockers: `go -24.64%`, `richards -6.23%`
+  - decision: keep only as opt-in experimental scaffolding for now; move to
+    dynamic delayed helper promotion because static admission is not recovering
+    object-helper workloads.
+
+## Session Update: 2026-05-03 (deferred helper promotion + harness correction)
+
+- Dynamic delayed helper promotion:
+  - [x] focused remote GREEN:
+    `arm-results/stateful_deferred_shape_green_20260503_2.log`,
+    `Ran 1 test in 0.056s`, `OK`
+  - [x] corrected adjacent verification invocation after a bad `unittest`
+    module path attempt
+  - [x] full tiering verification with precise module:
+    `arm-results/stateful_deferred_tiering_green_20260503_1.log`,
+    `Ran 40 tests in 11.035s`, `OK`
+- Benchmark harness:
+  - [x] detected suspect matrix where `nojit`, `jitlist`, and `autojit` were
+    nearly identical
+  - [x] TDD RED for missing explicit `CINDERX_DISABLE=0` worker override
+  - [x] fixed `scripts/arm/run_pyperf_subset.sh` to inherit
+    `CINDERX_DISABLE` and default worker JIT modes to `0`
+  - [x] local GREEN: `python -m pytest tests/test_pyperf_subset_tools.py -q`,
+    `3 passed in 0.07s`
+  - [x] remote worker probe:
+    `arm-results/worker_probe_20260503_2.log`
+    proves nojit disables JIT and autojit/jitlist compile a probe function
+- Latest pyperformance evidence:
+  - fixed `nojit` vs `autojit0`:
+    `arm-results/pyperf_fixed_nojit_vs_autojit0_20260503_1.json`,
+    geomean speedup `-0.123%`
+  - fixed `nojit` vs `autojit50`:
+    `arm-results/pyperf_fixed_nojit_vs_autojit50_20260503_1.json`,
+    geomean speedup `-0.854%`
+  - fixed `autojit50` vs `stateful_deferred_global50`:
+    `arm-results/pyperf_fixed_autojit50_vs_stateful_deferred_global50_20260503_1.json`,
+    geomean speedup `0.444%`
+  - interpretation: current selected `--debug-single-value` subset is not yet a
+    reliable optimization target because it does not show measurable JIT/no-JIT
+    separation despite the worker probe compiling functions.
+- Next action:
+  - collect per-benchmark compile evidence or run a hotter pyperformance mode
+    before claiming benchmark speedups.
+
+## Session Update: 2026-05-03 (credible matrix after worker venv fix)
+
+- Fixed the remaining pyperformance worker mismatch:
+  - the wrapper now creates the declared pyperformance venv when absent.
+  - the wrapper installs the freshly built CinderX wheel into the actual worker
+    Python before timing.
+  - probe/debug envs are forwarded only when requested.
+- Remote evidence through `/root/work/incoming/remote_update_build_test.sh`:
+  - `arm-results/richards_probe_pyperf_20260503_3.log`
+  - `arm-results/richards_autojit0_probe_20260503_3.jsonl`
+  - `arm-results/credible_matrix_20260503_1.log`
+- Key result:
+  - no-JIT vs autojit0: `geomean_speedup_pct = -313.567%`.
+  - no-JIT vs autojit50: `geomean_speedup_pct = -1607.366%`.
+  - autojit50 vs stateful deferred autojit50:
+    `geomean_speedup_pct = 12.781%`, no >=5% row regressions.
+  - no-JIT vs stateful deferred autojit50:
+    `geomean_speedup_pct = -1389.148%`.
+- Decision:
+  - do not claim pyperformance improvement yet.
+  - current code proves a useful direction only relative to broad autojit50.
+  - next run: filtered `jitlist` / `jitlist-autojit` after the venv fix to
+    isolate compile-selection value from general JIT overhead.
+
+## Session Update: 2026-05-03 (corrected jitlist matrix)
+
+- Ran a fresh corrected compile-selection matrix through
+  `/root/work/incoming/remote_update_build_test.sh`.
+- Same run passed functional gates:
+  - `Ran 110 tests in 17.480s`, `OK (skipped=3)`.
+  - `jit-effective-ok compiled_size 976 interp_calls 10`.
+- Remote generated JSON files under `/root/work/arm-sync`, but local `scp`
+  failed afterward because SSH returned `Connection refused`; results below
+  were parsed from the complete local remote-entrypoint log.
+- Key parsed results:
+  - no-JIT vs eager `jitlist __main__:*`:
+    `geomean_speedup_pct = -311.819%`.
+  - no-JIT vs `jitlist-autojit50`:
+    `geomean_speedup_pct = -1610.707%`.
+  - `jitlist-autojit50` vs stateful deferred `jitlist-autojit50`:
+    `geomean_speedup_pct = 12.184%`.
+- Decision:
+  - compile-selection via plain `__main__:*` is not enough.
+  - next optimization target is a mature cold-workload/tier policy gate:
+    avoid compiling generated/short-lived code inside the timed window unless
+    runtime evidence shows compile cost can be amortized.
+
+## Session Update: 2026-05-03 (generated-code cold filter TDD started)
+
+- Added RED coverage for the next cold-workload policy slice:
+  - wrapper contract now expects `PYTHONJITFILTERGENERATED` to be forwarded to
+    pyperformance workers.
+  - ARM runtime behavior test expects `outer` to compile while `<listcomp>`
+    stays interpreted under the generated-code filter.
+- Local RED/GREEN:
+  - RED:
+    `python -m pytest tests/test_pyperf_subset_tools.py::test_run_pyperf_subset_supports_explicit_nojit_worker_mode -q`
+    failed on missing `PYTHONJITFILTERGENERATED`.
+  - GREEN:
+    `python -m pytest tests/test_pyperf_subset_tools.py -q`
+    showed `4 passed`.
+  - `git diff --check` returned exit code `0`.
+- Implemented default-off generated-code filter:
+  - `PYTHONJITFILTERGENERATED` / `jit-filter-generated`.
+  - scheduler skips `<listcomp>`, `<dictcomp>`, `<setcomp>`, and `<genexpr>`
+    code objects before tiny/shape filters.
+  - explicit force-compile remains outside this scheduler filter.
+- Blocker:
+  - remote SSH to `124.70.162.35` is currently timing out after the corrected
+    jitlist matrix completed.
+  - generated-code filter still needs remote ARM RED/GREEN and benchmark
+    validation before it can be considered complete.
+
+## Session Update: 2026-05-03 (generated-code cold filter remote GREEN)
+
+- Remote recovered and the generated-code filter was validated through the
+  unified ARM entrypoint.
+- Evidence:
+  - `arm-results/generated_filter_green_20260503_1.log`
+  - default ARM runtime: `Ran 111 tests in 17.005s`, `OK (skipped=3)`
+  - focused generated-code filter test:
+    `test_generated_code_filter_skips_comprehension_code ... ok`
+  - JIT effectiveness smoke:
+    `jit-effective-ok compiled_size 976 interp_calls 10`
+- Next action:
+  - run the corrected pyperformance matrix with `PYTHONJITFILTERGENERATED=1`
+    and compare against unfiltered `jitlist` / `jitlist-autojit50`.
+
+## Session Update: 2026-05-03 (generated-code cold filter matrix)
+
+- Ran the generated-filter matrix through the unified remote entrypoint.
+- Local pre-matrix checks:
+  - `python -m pytest tests/test_pyperf_subset_tools.py -q`: `4 passed`
+  - `python -m py_compile scripts/arm/pyperf_env_hook/sitecustomize.py scripts/arm/compare_pyperf_subset.py`: exit `0`
+  - `git diff --check`: exit `0` with only LF/CRLF warnings
+- Remote evidence:
+  - log: `arm-results/generated_filter_matrix_20260503_1.log`
+  - JSONs: `arm-results/generated_filter_matrix_20260503_1_*.json`
+  - worker probe: CinderX initialized and JIT enabled
+- Result:
+  - `jitlist` vs `generated_jitlist`:
+    `geomean_speedup_pct = 0.830%`
+  - `jitlist` vs generated+stateful deferred `jitlist`:
+    `geomean_speedup_pct = 13.203%`, but `go` and `richards` regressed beyond
+    the 5% gate
+  - `jitlist-autojit50` vs generated+stateful deferred `jitlist-autojit50`:
+    `geomean_speedup_pct = 13.669%`, no >=5% regressions
+- Decision:
+  - generated filtering is safe and measurable but too small.
+  - the next optimization should focus on object/state method-call execution
+    cost or a more selective object policy, because the current policy wins are
+    blocked mainly by `go` and `richards`.
+
+## Session Update: 2026-05-03 (attr-state deferred helper promotion)
+
+- Chose the next TDD slice from matrix evidence:
+  - broaden dynamic deferred helper promotion to attr-state `self` methods.
+  - intended to recover `go`/`richards` from the tiny/no-backedge policy while
+    preserving wins on `deltablue`, `nqueens`, and `raytrace`.
+- RED:
+  - `arm-results/attr_helper_deferred_red_20260503_1.log`
+  - focused test failed as expected at `Worker.set_waiting`, which was not
+    marked `helper_promotion_deferred`.
+- GREEN:
+  - implemented attribute load/store opcode detection for simple `self`
+    methods in the deferred-helper classifier.
+  - `arm-results/attr_helper_deferred_green_20260503_1.log`
+  - focused result: `Ran 1 test in 0.057s`, `OK`.
+- Performance validation:
+  - `arm-results/attr_helper_matrix_20260503_1.log` started, but the remote
+    host closed the SSH connection during build and now refuses SSH.
+  - next action after remote recovery: rerun the attr-helper matrix before
+    making any performance claim.
+
+## Session Update: 2026-05-03 (attr-state matrix after remote recovery)
+
+- Remote recovered; reran the attr-state matrix through
+  `/root/work/incoming/remote_update_build_test.sh`.
+- Evidence:
+  - log: `arm-results/attr_helper_matrix_20260503_2.log`
+  - JSONs: `arm-results/attr_helper_matrix_20260503_1_*.json`
+- Result:
+  - `jitlist` vs generated+stateful deferred `jitlist`:
+    `geomean_speedup_pct = 12.747%`.
+  - `go` improved to only `-2.90%` and `richards` to `-4.29%`,
+    but `raytrace` regressed `-18.51%`.
+  - `jitlist-autojit50` vs generated+stateful deferred:
+    `geomean_speedup_pct = 7.422%`; `raytrace` still regressed `-11.39%`.
+- Decision:
+  - do not treat the broad attr-state classifier as complete.
+  - next step: narrow deferred attr-helper promotion so it still recovers
+    object-state helpers in `go`/`richards` but avoids raytrace-like
+    attr-heavy numeric/geometric helpers.
+
+## Session Update: 2026-05-03 (attr classifier refinement)
+
+- Implemented and validated progressively narrower attr-helper classifiers:
+  - store-only attr helpers: fixes raytrace but misses richards predicates.
+  - simple state predicates: still missed richards 3.14 boolean scaffold.
+  - complex state predicates: includes `COPY`, `POP_TOP`, and `NOT_TAKEN`.
+- Remote focused evidence:
+  - `attr_helper_refined_red_20260503_1.log` / `attr_helper_refined_green_20260503_1.log`
+  - `attr_predicate_helper_red_20260503_1.log` / `attr_predicate_helper_green_20260503_2.log`
+  - `attr_complex_predicate_red_20260503_1.log` / `attr_complex_predicate_green_20260503_1.log`
+- Remote matrix evidence:
+  - `attr_store_helper_matrix_20260503_1.log`
+  - `attr_predicate_helper_matrix_20260503_1.log`
+  - `attr_complex_predicate_matrix_20260503_1.log`
+- Current best attr refinement:
+  - complex predicate classifier.
+  - `jitlist-autojit50` comparison: `11.32%` geomean speedup, no >5%
+    regressions.
+  - eager `jitlist` still has `go -7.15%` and `richards -6.05%`.
+- Next action:
+  - run a promotion-threshold matrix for the complex classifier. Hypothesis:
+    threshold `1024` is too late for eager `jitlist` go/richards.
+
+## Session Update: 2026-05-03 (promotion threshold sweep)
+
+- Ran threshold sweep through the unified remote entrypoint:
+  - log: `arm-results/attr_threshold_matrix_20260503_1.log`
+  - JSONs: `arm-results/attr_threshold_matrix_20260503_1_*.json`
+- Best setting found:
+  - `PYTHONJITDEFERFILTEREDHELPERS=512`
+  - eager `jitlist`: `12.59%` geomean speedup, no >5% regressions.
+  - `jitlist-autojit50`: `11.59%` geomean speedup, no >5% regressions.
+- Interpretation:
+  - the complex attr classifier is now stable enough for the opt-in policy
+    experiment.
+  - performance is still well short of the 30% target.
+  - next axis: sweep `PYTHONJITFILTERTINY` with helper threshold fixed at 512.
+
+## Session Update: 2026-05-03 (tiny-filter threshold sweep)
+
+- Created `arm-results/run_tiny_threshold_matrix_20260503_1.sh` to sweep
+  `PYTHONJITFILTERTINY` independently while fixing
+  `PYTHONJITDEFERFILTEREDHELPERS=512`.
+- Local validation before remote:
+  - `python -m pytest tests/test_pyperf_subset_tools.py -q`: `4 passed`
+  - `python -m py_compile scripts/arm/pyperf_env_hook/sitecustomize.py scripts/arm/compare_pyperf_subset.py`: exit `0`
+  - `git diff --check`: exit `0`, only CRLF warnings
+  - local `bash -n` could not be used because WSL has no installed distro;
+    remote `bash -n /root/work/incoming/run_tiny_threshold_matrix_20260503_1.sh`
+    passed instead.
+- Remote validation:
+  - entrypoint: `/root/work/incoming/remote_update_build_test.sh`
+  - build env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+  - log: `arm-results/tiny_threshold_matrix_20260503_1.log`
+  - JSONs: `arm-results/tiny_threshold_matrix_20260503_1_*.json`
+- Result:
+  - eager `jitlist` best 3-sample candidates:
+    - `PYTHONJITFILTERTINY=9999`: `15.80%` geomean, `go -5.32%`
+    - `PYTHONJITFILTERTINY=256`: `15.73%` geomean, `go -5.93%`
+    - `PYTHONJITFILTERTINY=64`: `14.32%` geomean, `go -5.54%`
+  - `jitlist-autojit50` best safe candidate:
+    - `PYTHONJITFILTERTINY=9999`: `11.37%` geomean, no >5% regressions.
+- Decision:
+  - tiny-filter threshold tuning improves eager geomean versus the previous
+    threshold sweep, but still does not approach the 30% target.
+  - run a higher-sample confirmation for `64/128/256/9999` before treating the
+    `go` regression as real or noise.
+
+## Session Update: 2026-05-03 (tiny-filter confirmation)
+
+- Ran higher-sample confirmation through the unified remote entrypoint:
+  - log: `arm-results/tiny_threshold_confirm_20260503_1.log`
+  - JSONs: `arm-results/tiny_threshold_confirm_20260503_1_*.json`
+  - env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+  - samples: `5`
+  - candidate tiny limits: `64`, `128`, `256`, `9999`
+- Result:
+  - eager `jitlist` still has stable `go` regressions:
+    - limit `64`: `12.28%` geomean, `go -7.27%`
+    - limit `128`: `14.32%` geomean, `go -7.50%`
+    - limit `256`: `14.39%` geomean, `go -7.06%`
+    - limit `9999`: `14.65%` geomean, `go -7.92%`
+  - `jitlist-autojit50` remains safe but tops out near `11.11%` geomean.
+- Decision:
+  - policy threshold tuning alone is not enough for the 30% target.
+  - next action: collect function-level telemetry for `go` under eager baseline
+    versus generated/stateful-deferred policy to identify missing recovery or
+    slower compiled call shapes.
+
+## Session Update: 2026-05-03 (go policy telemetry)
+
+- Added and ran `arm-results/run_go_policy_probe_20260503_1.sh` through the
+  unified remote entrypoint.
+- Remote evidence:
+  - log: `arm-results/go_policy_probe_20260503_1.log`
+  - JSONs: `arm-results/go_policy_probe_20260503_1_*.json`
+  - env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+- Result:
+  - eager `jitlist`: `compiled_count=83`, `not_compiled=4`.
+  - deferred policy with helper threshold `512`: `compiled_count=23-25`,
+    `not_compiled=18`, `deferred=8`, `ready=0`.
+  - affected helpers include `Board.move`, `EmptySet.add/remove/set`, and
+    `Square.find`, all stuck in `helper_promotion_deferred`.
+- Decision:
+  - the next slice should test lower helper-promotion thresholds for `go`
+    telemetry before changing policy code.
+
+## Session Update: 2026-05-03 (go helper-threshold telemetry)
+
+- Extended the go policy probe with helper thresholds `256` and `128` while
+  keeping `PYTHONJITFILTERTINY=9999`.
+- Remote evidence:
+  - log: `arm-results/go_policy_probe_20260503_2.log`
+  - JSONs: `arm-results/go_policy_probe_20260503_2_*.json`
+- Result:
+  - `policy_h256_l9999`: `compiled_count=23`, `deferred=8`, `ready=0`.
+  - `policy_h128_l9999`: `compiled_count=23`, `deferred=8`, `ready=0`.
+  - the same `go` helpers remain stuck in deferred state:
+    `Board.move`, `Square.find`, `EmptySet.add/remove/set`,
+    `ZobristHash.update`.
+- Decision:
+  - helper thresholds `128+` are still too late for pyperformance `go`.
+  - next action: run a go-only pyperformance scout over lower helper thresholds
+    `4/8/16/32/64`.
+
+## Session Update: 2026-05-03 (go lower-threshold scout)
+
+- Ran the go-only lower helper-threshold scout through the unified remote
+  entrypoint with exclusive remote build parallelism:
+  - log: `arm-results/go_helper_threshold_scout_20260503_1.log`
+  - JSONs: `arm-results/go_helper_threshold_scout_20260503_1_*.json`
+  - env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+- Result:
+  - eager `jitlist` remains negative for every tested threshold `4-512`; best
+    point is still `go -6.46%` at threshold `512`.
+  - `jitlist-autojit50` is closer to neutral but still negative; best point is
+    `go -1.83%` at threshold `16`.
+- Follow-up diagnostic:
+  - warmed `go` bytecode shows many
+    `LOAD_ATTR_METHOD_WITH_VALUES + CALL_PY_EXACT_ARGS/CALL_KW_PY` sites.
+  - current eager HIR still has generic `LoadMethodCached/CallMethod` in hot
+    functions such as `Board.move`, `Square.move`, `Board.useful`, and
+    `UCTNode.play`.
+- Decision:
+  - stop spending cycles on helper threshold tuning for now.
+  - next action: TDD a focused method-with-values specialized-call fast-path
+    test, then patch `HIRBuilder` if the RED confirms the missing lowering.
+
+## Session Update: 2026-05-03 (attr-derived MWV delayed lookup)
+
+- Added RED coverage for attr-derived method-with-values calls with simple
+  positional args.
+  - RED log: `arm-results/mwv_attr_derived_red_20260503_2.log`
+  - failure: `VectorCall<3>` was after `LoadMethodCached`.
+- Implemented a narrow HIRBuilder change:
+  - delay lookup for PyFunction method-with-values calls with `1-3`
+    side-effect-free positional args.
+  - recognize `LOAD_FAST_LOAD_FAST` and
+    `LOAD_FAST_BORROW_LOAD_FAST_BORROW`.
+  - keep zero-arg calls on the old path after a Richards crash proved they can
+    expose unsafe fallback FrameStates with uninitialized locals.
+- Verification:
+  - `arm-results/mwv_richards_crash_fix_20260503_2.log`:
+    focused tests passed and direct Richards repro printed
+    `direct-richards-ok`.
+  - `arm-results/mwv_adjacent_green_20260503_2.log`:
+    adjacent method-with-values regression suite `Ran 8 tests`, `OK`.
+- Matrix:
+  - `arm-results/candidate_mwv_delayed_matrix_20260503_2.log`
+  - selected 8 benchmarks, `3` samples.
+  - policy versus `jitlist-autojit50`: `+10.93%` geomean, no >5%
+    regressions, with `go -1.81%`.
+- Decision:
+  - keep the fix as a safe call-shape quality improvement.
+  - continue performance work; next likely slice is keyword
+    method-with-values calls (`CALL_KW_PY`) that still remain generic in `go`.
+
+## Session Update: 2026-05-03 (keyword MWV delayed lookup)
+
+- Used the exclusive ARM host with multi-threaded remote builds:
+  - env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+  - entrypoint: `/root/work/incoming/remote_update_build_test.sh`
+- Implemented keyword method-with-values lowering:
+  - `CALL_KW` is accepted by the delayed lookup classifier for simple
+    side-effect-free argument shapes.
+  - the keyword-name tuple is preserved as the final vectorcall operand.
+  - zero-arg method calls remain excluded after the Richards crash found in the
+    positional broadening pass.
+- Verification:
+  - `arm-results/mwv_kw_green_20260503_4.log`:
+    default ARM runtime `Ran 114 tests`, `OK`; focused KW test `Ran 1 test`,
+    `OK`.
+  - `arm-results/mwv_adjacent_green_20260503_3.log`:
+    default ARM runtime `Ran 114 tests`, `OK`; adjacent MWV suite
+    `Ran 10 tests`, `OK`.
+  - `arm-results/mwv_richards_direct_green_20260503_1.log`:
+    default ARM runtime `Ran 114 tests`, `OK`; direct repro printed
+    `direct-richards-ok`.
+- Matrix:
+  - `arm-results/candidate_mwv_kw_matrix_20260503_1.log`
+  - selected 8 benchmarks, `3` samples.
+  - policy versus eager `jitlist`: `+15.38%` geomean, but `go -8.86%`.
+  - policy versus `jitlist-autojit50`: `+10.87%` geomean, no >5%
+    regressions, `go -0.76%`.
+- Decision:
+  - keep the KW lowering on correctness/quality grounds.
+  - the 30% selected-workload performance target is still not met.
+  - next action: collect post-KW HIR telemetry for remaining generic method
+    calls and non-call overhead in the hot `go` functions before choosing the
+    next implementation slice.
+
+## Session Update: 2026-05-03 (deopt miss candidate rejected)
+
+- Tested a follow-up candidate: replace delayed method-with-values generic
+  miss fallback with a direct deopt path.
+- TDD/diagnostics:
+  - RED: `arm-results/mwv_deopt_miss_red_20260503_3.log`.
+  - first GREEN attempt exposed a real polymorphic-self regression.
+  - refined version kept non-exact `self` on generic fallback and only used
+    deopt-on-miss for attr-derived delayed lookup.
+  - focused remote GREEN:
+    `arm-results/mwv_deopt_miss_focused_green_20260503_1.log`,
+    default ARM runtime `Ran 115 tests`, `OK`; focused set `Ran 5 tests`,
+    `OK`.
+- HIR signal:
+  - `arm-results/go_hir_post_deopt_miss_probe_20260503_1.log`
+  - static fallback counts dropped in several `go` functions, for example
+    `Square.move CallMethod 4 -> 1` and `UCTNode.play 5 -> 3`.
+- Benchmark result:
+  - `arm-results/candidate_mwv_deopt_miss_matrix_20260503_1.log`
+  - direct comparison to the prior KW candidate was negative:
+    policy `jitlist` geomean `-3.85%`; policy `jitlist-autojit50` geomean
+    `-3.97%`.
+- Decision:
+  - reverted this candidate.
+  - post-revert remote guard:
+    `arm-results/mwv_final_adjacent_green_20260503_1.log`,
+    default ARM runtime `Ran 114 tests`, `OK`; adjacent MWV suite
+    `Ran 10 tests`, `OK`.
+  - continue from the KW delayed lookup baseline, not the deopt-only miss path.
+
+## Session Update: 2026-05-03 (selective method-value inliner rejected as default)
+
+- Used the exclusive ARM host with multi-threaded remote builds:
+  - env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+  - entrypoint: `/root/work/incoming/remote_update_build_test.sh`
+- Implemented and verified an opt-in selective method-value HIR inliner:
+  - only `VectorCall` sites marked as profiled method-with-values are eligible
+    when `PYTHONJITENABLEMETHODVALUEINLINER=1` and global HIR inliner is off.
+  - generic static-function inlining remains disabled in this mode.
+- Correctness:
+  - a raytrace-like polymorphic receiver bug was reproduced and fixed by not
+    rewriting the direct exact-receiver fast path into the inlinable shape.
+  - `arm-results/method_value_selective_safe_green_20260503_2.log`:
+    default ARM runtime `Ran 118 tests`, `OK`; focused method-value suite
+    `Ran 4 tests`, `OK`; JIT smoke passed.
+- Matrix:
+  - `arm-results/method_value_selective_safe_matrix_20260503_1.log`
+  - policy baseline versus policy +
+    `PYTHONJITENABLEMETHODVALUEINLINER=1`.
+  - selected workload geomean: `-1.97%`.
+  - wins: `generators +5.59%`, `raytrace +0.37%`.
+  - regressions: `richards -7.26%`, `unpack_sequence -3.96%`,
+    `nqueens -3.19%`, `deltablue -3.05%`, `go -2.36%`,
+    `comprehensions -2.41%`.
+- Decision:
+  - reject default enablement.
+  - preserve it as opt-in infrastructure/regression coverage.
+  - next work is diagnosis and a new candidate; do not keep broadening inliner
+    blindly.
+
+## Session Update: 2026-05-03 (contains helper and specialized contains)
+
+- Continued on the exclusive ARM host with multi-threaded remote builds:
+  - env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+  - entrypoint: `/root/work/incoming/remote_update_build_test.sh`
+- Contains-state helper deferral:
+  - added gated `PYTHONJITDEFERCONTAINSHELPERS`.
+  - focused RED:
+    `arm-results/contains_state_helper_red_20260503_2.log`.
+  - focused GREEN:
+    `arm-results/contains_state_helper_green_20260503_1.log`,
+    `Ran 1 test`, `OK`.
+  - adjacent:
+    `arm-results/contains_state_helper_adjacent_20260503_1.log`,
+    default ARM runtime `Ran 119 tests`, `OK`; JIT smoke passed.
+  - matrix:
+    `arm-results/contains_state_helper_matrix_20260503_1.log`,
+    8 benchmarks, 5 samples, policy h512 baseline versus contains helper gate.
+  - result:
+    geomean `-0.74%`; repeat on `go,nqueens` with 9 samples was neutral/small
+    positive (`+1.42%` geomean).
+  - decision:
+    keep gated, not a throughput lever.
+- Specialized set/dict contains:
+  - added `CONTAINS_OP_SET/DICT` specialized-bytecode admission.
+  - lowered exact set/dict membership to direct `JITRT_SetContains` /
+    `JITRT_DictContains` helpers with exact type guards.
+  - added default-on gate `PYTHONJITENABLESPECIALIZEDCONTAINS` for A/B testing
+    and pyperformance runner propagation.
+  - gate RED:
+    `arm-results/specialized_set_contains_gate_red_20260503_1.log`, env `0`
+    still used `JITRT_SetContains`.
+  - focused GREEN:
+    `arm-results/specialized_set_contains_gate_green_20260503_1.log`,
+    `Ran 1 test`, `OK`.
+  - adjacent:
+    `arm-results/specialized_set_contains_adjacent_20260503_3.log`,
+    default ARM runtime `Ran 120 tests`, `OK`; JIT smoke passed.
+  - runner pytest:
+    `arm-results/pyperf_subset_tools_specialized_contains_20260503_1.log`,
+    `4 passed in 0.10s`.
+  - matrix:
+    `arm-results/specialized_contains_matrix_20260503_1.log`,
+    8 benchmarks, 5 samples, policy h512, disabled versus enabled.
+  - result:
+    geomean `+0.049%`, no >5% regressions; `go +0.66%`,
+    `richards +0.75%`, `deltablue +0.48%`, noise elsewhere.
+  - decision:
+    keep as a gated micro-optimization; continue looking for a larger
+    execution-cost or policy candidate.
+
+## Session Update: 2026-05-03 (KW exact PyFunction vectorcall)
+
+- Implemented a narrow LIR lowering for `CALL_KW` exact `PyFunction` calls:
+  - previously `TranslateSpecializedCall()` rejected all `KwArgs`, so
+    `VectorCall<..., kwnames>` sites used the generic vectorcall entrypoint.
+  - now exact `PyFunction` kwargs calls can use
+    `JITRT_VectorcallExactPyFunc`; method descriptors/C functions with kwargs
+    still stay generic.
+- Added default-on gate:
+  - `PYTHONJITENABLEKWPYFUNCVECTORCALL`
+  - propagated through `scripts/arm/run_pyperf_subset.sh`.
+- Remote TDD:
+  - RED:
+    `arm-results/kw_exact_pyfunc_red_20260503_1.log`.
+  - gate RED:
+    `arm-results/kw_exact_pyfunc_gate_red_20260503_1.log`.
+  - focused GREEN:
+    `arm-results/kw_exact_pyfunc_gate_green_20260503_1.log`,
+    `Ran 1 test`, `OK`.
+- Adjacent verification:
+  - `arm-results/kw_exact_pyfunc_adjacent_20260503_2.log`
+  - default ARM runtime `Ran 121 tests`, `OK`; method-with-values suite
+    `Ran 11 tests`, `OK`; JIT smoke passed.
+- Runner verification:
+  - `arm-results/pyperf_subset_tools_kw_pyfunc_20260503_1.log`
+  - `4 passed in 0.10s`.
+- Matrix:
+  - `arm-results/kw_pyfunc_vectorcall_matrix_20260503_1.log`
+  - 8 selected benchmarks, 5 samples, policy h512, disabled versus enabled.
+  - geomean `+0.8666%`, no >5% regressions.
+  - main rows: `go +1.56%`, `generators +4.27%`,
+    `richards +0.44%`, `raytrace -0.48%`.
+- Decision:
+  - keep as default-on micro-win.
+  - continue with policy/autojit band and/or another hot-path lowering because
+    this does not close the 30% target.
+- Scout rejected:
+  - exact-list truthiness was checked, but existing simplification already
+    removes `PyObject_IsTrue`; no code change needed there.
+
+## Session Update: 2026-05-03 (AutoJIT threshold band)
+
+- Ran the threshold band on the exclusive ARM host with multi-threaded builds:
+  - env: `CINDERX_BUILD_JOBS=8 PARALLEL=8`
+  - entrypoint: `/root/work/incoming/remote_update_build_test.sh`
+- Matrix:
+  - `arm-results/autojit_band_matrix_20260503_1.log`
+  - 8 selected benchmarks, 5 samples each.
+  - Compared `AUTOJIT=75/100/150/200` against the current production
+    comparison point `AUTOJIT=50`.
+- Result:
+  - `AUTOJIT=75`: geomean `-0.0927%`, `go -3.02%`.
+  - `AUTOJIT=100`: geomean `+0.291%`, but `go -6.15%`.
+  - `AUTOJIT=150`: geomean `-0.127%`, `go -10.12%`.
+  - `AUTOJIT=200`: geomean `-1.01%`, `go -14.77%`.
+- Decision:
+  - keep `AUTOJIT=50`; threshold-only policy tuning is not the next lever.
+
+## Session Update: 2026-05-04 (dynamic method-cache split focused repair)
+
+- Remote focused green `arm-results/dynamic_method_cache_split_green_20260503_2.log`
+  failed under the exclusive ARM entrypoint with
+  `CINDERX_BUILD_JOBS=8 PARALLEL=8`.
+- Failure shape:
+  - subprocess semantic outputs were still correct: `5`, `14`, `24`.
+  - HIR counts were `LoadMethodCacheEntryValue=0`,
+    `FillMethodCache=0`, `LoadMethodCached=0`.
+- Interpretation:
+  - the original focused test warmed a single receiver type, so Python 3.14
+    method-with-values lowering kept the call on an exact/direct path and did
+    not leave a residual `LoadMethod` for the dynamic cache split to transform.
+- Repair:
+  - changed the focused test warmup to alternate `Box` and `Other` receivers
+    before `jit.force_compile(hot)`, forcing a dynamic receiver shape.
+- Follow-up:
+  - `arm-results/dynamic_method_cache_split_green_20260504_1.log` still showed
+    `0/0/0` method-cache counts, so the receiver remained on
+    `LOAD_ATTR_METHOD_WITH_VALUES` / `VectorCall`.
+  - shape probe `arm-results/dynamic_method_shape_probe_20260504_3.log`
+    found stable residual-cache producers:
+    `slots-poly` and `getattribute-poly` both produced
+    `LoadMethodCacheEntryType=1`, `LoadMethodCacheEntryValue=1`,
+    `FillMethodCache=1`, `LoadMethodCached=0`.
+  - updated the focused regression to use a `__getattribute__` polymorphic
+    receiver and to check gate-off `LoadMethodCached` versus gate-on split.
+  - focused GREEN after the shape fix:
+    `arm-results/dynamic_method_cache_split_green_20260504_2.log`.
+    Default ARM runtime passed `Ran 122 tests in 18.569s`, `OK`; focused
+    extra test passed `Ran 1 test in 0.563s`, `OK`; JIT effectiveness smoke
+    passed with `jit-effective-ok compiled_size 976 interp_calls 10`.
+  - pyperformance runner propagation:
+    `arm-results/pyperf_subset_tools_dynamic_method_20260504_1.log`,
+    `tests/test_pyperf_subset_tools.py` passed `4 passed in 0.11s`.
+  - A/B matrix:
+    `arm-results/dynamic_method_cache_split_matrix_20260504_1.log`.
+    Disabled-vs-enabled geomean speedup was `-1.9787%` with a `deltablue`
+    warning regression of `-5.94%`.
+  - Decision:
+    keep the dynamic split gated/off by default; continue to the next
+    execution-cost candidate.
+
+## Session Update: 2026-05-04 (exact method-cache split default-on rejected)
+
+- Tried changing exact managed-dict method-cache split to default-on while
+  preserving `PYTHONJITEXACTMETHODCACHESPLIT=0` as the explicit off switch.
+- Strengthened the exact split regression:
+  - compiles a `Box.call(self, x)` method using a custom `__getattribute__`
+    shape that survives method-with-values lowering.
+  - enabled run must contain `LoadMethodCacheEntryValue` and
+    `FillMethodCache` with no `LoadMethodCached`.
+  - env `PYTHONJITEXACTMETHODCACHESPLIT=0` must fall back to
+    `LoadMethodCached`.
+  - both paths verify instance shadowing after `box.foo = lambda ...`.
+- Remote functional validation:
+  `arm-results/exact_default_dynamic_guard_green_20260504_2.log`.
+  Default ARM runtime passed `Ran 122 tests in 19.486s`, `OK`; dynamic focused
+  extra passed `Ran 1 test in 0.578s`, `OK`; JIT smoke passed with
+  `jit-effective-ok compiled_size 984 interp_calls 10`.
+- Performance validation:
+  - `arm-results/exact_method_cache_split_default_matrix_20260504_1.log`
+    compared env-disabled against default-on.
+  - disabled-vs-default geomean speedup was `-0.9831%`; no >5% row
+    regressions, but the direction does not support default enablement.
+- Decision:
+  - reverted exact split default back to off.
+  - kept the stronger env-gated regression coverage.
+  - continue with a real execution-cost optimization candidate.
+- Revert validation:
+  - `arm-results/method_cache_gated_after_revert_green_20260504_1.log`
+    passed through the remote entrypoint with
+    `CINDERX_BUILD_JOBS=8 PARALLEL=8`.
+  - default ARM runtime passed `Ran 122 tests in 19.047s`, `OK`;
+    dynamic focused extra passed `Ran 1 test in 0.599s`, `OK`;
+    JIT effectiveness smoke passed.
+
+## Session Update: 2026-05-04 (zero-arg method-with-values delayed lookup)
+
+- Added an attr-derived zero-arg method-with-values delayed lookup candidate.
+- RED:
+  - `arm-results/zero_arg_mwv_red_20260504_1.log` failed as expected because
+    final HIR still had `LoadMethod` before `VectorCall<1>`.
+- Implemented a narrow safe rule:
+  - zero-arg delayed lookup only when all caller localsplus entries are
+    initialized arguments.
+  - `PYTHONJITZEROARGMWVDELAYEDLOOKUP=0` disables the new path.
+  - zero-arg delayed lookup is restricted to attr-derived receivers and does
+    not take over direct argument receiver calls, preserving tiny bool
+    `CallMethod` optimizations.
+- Debug/fix:
+  - first full ARM matrix attempt
+    `arm-results/zero_arg_mwv_matrix_20260504_1.log` crashed three tiny bool
+    tests with subprocess return `-11`.
+  - repair focused run
+    `arm-results/zero_arg_mwv_crash_repair_20260504_1.log` passed `Ran 5
+    tests`, `OK`.
+- Verification:
+  - `arm-results/zero_arg_mwv_green_20260504_2.log`: focused/adjacent `Ran 4
+    tests`, `OK`.
+  - `arm-results/pyperf_subset_tools_zero_arg_mwv_20260504_1.log`: runner
+    propagation `4 passed`.
+  - `arm-results/zero_arg_mwv_matrix_20260504_2.log`: default ARM runtime
+    `Ran 123 tests in 19.843s`, `OK (skipped=3)`; JIT smoke passed.
+- Matrix:
+  - disabled-vs-enabled geomean speedup `+1.1655%`.
+  - no `>=5%` regressions.
+  - rows: `richards +3.86%`, `generators +3.68%`, `go +2.59%`,
+    `deltablue +0.02%`, `nqueens +0.10%`, `raytrace -0.38%`,
+    `comprehensions -0.51%`.
+- Decision:
+  - keep default-on as a scoped method-call micro-win, but continue because it
+    is still far short of the 30% target.
+
+## Session Update: 2026-05-04 (exact dict subscript helper)
+
+- Added a gated exact dict subscript helper candidate.
+- RED:
+  - `arm-results/exact_dict_subscr_red_20260504_1.log` failed as expected:
+    `JITRT_DictSubscrExact` was undefined and `DictSubscr` still called the
+    mapping slot.
+- Implementation:
+  - added `JITRT_DictSubscrExact` using `PyDict_GetItemRef`.
+  - preserves miss semantics by raising `KeyError(key)`.
+  - added `PYTHONJITEXACTDICTSUBSCR` and runner propagation.
+- Debug/fix:
+  - `arm-results/exact_dict_subscr_green_20260504_1.log` failed to compile
+    because a ternary erased the helper function pointer type.
+  - fixed by emitting explicit typed if/else `appendCallInstruction` calls.
+- Verification:
+  - `arm-results/exact_dict_subscr_green_20260504_2.log`: focused GREEN
+    `Ran 1 test`, `OK`.
+  - `arm-results/pyperf_subset_tools_exact_dict_20260504_1.log`: runner
+    propagation `4 passed`.
+  - `arm-results/exact_dict_subscr_matrix_20260504_1.log`: default ARM
+    runtime `Ran 124 tests in 19.677s`, `OK (skipped=3)`; JIT smoke passed.
+  - after switching the feature to default-off:
+    `arm-results/exact_dict_subscr_gated_20260504_1.log` passed `Ran 1 test`,
+    `OK`.
+- Matrix:
+  - disabled-vs-enabled geomean speedup `-0.4578%`.
+  - no `>=5%` regressions, but direction is negative.
+- Decision:
+  - keep gated/off by default; do not count it as a production performance
+    win.
+
+## Session Update: 2026-05-04 (method descriptor FASTCALL candidate)
+
+- New hypothesis:
+  - The existing LIR specialization only covers exact method descriptors with
+    `METH_FASTCALL`, no keywords, and exactly one explicit argument
+    (`list.pop(0)` style).
+  - Object workloads and container-heavy helper code also use inherited
+    descriptor calls with zero explicit args (`list.pop()`) and keyword-capable
+    descriptors; those currently fall back to the generic vectorcall helper.
+- Plan:
+  - add RED coverage for `list.pop()` on a heap list subclass;
+  - implement a gated generalized method-descriptor fastcall helper;
+  - use the exclusive ARM host with `CINDERX_BUILD_JOBS=8 PARALLEL=8` for all
+    RED/GREEN/matrix validation.
+- RED:
+  - `arm-results/method_descr_fastcall_red_20260504_1.log` failed as expected:
+    LIR still showed `VectorCall<1, static>` for `pop_last`, and the new helper
+    symbol was undefined.
+- GREEN:
+  - `arm-results/method_descr_fastcall_green_20260504_1.log` passed focused
+    ARM validation: `Ran 1 test`, `OK`.
+  - `arm-results/pyperf_subset_tools_method_descr_fastcall_20260504_1.log`
+    passed runner propagation: `4 passed`.
+- Matrix:
+  - `arm-results/method_descr_fastcall_matrix_20260504_1.log` completed default
+    ARM runtime, JIT smoke, and the 8-row matrix.
+  - disabled-vs-enabled geomean speedup was `-0.7497%`; no `>=5%` row
+    regressions.
+  - main rows: `generators +0.70%`, `unpack_sequence +0.34%`,
+    `go -0.97%`, `richards -1.16%`, `nqueens -3.48%`.
+- Decision:
+  - keep the generalized method descriptor helper gated/off by default. It is
+    functionally useful coverage, but not a production performance win.
+- Final gated verification:
+  - after switching `method_descr_fast_vectorcall` to default-off,
+    `arm-results/method_descr_fastcall_gated_20260504_1.log` passed the
+    focused opt-in/opt-out regression: `Ran 1 test`, `OK`.
+
+## Session Update: 2026-05-04 (inline list iterator next candidate)
+
+- RED:
+  - `arm-results/inline_list_iternext_red_20260504_1.log` failed as expected:
+    the focused LIR test found no `PyListIter_Type` direct check and still saw
+    `InvokeIterNext` helper lowering.
+- Implementation:
+  - added gated `PYTHONJITINLINELISTITERNEXT`.
+  - added LIR fast path for exact `PyListIter_Type` hot iterations:
+    type check, non-null `it_seq`, in-bounds `it_index < Py_SIZE(seq)`,
+    direct `ob_item[index]` load, index increment, and fallback to
+    `JITRT_InvokeIterNext` for non-list/exhausted/cleared cases.
+- Functional verification:
+  - `arm-results/inline_list_iternext_green_20260504_1.log`: focused LIR shape
+    plus list mutation/clear semantics passed, `Ran 2 tests`, `OK`.
+  - `arm-results/pyperf_subset_tools_inline_list_iternext_20260504_1.log`:
+    runner propagation passed, `4 passed`.
+- Refinement:
+  - the first implementation used a hot-path `Py_IncRef` call. Replaced it with
+    inline `MakeIncref` and added `BasicBlockBuilder::currentBlock()` so the
+    fast-path phi predecessor is accurate after the inline refcount blocks.
+  - `arm-results/inline_list_iternext_green_20260504_2.log`: focused
+    re-verification passed, `Ran 2 tests`, `OK`.
+- Matrix:
+  - first matrix:
+    `arm-results/inline_list_iternext_matrix_20260504_1_disabled_vs_enabled.json`
+    geomean speedup `-1.0093%`, `comprehensions -5.88%`.
+  - inline-refcount matrix:
+    `arm-results/inline_list_iternext_matrix_20260504_2_disabled_vs_enabled.json`
+    geomean speedup `-0.8079%`, `comprehensions -6.12%`.
+- Decision:
+  - keep the inline list iterator path gated/off by default. It helps
+    `nqueens/richards/raytrace` slightly in the second matrix but hurts
+    `comprehensions` enough to fail the production gate.
+- Final gated verification:
+  - after switching `inline_list_iter_next` to default-off,
+    `arm-results/inline_list_iternext_gated_20260504_1.log` passed the
+    focused opt-in/opt-out and mutation/clear tests: `Ran 2 tests`, `OK`.
+
+## Session Update: 2026-05-04 (existing instance-value store candidate)
+
+- RED/GREEN:
+  - `arm-results/store_instance_value_red_20260504_2.log` failed as expected
+    before the lowering existed.
+  - `arm-results/store_instance_value_green_20260504_2.log` passed focused ARM
+    validation: `Ran 2 tests`, `OK`.
+  - `arm-results/pyperf_subset_tools_store_instance_value_20260504_1.log`
+    passed runner propagation: `4 passed`.
+- Matrix:
+  - `arm-results/store_instance_value_matrix_20260504_1.log` completed through
+    the remote ARM entrypoint with `CINDERX_BUILD_JOBS=8 PARALLEL=8`.
+  - default ARM runtime passed: `Ran 127 tests in 19.911s`, `OK (skipped=3)`.
+  - JIT smoke passed: `jit-effective-ok compiled_size 984 interp_calls 10`.
+  - pyperformance smoke passed: `smoke-ok`.
+  - disabled-vs-enabled geomean speedup:
+    `arm-results/store_instance_value_matrix_20260504_1_disabled_vs_enabled.json`
+    reported `-3.6571%`.
+  - regressions over the `5%` gate: `raytrace -11.03%`,
+    `richards -12.22%`.
+- Decision:
+  - keep `PYTHONJITSTOREATTRINSTANCEVALUEEXISTING` gated/off by default. The
+    existing-slot semantics are correct, but the code-size/guard cost is too
+    high for the selected matrix.
+- Final gated verification:
+  - `arm-results/store_instance_value_gated_20260504_1.log` passed after the
+    default was switched off: `Ran 2 tests`, `OK`.
+
+## Session Update: 2026-05-04 (deferred-helper code-shape pass)
+
+- `precompile_all` regression:
+  - added focused coverage for deferred helpers that must not be compiled by a
+    global `jit.precompile_all()` sweep before their helper-promotion hotness
+    threshold.
+  - RED: `arm-results/deferred_helper_precompile_red_20260504_1.log` failed
+    because `precompile_all()` bypassed the deferred-helper threshold.
+  - GREEN: `arm-results/deferred_helper_precompile_green_20260504_1.log`
+    passed after filtering deferred helpers in `shouldAttemptPreloadedUnit()`.
+- Rejected code-level alternatives:
+  - dedicated deferred-helper vectorcall passed after manual call counting, but
+    the matrix stayed weak and regressed `go`/`unpack_sequence`, so it was
+    removed.
+  - removing early helper registration kept focused tests green, but dropped
+    the broader matrix to `+9.8140%` for the best `l256_h512` policy and made
+    `go` roughly `-9.25%`, so early registration was restored.
+- Current retained implementation:
+  - keep deferred helpers registered.
+  - prevent only `precompile_all` from forcing them past their threshold.
+  - use a one-query deferred-helper threshold lookup from `jitVectorcall()`.
+- Current matrix:
+  - `arm-results/deferred_helper_precompile_filter_matrix_20260504_1.log`
+    completed remote ARM runtime, focused tests, JIT smoke, and pyperformance
+    smoke.
+  - best candidate in this pass: `policy_l256_h512 +12.6712%`, but
+    `go -6.9174%`.
+- Next active hypothesis:
+  - stop pure threshold tuning and inspect code-shape classification. With
+    `PYTHONJITADMITSTATEHELPERS=1`, the `go` diagnostic compiles
+    `Board.move`, `UCTNode.select`, `ZobristHash.update`, and `EmptySet`
+    mutators, leaving `Square.find` and `EmptySet.__init__` as the main
+    deferred suspects.
+
+## Session Update: 2026-05-04 (call-containing helper skip rejected)
+
+- Added RED coverage for a recursive/call-containing state helper under the
+  tiny/no-backedge filter:
+  - RED: `arm-results/calling_state_helper_red_20260504_1.log`.
+  - GREEN after classifier change:
+    `arm-results/calling_state_helper_green_20260504_1.log`.
+  - Adjacent deferred-helper tests:
+    `arm-results/calling_state_helper_adjacent_20260504_2.log`, `Ran 5 tests`,
+    `OK`.
+- `go` diagnostics proved the classifier changed the intended state:
+  - `arm-results/go_deferred_diag_callskip_l256_h512_20260504_2.log` showed
+    `Square.find`, `Board.move`, and `UCTNode.select` no longer deferred.
+- Matrix rejected the idea:
+  - `arm-results/deferred_helper_callskip_matrix_20260504_1.log`.
+  - best geomean in this pass was only `+10.1926%`, while `go` regressed
+    `-20.3457%`.
+- Decision:
+  - revert the call-containing-helper skip classifier. The next code-level
+    path is selective admission/compilation of the problematic call-containing
+    state helpers, not removing them from the registered/deferred lifecycle.
+
+## Session Update: 2026-05-04 (calling state helper admission)
+
+- Added a new opt-in policy knob:
+  - `PYTHONJITADMITCALLINGSTATEHELPERS`.
+  - It admits simple self methods with no policy backedge when they contain a
+    call opcode and also have state mutation/subscript/predicate shape.
+- TDD:
+  - RED: `arm-results/calling_state_helper_admit_red_20260504_1.log`.
+  - GREEN: `arm-results/calling_state_helper_admit_green_20260504_1.log`.
+  - Adjacent: `arm-results/calling_state_helper_admit_adjacent_20260504_1.log`,
+    `Ran 5 tests`, `OK`.
+- Diagnostics:
+  - `arm-results/go_deferred_diag_calladmit_l256_h512_20260504_1.log` showed
+    `Square.find`, `EmptySet.__init__`, `Board.move`, and `UCTNode.select`
+    compiling under the opt-in.
+- Matrix:
+  - `arm-results/deferred_helper_calladmit_matrix_20260504_1.log`.
+  - `policy_calladmit_l256_h512` improved over same-run `policy_l256_h512`
+    from `+9.0405% / go -7.9204%` to `+9.2745% / go -6.7558%`.
+- Decision:
+  - keep the knob as research/opt-in only. It is the right direction, but not a
+    large enough win. Continue into compiled-code quality for the admitted
+    helpers.
+## Session Update: 2026-05-05 (continue performance tuning beyond fallback)
+
+- Restored the active optimization context from `task_plan.md`,
+  `progress.md`, and `findings.md`.
+- Recorded the exact `list.pop()` default-index helper evidence:
+  - RED, correctness failure, Simplify assertion failure, final GREEN, opt-out
+    RED/GREEN, and the same-run pyperformance matrix.
+- Important conclusion:
+  - `list.pop()` is a real `go` micro-win (`~+1.5%`) but does not move the
+    selected geomean; do not spend the next round on more isolated built-in
+    helper micro-optimizations unless they attack a broad call shape.
+- Current next step:
+  - inspect the remaining `LoadMethodCached + CallMethod` chain in
+    `go`/`richards` and design a bigger code-quality optimization for hot
+    object helpers.
+
+## Session Update: 2026-05-05 (fused cached method-call RED)
+
+- Added focused RED coverage for an opt-in fused cached method-call helper.
+- Remote evidence:
+  - `arm-results/cached_method_call_helper_red_20260505_1.log`
+  - the current compiler still emits `LoadMethodCached=1` and `CallMethod=1`
+    for `obj.foo(x)`, while the expected `CallMethodCached` node is absent.
+- Decision:
+  - implement the narrow fused helper path next, preserving instance
+    shadowing and class method replacement through the existing
+    `LoadMethodCache` lookup.
+
+## Session Update: 2026-05-05 (fused cached method-call GREEN)
+
+- Implemented opt-in `PYTHONJITCACHEDMETHODCALLHELPER` /
+  `-X jit-cached-method-call-helper`.
+- Added `CallMethodCached` HIR plus LIR lowering to a vectorcall-shaped helper
+  that reuses `LoadMethodCache` and then calls `JITRT_CallMethod`.
+- Correctness verification:
+  - `arm-results/cached_method_call_helper_green_20260505_4.log`
+  - default ARM runtime: `Ran 135 tests`, `OK (skipped=3)`.
+  - focused test: `Ran 1 test`, `OK`.
+- Current next step:
+  - run selected pyperformance disabled-vs-enabled matrix and keep the knob
+    research-only unless there is a clear same-run win.
+
+## Session Update: 2026-05-05 (fused cached method-call first matrix)
+
+- Matrix:
+  - `arm-results/cached_method_call_matrix_20260505_1.log`
+  - `jitlist` helper enabled vs disabled: `+3.8163%` geomean, no `>=5%`
+    regressions; strongest rows were `deltablue +15.9878%` and
+    `comprehensions +6.0068%`.
+  - policy/call-admit helper enabled vs disabled: `+2.2927%` geomean, but
+    `unpack_sequence -9.7842%`.
+- Decision:
+  - do not stop here. The signal is real but not enough, and `go` is still
+    slightly negative.
+  - next change is to lower `CallMethodCached` to fixed-arity helpers for the
+    currently admitted 0-3 explicit-argument shapes instead of the
+    vectorcall-shaped wrapper.
+
+## Session Update: 2026-05-05 (fused cached method-call fixed-arity GREEN)
+
+- Lowered `CallMethodCached` arity-0..3/no-keyword sites to fixed runtime
+  helpers instead of the vectorcall-shaped wrapper.
+- Correctness verification:
+  - `arm-results/cached_method_call_fixed_green_20260505_1.log`
+  - default ARM runtime: `Ran 135 tests`, `OK (skipped=3)`.
+  - focused fused-call test: `Ran 1 test`, `OK`.
+- Current next step:
+  - run the same selected pyperformance matrix with a fresh result prefix to
+    measure whether fixed-arity lowering grows the first matrix's `+3.8163%`
+    `jitlist` helper signal.
+
+## Session Update: 2026-05-05 (fused cached method-call fixed-arity matrix)
+
+- Matrix:
+  - `arm-results/cached_method_call_fixed_matrix_20260505_1.log`
+- Result:
+  - `jitlist` helper enabled vs disabled: `+2.4868%` geomean, with
+    `go +1.3641%`, `richards +6.3018%`, but `nqueens -5.8863%` and
+    `raytrace -7.6494%`.
+  - policy/call-admit helper enabled vs disabled: `+3.0238%` geomean, with
+    `go +1.8841%`, `richards +2.5408%`, and no `>=5%` regressions.
+- Decision:
+  - the fixed helper does improve the policy/object-heavy mode and turns `go`
+    positive, but pure `jitlist` stability is not good enough.
+  - continue with a larger code-level reduction in cached method-call runtime
+    overhead instead of stopping at wrapper removal.
+
+## Session Update: 2026-05-05 (small-int cached method-call fusion)
+
+- Added a focused test for `obj.foo(1)` in the dynamic method lookup shape.
+- Debugging note:
+  - first RED attempt was invalid because the test hit a 3.14 specialized
+    method path with `LoadMethod=0` and `CallMethod=0`.
+  - corrected RED forced the dynamic path via `__getattribute__` and failed
+    with `CallMethodCached=0`, `LoadMethod=1`, `CallMethod=1`.
+- Correctness verification:
+  - RED: `arm-results/cached_method_call_small_int_red_20260505_2.log`
+  - GREEN: `arm-results/cached_method_call_small_int_green_20260505_2.log`
+  - default ARM runtime: `Ran 136 tests`, `OK (skipped=3)`.
+  - focused test: `Ran 1 test`, `OK`.
+- Current next step:
+  - run the same pyperformance matrix again with a new prefix to see whether
+    admitting `LOAD_SMALL_INT` grows the fixed-arity helper's real benchmark
+    signal.
+
+## Session Update: 2026-05-05 (small-int fusion rejected by matrix)
+
+- Matrix:
+  - `arm-results/cached_method_call_smallint_matrix_20260505_1.log`
+- Result:
+  - `jitlist` helper enabled vs disabled fell to `+1.6418%` geomean and still
+    had regressions (`raytrace`, `unpack_sequence`).
+  - policy/call-admit helper enabled vs disabled fell to `+0.7195%` geomean
+    and regressed `unpack_sequence -29.0282%`.
+- Decision:
+  - remove `LOAD_SMALL_INT` expansion from the active patch. It increases HIR
+    coverage but makes benchmark quality worse.
+  - next code-level optimization should reduce per-call cached-hit overhead for
+    already-profitable fused method calls instead of admitting more low-profit
+    call shapes.
+
+## Session Update: 2026-05-05 (borrowed-self cached hit)
+
+- Removed the rejected `LOAD_SMALL_INT` expansion from the active patch.
+- Added `LoadMethodCache::lookupForCall()` for immediate fused-call use:
+  cached hits return a strong callable but borrow receiver/self.
+- Correctness verification:
+  - `arm-results/cached_method_call_borrowed_self_green_20260505_1.log`
+  - default ARM runtime: `Ran 135 tests`, `OK (skipped=3)`.
+  - focused fused-call test: `Ran 1 test`, `OK`.
+- Current next step:
+  - run the fixed helper matrix again to measure whether avoiding self
+    refcount churn increases the `policy_calladmit` and `jitlist` helper
+    signals without reintroducing small-int row instability.
+
+## Session Update: 2026-05-05 (borrowed-self matrix)
+
+- Matrix:
+  - `arm-results/cached_method_call_borrowed_self_matrix_20260505_1.log`
+- Result:
+  - `jitlist` helper enabled vs disabled: `+1.9028%` geomean,
+    `go +0.6270%`, `richards +5.3833%`, but `unpack_sequence -17.4759%`.
+  - policy/call-admit helper enabled vs disabled: `+5.0020%` geomean, no
+    `>=5%` regressions, but `go -2.1536%`.
+- Decision:
+  - this is the best policy-mode helper result so far, but not sufficient.
+  - continue reducing direct user-method call overhead before attempting a
+    broader enablement decision.
+
+## Session Update: 2026-05-05 (resolved direct method-call GREEN)
+
+- Added a direct resolved-call path inside the fused cached method-call helper:
+  after cache lookup, no-keyword resolved Python functions call their vectorcall
+  slot directly instead of bouncing through `JITRT_CallMethod()`.
+- Correctness verification:
+  - `arm-results/cached_method_call_resolved_direct_green_20260505_1.log`
+  - default ARM runtime: `Ran 135 tests`, `OK (skipped=3)`.
+  - focused fused-call test: `Ran 1 test`, `OK`.
+- Current next step:
+  - run the same selected pyperformance matrix with a new prefix and compare
+    against the borrowed-self and fixed-arity helper results. If this does not
+    increase the policy-mode signal, move on to call-site coverage or a deeper
+    cached-call fast path rather than tuning thresholds.
+
+## Session Update: 2026-05-05 (resolved direct method-call rejected)
+
+- Matrix:
+  - `arm-results/cached_method_call_resolved_direct_matrix_20260505_1.log`
+- Result:
+  - `jitlist` helper enabled vs disabled: only `+0.0931%` geomean, with
+    `raytrace -6.0157%` and `unpack_sequence -31.7946%`.
+  - policy/call-admit helper enabled vs disabled: `+4.5065%` geomean, below
+    the borrowed-self `+5.0020%`, with `nqueens -5.7163%`.
+- Decision:
+  - removed the direct resolved-call helper from the active implementation.
+  - keep moving toward larger收益 through call-site coverage and lookup-path
+    reduction, not more wrapper bypasses that the matrix does not support.
+
+## Session Update: 2026-05-05 (method-with-values fallback cached-call matrix)
+
+- Added and verified a narrow `LOAD_ATTR_METHOD_WITH_VALUES` fallback coverage
+  path for opt-in fused cached method calls.
+- Correctness verification:
+  - RED: `arm-results/cached_method_call_mwv_fallback_red_20260505_1.log`
+  - GREEN: `arm-results/cached_method_call_mwv_fallback_green_20260505_1.log`
+  - default ARM runtime: `Ran 136 tests`, `OK (skipped=3)`.
+  - focused cached-call tests: `Ran 2 tests`, `OK`.
+- Coverage diagnostic:
+  - `arm-results/cached_method_call_mwv_fallback_coverage_diag_20260505_1.log`
+  - helper enabled converted the 88-row diagnostic from
+    `CallMethodCached=21`, `LoadMethodCached=121`, `CallMethod=144`,
+    `VectorCall=238` to `CallMethodCached=90`, `LoadMethodCached=52`,
+    `CallMethod=77`, `VectorCall=172`.
+- Matrix:
+  - `arm-results/cached_method_call_mwv_fallback_matrix_20260505_1.log`
+  - `jitlist` helper enabled vs disabled: `+2.9331%` geomean with
+    `richards +5.0806%`, `deltablue +15.7638%`, but `raytrace -8.1068%`.
+  - policy/call-admit helper enabled vs disabled: `+8.0560%` geomean,
+    no `>=5%` regressions, with `richards +8.1090%`,
+    `deltablue +19.8515%`, `unpack_sequence +25.5224%`, but `go -0.2467%`.
+- Decision:
+  - keep this expansion as the best current policy-mode cached-call result.
+  - continue with `go` residual HIR/LIR analysis because ordinary method-call
+    coverage is no longer the main missing piece for that benchmark.
+
+## Session Update: 2026-05-05 (combo scout and residual split rejected)
+
+- Recorded the post-cached-call combo scout in `findings.md`.
+- Result:
+  - method-value inliner combinations are negative (`-4.2215%` alone and
+    `-3.5168%` with dynamic split), with row regressions.
+  - dynamic method-cache split on top of policy cached-call is a small positive
+    scout result: `+2.0651%` geomean, no `>=5%` regressions, but `go -0.4702%`.
+- Residual split full matrix:
+  - RED: `arm-results/cached_method_call_residual_split_red_20260505_1.log`.
+  - GREEN: `arm-results/cached_method_call_residual_split_green_20260505_1.log`,
+    default ARM runtime `Ran 138 tests`, focused test `Ran 1 test`, smoke OK.
+  - Matrix: `arm-results/cached_method_call_residual_split_matrix_20260505_1.log`.
+  - `jitlist` disabled-vs-enabled: `+0.0976%` geomean, `go -3.2924%`,
+    regressions in `raytrace` and `unpack_sequence`.
+  - `policy_calladmit_l256_h512` disabled-vs-enabled: `+4.1746%` geomean,
+    `go -0.7870%`, no `>=5%` regressions.
+- Decision:
+  - reject auto-enabling residual dynamic split for the cached-call helper path.
+  - keep the method-with-values fallback cached-call result as the current best
+    policy-mode helper signal (`+8.0560%`).
+- Next step:
+  - stop expanding low-profit call shapes and inspect remaining `go`/`richards`
+    code shapes for a larger code-level optimization, especially object state
+    accesses and exact-container operations that current type propagation may
+    fail to expose.
+
+## Session Update: 2026-05-05 (calling-state passthrough fixed)
+
+- Found a benchmark harness correctness gap:
+  - `scripts/arm/run_pyperf_subset.sh` passed
+    `PYTHONJITADMITSTATEHELPERS` but not
+    `PYTHONJITADMITCALLINGSTATEHELPERS`.
+  - older `policy_calladmit_l256_h512` labels therefore may not mean the
+    worker actually saw calling-state admission.
+- TDD through the remote entrypoint:
+  - RED:
+    `arm-results/pyperf_subset_admit_calling_passthrough_red_20260505_2.log`
+    failed the new passthrough/probe assertions.
+  - GREEN:
+    `arm-results/pyperf_subset_admit_calling_passthrough_green_20260505_1.log`
+    passed the same pytest slice with `2 passed`.
+- Corrected 5-sample matrix:
+  - `arm-results/cached_method_call_mwv_calladmit_passthrough_matrix_20260505_1.log`.
+  - `--inherit-environ` now includes `PYTHONJITADMITCALLINGSTATEHELPERS`.
+  - helper enabled vs disabled under real calling-state admission:
+    `+2.4564%` geomean, `go +0.3638%`, `richards +4.9580%`,
+    no `>=5%` regressions.
+- Decision:
+  - keep the harness fix as measurement-chain repair.
+  - do not treat this as the larger收益 path; proceed to JIT code work.
+  - next candidate: fixed-arity keyword cached-call helpers for already-fused
+    `CALL_KW` method calls.
+
+## Session Update: 2026-05-05 (CALL_KW fixed cached-call helper)
+
+- Added focused LIR coverage for already-fused `CALL_KW` cached method calls.
+- Remote TDD:
+  - RED:
+    `arm-results/cached_method_call_kw_fixed_lir_red_20260505_1.log`.
+  - GREEN:
+    `arm-results/cached_method_call_kw_fixed_lir_green_20260505_1.log`.
+  - adjacent:
+    `arm-results/cached_method_call_kw_fixed_adjacent_20260505_2.log`,
+    default ARM runtime `Ran 138 tests`, `OK (skipped=3)`, focused cached-call
+    tests `Ran 4 tests`, `OK`.
+- Performance:
+  - corrected 8-row policy/call-admit matrix:
+    `arm-results/cached_method_call_kw_fixed_matrix_20260505_2.log`,
+    geomean speedup `+2.8114%`, no `>=5%` regressions, but `go -3.9115%`.
+  - focused 7-sample repeat:
+    `arm-results/cached_method_call_kw_fixed_go_repeat_20260505_1.log`,
+    geomean speedup `-0.4516%`, `go -2.4291%`,
+    `richards +3.9263%`, `raytrace -3.0014%`.
+- Decision:
+  - this is correct but not the big收益 path.
+  - next: TDD a more direct `go` residual shape, starting with
+    `obj.foo(arg.value)` cached-call coverage while protecting method-lookup
+    versus argument-attribute exception ordering.
+
+## Session Update: 2026-05-05 (CALL_METHOD fixed helper matrix)
+
+- Added and verified focused coverage for the `obj.foo(arg.value)`-style
+  residual method-call shape.
+- Remote evidence:
+  - coverage RED:
+    `arm-results/cached_method_call_attr_arg_red_20260505_1.log`.
+  - LIR RED/GREEN:
+    `arm-results/call_method_attr_arg_fixed_lir_red_20260505_1.log`,
+    `arm-results/call_method_attr_arg_fixed_lir_green_20260505_1.log`.
+  - adjacent:
+    `arm-results/call_method_fixed_adjacent_20260505_2.log`,
+    `arm-results/call_method_fixed_focused_adjacent_20260505_1.log`.
+- Matrix:
+  - `arm-results/call_method_fixed_matrix_20260505_1.log`.
+  - policy/call-admit method-helper enabled vs disabled:
+    `+4.0625%` geomean, no `>=5%` regressions, but `go -3.0040%`.
+- Decision:
+  - not a mainline performance breakthrough; it is weaker than the current
+    best method-with-values fallback cached-call result (`+8.0560%`) and still
+    moves `go` the wrong way.
+  - next active RED is
+    `arm-results/call_method_fixed_plain_function_red_20260505_1.log`, checking
+    a plain-function safety/coverage gap before any broader admission.
+
+## Session Update: 2026-05-05 (merge readiness and combined matrix)
+
+- User asked to list all optimizations, run them together, compute distance to
+  the `30%` target, and split mergeable work into commits on a new branch from
+  remote `bench-cur-7c361dce`.
+- Added a merge-readiness table to `findings.md` covering:
+  default-on micro wins, gated/off policy tools, rejected experiments, and
+  next high-leverage candidates.
+- Ran combined matrix through the standard remote entrypoint:
+  - first attempt failed because the remote tarball had already been consumed.
+  - second attempt reached post-pyperf but failed because the temporary matrix
+    script tried to execute non-executable `run_pyperf_subset.sh` directly.
+  - third attempt succeeded after switching to `bash run_pyperf_subset.sh`.
+- Final combined result:
+  - log: `arm-results/combined_optimization_matrix_20260505_3.log`.
+  - `baseline_disabled` vs `combo_all_retained`:
+    geomean speedup `+7.3867%`, still `22.6133` percentage points short of
+    `30%`; `go` regressed `-10.1161%`.
+  - `baseline_disabled` vs `combo_all_plus_generated`:
+    geomean speedup `+9.9362%`, still `20.0638` percentage points short of
+    `30%`; `go` regressed `-11.1533%` and `raytrace` regressed `-5.4563%`.
+- Decision:
+  - do not default-enable the full policy/cached-call combo.
+  - split commits so runner/measurement fixes, default-safe micro wins, and
+    gated/off research knobs are distinguishable.

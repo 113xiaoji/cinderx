@@ -4,7 +4,211 @@
 Keep the issue31 instance-attr specialization gains while removing the severe raytrace regression introduced by commit `4c14dd10`.
 
 ## Current Phase
-Tiered-JIT functionality quality pass: prioritize completing the unified per-function tier state model, promotion/fallback/invalidation telemetry, pending-baseline cleanup, and regression coverage before returning to pyperformance tuning. Performance work remains paused until this state model is stable under the remote ARM verification loop.
+Pyperformance JIT performance tuning wave: build an extended benchmark scoreboard and then iterate on test-first JIT optimizations until the selected benchmark set reaches at least 30% geometric-mean speedup versus the current JIT baseline, without skipping correctness blockers or failing benchmarks.
+
+## Current Performance Tuning Addendum
+- [x] Define the extended JIT-relevant pyperformance set:
+  - `richards,go,deltablue,raytrace,nqueens`
+  - `generators,coroutines,comprehensions,unpack_sequence,chaos,logging,coverage`
+  - `nbody,spectral_norm,scimark,float,fannkuch`
+  - `pickle,pickle_dict,pickle_list,json_dumps,json_loads`
+- [x] Define the stop metric as candidate-versus-current-JIT-baseline geometric mean speedup.
+- [x] Keep no-JIT measurements as an upside/capability map, not as the stop baseline.
+- [x] Add scoreboard support for per-benchmark ratios and geomean speedup.
+- [x] Add explicit pyperformance subset modes for `autojit` and `nojit`.
+- [x] Run the current branch extended unfiltered `autojit50` baseline through `/root/work/incoming/remote_update_build_test.sh`.
+- [x] Run the no-JIT capability baseline through `/root/work/incoming/remote_update_build_test.sh`.
+- [x] Run the filtered `jitlist` baseline through `/root/work/incoming/remote_update_build_test.sh`.
+- [x] Rank the first production optimization candidate from fresh matrix evidence.
+- [~] For each production candidate, use RED/GREEN TDD through the remote entrypoint.
+- [ ] Stop only when geomean time ratio is `<= 0.70` and functional verification is green.
+- Latest active loop:
+  - specialized set/dict contains lowering is functionally complete and
+    verified through the remote entrypoint.
+  - focused gate RED:
+    `arm-results/specialized_set_contains_gate_red_20260503_1.log`.
+  - focused gate GREEN:
+    `arm-results/specialized_set_contains_gate_green_20260503_1.log`.
+  - adjacent ARM runtime:
+    `arm-results/specialized_set_contains_adjacent_20260503_3.log`,
+    `Ran 120 tests`, `OK`; smoke passed.
+  - pyperformance runner pytest:
+    `arm-results/pyperf_subset_tools_specialized_contains_20260503_1.log`,
+    `4 passed`.
+  - 8-row matrix:
+    `arm-results/specialized_contains_matrix_20260503_1.log`.
+  - disabled-vs-enabled result:
+    `geomean_time_ratio = 0.9995066378813695`,
+    `geomean_speedup_pct = 0.04933621186304915`, no >5% regressions.
+  - decision:
+    keep gated, but continue optimization because this does not move the
+    selected-workload target.
+  - KW exact PyFunction vectorcall:
+    `arm-results/kw_exact_pyfunc_gate_green_20260503_1.log` focused GREEN;
+    `arm-results/kw_exact_pyfunc_adjacent_20260503_2.log` adjacent GREEN;
+    `arm-results/kw_pyfunc_vectorcall_matrix_20260503_1.log` selected 8-row
+    matrix.
+  - KW vectorcall matrix result:
+    `geomean_time_ratio = 0.991333621477996`,
+    `geomean_speedup_pct = 0.8666378522004026`, no >5% regressions.
+  - decision:
+    keep default-on as a scoped micro-win; continue, because combined evidence
+    is still well short of `geomean_time_ratio <= 0.70`.
+  - AutoJIT threshold band:
+    `arm-results/autojit_band_matrix_20260503_1.log`, 8 rows, 5 samples,
+    policy h512, thresholds 50/75/100/150/200.
+  - threshold result versus `AUTOJIT=50`:
+    `75 = -0.0927% geomean, go -3.02%`;
+    `100 = +0.291% geomean, go -6.15%`;
+    `150 = -0.127% geomean, go -10.12%`;
+    `200 = -1.01% geomean, go -14.77%`.
+  - threshold decision:
+    keep `AUTOJIT=50`; global threshold bump is not viable for the target
+    object workload mix.
+- Latest matrix note:
+  - pyperformance expands `logging` and `scimark`, so the selected list becomes
+    28 concrete benchmark rows.
+  - unfiltered `MODE=autojit AUTOJIT=50` versus `MODE=nojit` produced
+    `geomean_time_ratio = 6.7114`, meaning broad unfiltered auto-JIT is much
+    slower overall on this suite.
+  - filtered `MODE=jitlist` versus unfiltered `autojit50` produced
+    `geomean_time_ratio = 0.2828`, a `71.7%` time reduction against the bad
+    unfiltered JIT baseline.
+  - filtered `MODE=jitlist` versus no-JIT still produced
+    `geomean_time_ratio = 1.8979`, so compile selection fixes the worst policy
+    damage but does not make the JIT broadly profitable yet.
+  - high-threshold `autojit1000` versus unfiltered `autojit50` produced only
+    `geomean_time_ratio = 0.9607`, so a global threshold increase is not a
+    meaningful fix.
+  - filtered delayed `jitlist-autojit50` versus eager `jitlist` produced
+    `geomean_time_ratio = 3.3843`, showing delayed compile transition costs are
+    bad for this pyperformance single-value harness.
+  - immediate implication: keep eager filtered `jitlist` as the policy oracle,
+    then pursue a real execution-cost candidate. Current top HIR/LIR candidate:
+    exact list/tuple/range `FOR_ITER` lowering.
+  - `FOR_ITER_LIST` builder-time HIR specialization was tested and rejected for
+    now: during JIT compile, C++ observed the base `FOR_ITER` opcode even when
+    Python adaptive disassembly showed `FOR_ITER_LIST`.
+  - current implementation path: exact list-iterator fast path inside existing
+    `JITRT_InvokeIterNext`, followed by remote functional verification and
+    pyperformance comparison.
+  - list-iterator helper result:
+    - focused remote `Ran 1 test`, `OK`
+    - adjacent remote `Ran 8 tests`, `OK`
+    - 8-row pyperformance subset `geomean_time_ratio = 0.9849120157035239`
+    - no `>=5%` row regressions
+    - decision: small safe win, not enough for the 30% stop target.
+  - tuple/range iterator helper extension result:
+    - focused remote `Ran 2 tests`, `OK`
+    - adjacent remote `Ran 9 tests`, `OK`
+    - 8-row pyperformance subset `geomean_time_ratio = 0.9855222065914018`
+    - no `>=5%` row regressions
+    - decision: builtin iterator helper family is clean but still only about
+      `1.5%`, so continue to a larger execution-cost candidate.
+  - loop-heavy jitlist policy simulation:
+    - 8-row pyperformance subset `geomean_time_ratio = 0.7474786908573173`
+      versus full eager `jitlist`
+    - close to the `<=0.70` stop target, but not enough
+    - blocker: `go` regressed `19.1681%`
+    - next: refine object-helper admission instead of landing a pure
+      loop-heavy policy.
+  - refined object-helper policy simulation:
+    - 8-row pyperformance subset `geomean_time_ratio = 0.775399315072543`
+      versus full eager `jitlist`
+    - `go` recovered, but `generators` and `richards` regressed beyond the
+      warning gate
+    - conclusion: a single positive jitlist profile is not robust enough.
+  - credible harness correction after worker venv/wheel fix:
+    - the pyperformance wrapper now creates the declared worker venv and
+      installs the fresh CinderX wheel into the actual timed worker Python.
+    - corrected `AUTOJIT=0` probe compiled benchmark functions such as
+      `__main__:Task.qpkt`, proving timed workers now use the built JIT.
+  - latest credible 8-row matrix:
+    - no-JIT vs autojit0:
+      `geomean_time_ratio = 4.135672727365508`
+    - no-JIT vs autojit50:
+      `geomean_time_ratio = 17.073658059316212`
+    - autojit50 vs stateful deferred autojit50:
+      `geomean_time_ratio = 0.8721901131266123`
+    - no-JIT vs stateful deferred autojit50:
+      `geomean_time_ratio = 14.891475754240103`
+  - current decision:
+    - broad JIT enablement is still far below the 30% speedup target versus
+      no-JIT on the selected debug-single-value suite.
+    - dynamic deferred helper promotion is a meaningful improvement versus
+      broad autojit50, but not sufficient.
+    - next phase is a corrected compile-selection benchmark pass: filtered
+      `jitlist` and `jitlist-autojit` after the worker venv/wheel fix.
+  - corrected `jitlist`/`jitlist-autojit` benchmark pass:
+    - remote log: `arm-results/jitlist_matrix_20260503_2.log`
+    - same entrypoint run passed 110 ARM runtime tests and JIT effectiveness
+      smoke.
+    - no-JIT vs eager `jitlist __main__:*`:
+      `geomean_time_ratio = 4.11819462384738`
+    - no-JIT vs `jitlist-autojit50`:
+      `geomean_time_ratio = 17.10706585856534`
+    - `jitlist-autojit50` vs stateful deferred `jitlist-autojit50`:
+      `geomean_time_ratio = 0.8781559168729067`
+    - decision: compile selection by `__main__:*` is not sufficient; next
+      production policy should explicitly protect cold/short/generated code
+      from optimized compilation until runtime hotness evidence is stronger.
+- Generated-code cold filter phase:
+  - [x] Add local RED wrapper contract for `PYTHONJITFILTERGENERATED`.
+  - [x] Implement default-off `jit-filter-generated` /
+    `PYTHONJITFILTERGENERATED`.
+  - [x] Keep local wrapper/hook tests green.
+  - [x] Run remote ARM RED/GREEN for
+    `ArmRuntimeTests.test_generated_code_filter_skips_comprehension_code`.
+    - remote log: `arm-results/generated_filter_green_20260503_1.log`
+    - default ARM runtime: `Ran 111 tests in 17.005s`, `OK (skipped=3)`
+    - focused generated-filter test: `ok`
+    - JIT effectiveness smoke: `jit-effective-ok compiled_size 976 interp_calls 10`
+  - [x] Run a corrected pyperformance matrix with generated filtering.
+  - [x] Write final generated-filter benchmark result to `findings.md`.
+  - Matrix result:
+    - remote/local log:
+      `arm-results/generated_filter_matrix_20260503_1.log`
+    - `jitlist` vs `generated_jitlist`:
+      `geomean_time_ratio = 0.9917048374233595`
+    - `jitlist` vs `generated_stateful_deferred_jitlist`:
+      `geomean_time_ratio = 0.8679698298110454`, but `go` regressed
+      `20.60%` and `richards` regressed `15.68%`
+    - `jitlist-autojit50` vs generated+stateful deferred `jitlist-autojit50`:
+      `geomean_time_ratio = 0.8633087797836041` with no >=5% regressions
+    - decision: generated filtering alone is not a 30% path; the next
+      performance slice must address object/state method-call cost while
+      preserving the policy wins on `deltablue`, `nqueens`, and `raytrace`.
+- Attr-state deferred helper promotion phase:
+  - [x] RED remote focused test for attr-only `self` helper deferral.
+  - [x] Extend deferred helper classifier to attribute load/store helper shapes.
+  - [x] GREEN remote focused test.
+  - [ ] Rerun attr-helper pyperformance matrix after remote SSH recovers.
+  - [ ] If `go`/`richards` recover without losing geomean, keep and expand
+    verification; otherwise refine or revert this candidate.
+
+- Dynamic object method-call cost phase:
+  - [x] Add exact `list.pop()` default-index helper and opt-out coverage.
+  - [x] Verify helper through the remote ARM entrypoint.
+  - [x] Run same-run list-pop pyperformance matrix.
+  - [x] Record that `go` improves by roughly `+1.5%` but selected geomean does
+    not improve.
+  - [x] Capture post-helper `go`/`richards` code-shape diagnostics.
+  - [ ] Pick the next bigger candidate that reduces the remaining
+    `LoadMethodCached + CallMethod` cost rather than only changing fallback or
+    thresholds.
+  - [ ] Prove the candidate with RED/GREEN remote tests before performance
+    claims.
+  - [ ] Run the selected pyperformance matrix and update `findings.md`.
+
+- Merge-readiness / combined optimization phase:
+  - [x] List all default-on, gated/off, rejected, and removed optimization
+    attempts in `findings.md`.
+  - [x] Run a same-entrypoint combined matrix for current retained switches.
+  - [x] Compute distance to the `30%` selected-workload target.
+  - [ ] Create a new branch from remote `bench-cur-7c361dce`.
+  - [ ] Split commits into benchmark tooling, JIT optimization/policy code, and
+    evidence docs.
+  - [ ] Verify the commit branch through the remote entrypoint before push.
 
 ## Current Quality Pass Addendum
 - [x] Debug and fix the `precompile_all(workers=2)` crash in the compile-failure cooldown test.
@@ -777,3 +981,126 @@ Tiered-JIT functionality quality pass: prioritize completing the unified per-fun
   - [x] focused 23-test object/JIT/OSR regression suite
   - [x] object-heavy matrix
   - outcome: correctness-clean, small `go` signal, mixed/noise-sized broader matrix; continue looking for stronger default throughput gain
+- State-helper admission retry:
+  - [x] RED/GREEN for opt-in subscript-state helper admission
+  - [x] reject broad attr-only admission with benchmark evidence
+  - [x] run subscript-only matrix through the remote entrypoint
+  - outcome: `11.37%` geomean speedup versus full eager `jitlist`, but still
+    misses the target because `go` regresses `24.64%` and `richards` regresses
+    `6.23%`
+- Next selected candidate:
+  - dynamic delayed helper promotion instead of static helper admission
+  - goal: preserve no-backedge loop-heavy wins while selectively recovering hot
+    object helpers after runtime evidence
+  - first TDD target: a skipped no-backedge helper remains interpreted before
+    its promotion threshold, then becomes compiled after enough calls, while
+    compile failures/backoff prevent repeated blind promotion
+- Deferred helper promotion status:
+  - [x] focused RED/GREEN for stateful subscript-only deferred helper promotion
+  - [x] adjacent ARM runtime verification through the remote entrypoint
+  - [x] precise full `test_jit_tiering` verification through the remote
+    entrypoint
+  - [x] pyperformance wrapper TDD fix for explicit worker `CINDERX_DISABLE`
+    propagation
+  - [x] remote worker probe proving nojit disables JIT and autojit/jitlist can
+    compile a probe function
+  - [ ] resolve why the selected `--debug-single-value` pyperformance subset
+    still shows near-zero JIT/no-JIT separation
+  - [ ] only after the benchmark harness shows real JIT sensitivity, continue
+    tuning policy thresholds or machine-code optimizations toward the 30%
+    selected-workload target
+
+- Attr-state deferred helper promotion refinement:
+  - [x] focused RED/GREEN for attr-state helper deferral
+  - [x] rerun attr-helper pyperformance matrix after remote recovery
+  - [x] record matrix result in `findings.md`
+  - [x] narrow attr-helper classification to avoid raytrace-like regressions
+  - [x] validate refined classifier through focused remote tests
+  - [x] rerun corrected pyperformance matrix with multi-threaded build
+  - [x] test promotion-threshold variants for complex attr predicates
+  - [x] test tiny-filter threshold variants with helper threshold 512
+  - [x] confirm best tiny-filter candidates with higher sample count
+  - [x] collect function-level go telemetry for eager baseline vs deferred policy
+  - [x] scout lower helper-promotion thresholds for go recovery
+  - [x] TDD the warmed method-with-values specialized Python-call lowering gap
+  - [x] patch and verify the narrow HIRBuilder fast path if RED confirms it
+  - [x] rerun selected pyperformance matrix after call-shape fix
+  - [x] TDD remaining `CALL_KW_PY` method-with-values gaps in `go`
+  - [x] keep/refine/revert the attr widening based on matrix evidence
+  - [x] collect post-KW HIR/compile telemetry for remaining generic method
+    calls and non-call costs in `Board.move`, `Square.move`, `Board.useful`,
+    and `UCTNode.play`
+  - [x] test and reject deopt-only miss fallback for delayed
+    method-with-values after benchmark evidence showed a direct slowdown
+  - [x] test selective method-value-only HIR inliner as an opt-in candidate and
+    reject default enablement after the selected matrix regressed geomean by
+    `1.97%`
+  - [ ] diagnose why method-value inlining is not throughput-positive
+  - [ ] rank the next production optimization candidate from post-KW and
+    post-inliner telemetry instead of continuing blind threshold tuning
+
+- Method-descriptor FASTCALL generalization phase:
+  - [x] Add a RED LIR regression for inherited exact method descriptors with
+    zero explicit arguments, starting with `list.pop()`.
+  - [x] Add a gated vectorcall-shaped helper for additional
+    `PyMethodDescr_Type` `METH_FASTCALL` / `METH_FASTCALL|METH_KEYWORDS`
+    shapes while preserving the existing `list.pop(0)` fast path.
+  - [x] Verify focused ARM RED/GREEN through
+    `/root/work/incoming/remote_update_build_test.sh` with
+    `CINDERX_BUILD_JOBS=8 PARALLEL=8`.
+  - [x] Run runner propagation and selected pyperformance matrix; keep
+    default-on only if the disabled-vs-enabled matrix is positive with no
+    `>=5%` row regressions.
+  - [x] Matrix was negative (`geomean_speedup_pct = -0.7497%`), so keep the
+    feature gated/off by default.
+
+- Inline list iterator next phase:
+  - [x] Add a RED LIR regression proving list iterator loops do not currently
+    contain an inline `PyListIter_Type` fast-path check.
+  - [x] Implement a gated LIR hot path for exact list iterators while keeping
+    `JITRT_InvokeIterNext` for fallback/exhaustion.
+  - [x] Verify focused LIR shape and list mutation/clear semantics through the
+    ARM entrypoint.
+  - [x] Replace the initial `Py_IncRef` helper call with inline `MakeIncref`
+    and re-verify focused tests.
+  - [x] Run two disabled-vs-enabled matrices; both were negative, and
+    `comprehensions` regressed beyond `5%`.
+  - [x] Keep `PYTHONJITINLINELISTITERNEXT` gated/off by default.
+
+- Existing instance-value store phase:
+  - [x] Add RED coverage proving existing `STORE_ATTR_INSTANCE_VALUE` still
+    lowers through cached store machinery before the candidate.
+  - [x] Implement a gated direct `StoreField` lowering for non-empty
+    split-dict inline-value slots, with empty-slot fallback to preserve
+    attribute insertion-order semantics.
+  - [x] Verify focused ARM RED/GREEN through the remote entrypoint with
+    `CINDERX_BUILD_JOBS=8 PARALLEL=8`.
+  - [x] Run runner propagation and selected pyperformance matrix.
+  - [x] Matrix was negative (`geomean_speedup_pct = -3.6571%`) with
+    `raytrace` and `richards` over the `5%` regression gate, so keep
+    `PYTHONJITSTOREATTRINSTANCEVALUEEXISTING` gated/off by default.
+  - [x] Run final focused gated/off verification after switching the default.
+
+- Deferred-helper code-shape phase:
+  - [x] Add RED/GREEN coverage proving `precompile_all()` must not compile
+    deferred helpers before the helper-promotion threshold.
+  - [x] Keep early registration, but filter `precompile_all` attempts for
+    deferred helpers.
+  - [x] Reject the dedicated deferred-helper vectorcall after matrix evidence.
+  - [x] Reject removing early registration after matrix evidence.
+  - [x] Run current precompile-filter matrix and record the remaining `go`
+    regression.
+  - [x] Collect `go` function-state diagnostics with and without
+    `PYTHONJITADMITSTATEHELPERS`.
+  - [x] Test and reject skipping call-containing state helpers after the
+    selected matrix made `go` regress by roughly `20%`.
+  - [x] Revert the rejected skip classifier.
+  - [x] Design selective admission for call-containing state helpers that need
+    registration and compilation rather than long deferred interpretation.
+  - [x] Add focused RED coverage for that admission rule before
+    implementation.
+  - [x] Re-run adjacent ARM runtime and selected pyperformance matrix through
+    the remote entrypoint.
+  - [ ] Inspect compiled HIR/LIR quality for admitted `go` helpers, especially
+    recursive method calls and state attribute accesses in `Square.find` and
+    dispatch paths in `Board.move`/`UCTNode.select`.
