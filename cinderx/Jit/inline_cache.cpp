@@ -1197,6 +1197,47 @@ LoadMethodResult LoadMethodCache::lookup(
   return lookupSlowPath(obj, name);
 }
 
+LoadMethodCache::CallResult LoadMethodCache::lookupForCall(
+    BorrowedRef<> obj,
+    BorrowedRef<> name) {
+  BorrowedRef<PyTypeObject> tp = Py_TYPE(obj);
+
+  auto return_cached = [&](const Entry& entry) -> CallResult {
+    PyObject* result = entry.value;
+    Py_INCREF(result);
+    return {result, obj.get(), true};
+  };
+
+  auto& first_entry = entries_[0];
+  if (first_entry.type == tp) {
+#if PY_VERSION_HEX >= 0x030C0000
+    if (isValidKeysVersion(first_entry.keys_version, obj)) {
+      return return_cached(first_entry);
+    }
+#else
+    return return_cached(first_entry);
+#endif
+  }
+
+  for (auto it = std::next(entries_.begin()); it != entries_.end(); ++it) {
+    auto& entry = *it;
+    if (entry.type != tp) {
+      continue;
+    }
+#if PY_VERSION_HEX >= 0x030C0000
+    if (!isValidKeysVersion(entry.keys_version, obj)) {
+      continue;
+    }
+#endif
+
+    std::swap(first_entry, entry);
+    return return_cached(first_entry);
+  }
+
+  LoadMethodResult result = lookupSlowPath(obj, name);
+  return {result.callable, result.self_or_null, false};
+}
+
 void LoadMethodCache::typeChanged(PyTypeObject* type) {
   for (auto& entry : entries_) {
     if (entry.type == type) {

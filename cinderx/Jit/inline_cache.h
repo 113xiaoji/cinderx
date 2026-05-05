@@ -290,12 +290,19 @@ class LoadMethodCache {
     bool isValidKeysVersion(BorrowedRef<> obj);
   };
 
+  struct CallResult {
+    PyObject* callable{nullptr};
+    PyObject* self_or_null{nullptr};
+    bool borrowed_self{false};
+  };
+
   ~LoadMethodCache();
 
   static LoadMethodResult
   lookupHelper(LoadMethodCache* cache, BorrowedRef<> obj, BorrowedRef<> name);
   static LoadMethodResult getValueHelper(LoadMethodCache* cache, PyObject* obj);
   LoadMethodResult lookup(BorrowedRef<> obj, BorrowedRef<> name);
+  CallResult lookupForCall(BorrowedRef<> obj, BorrowedRef<> name);
   PyTypeObject** typeAddr();
   void typeChanged(PyTypeObject* type);
 

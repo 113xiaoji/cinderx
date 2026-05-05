@@ -135,6 +135,10 @@ class LIRGenerator {
       BasicBlockBuilder& bbb,
       const hir::VectorCall& instr);
 
+  bool TranslateInlineListIterNext(
+      BasicBlockBuilder& bbb,
+      const hir::InvokeIterNext& instr);
+
   TranslatedBlock TranslateOneBasicBlock(const hir::BasicBlock* bb);
 
   // Fill in operands for phi instructions.  This is executed after LIR

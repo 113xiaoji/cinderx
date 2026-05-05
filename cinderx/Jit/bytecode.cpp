@@ -93,6 +93,10 @@ int BytecodeInstruction::specializedOpcode() const {
     case COMPARE_OP_FLOAT:
     case COMPARE_OP_INT:
     case COMPARE_OP_STR:
+#if PY_VERSION_HEX >= 0x030E0000
+    case CONTAINS_OP_DICT:
+    case CONTAINS_OP_SET:
+#endif
     case CALL_LIST_APPEND:
     case CALL_METHOD_DESCRIPTOR_FAST:
     case CALL_METHOD_DESCRIPTOR_FAST_WITH_KEYWORDS:
@@ -106,6 +110,10 @@ int BytecodeInstruction::specializedOpcode() const {
     case TO_BOOL_STR:
 #endif
     case LOAD_ATTR_INSTANCE_VALUE:
+#if PY_VERSION_HEX >= 0x030E0000
+    case LOAD_ATTR_METHOD_LAZY_DICT:
+    case LOAD_ATTR_METHOD_NO_DICT:
+#endif
     case LOAD_ATTR_METHOD_WITH_VALUES:
     case LOAD_ATTR_SLOT:
     case LOAD_ATTR_MODULE:

@@ -24,6 +24,7 @@ namespace jit::hir {
   V(CallIntrinsic)                     \
   V(CallInd)                           \
   V(CallMethod)                        \
+  V(CallMethodCached)                  \
   V(CallStatic)                        \
   V(CallStaticRetVoid)                 \
   V(Cast)                              \

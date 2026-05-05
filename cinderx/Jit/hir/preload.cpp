@@ -189,11 +189,13 @@ static bool has_local_method_style_load_attr(BorrowedRef<PyCodeObject> code) {
   return false;
 }
 
-static bool is_small_one_arg_method_value_inline_candidate(
+static bool is_small_method_value_inline_candidate(
     BorrowedRef<PyFunctionObject> func) {
+  constexpr size_t kMaxMethodValueInlineOpcodes = 24;
   BorrowedRef<PyCodeObject> code{func->func_code};
   if (
-      code->co_argcount != 2 || code->co_kwonlyargcount != 0 ||
+      code->co_argcount < 1 || code->co_argcount > 3 ||
+      code->co_kwonlyargcount != 0 ||
       (code->co_flags & (CO_VARARGS | CO_VARKEYWORDS | kCoFlagsAnyGenerator)) !=
           0) {
     return false;
@@ -222,7 +224,7 @@ static bool is_small_one_arg_method_value_inline_candidate(
     }
 #endif
     opcodes++;
-    if (opcodes > 16) {
+    if (opcodes > kMaxMethodValueInlineOpcodes) {
       return false;
     }
   }
@@ -617,7 +619,7 @@ bool Preloader::preload() {
         }
         BorrowedRef<PyFunctionObject> func{
             reinterpret_cast<PyFunctionObject*>(descr)};
-        if (!is_small_one_arg_method_value_inline_candidate(func)) {
+        if (!is_small_method_value_inline_candidate(func)) {
           break;
         }
         method_value_functions_.emplace_back(func);

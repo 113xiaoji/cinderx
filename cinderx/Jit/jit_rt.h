@@ -13,6 +13,7 @@
 
 namespace jit {
 class CodeRuntime;
+class LoadMethodCache;
 struct GenDataFooter;
 struct JitGenObject;
 } // namespace jit
@@ -183,6 +184,12 @@ PyObject* JITRT_LoadGlobalsDict(PyThreadState* tstate);
 PyObject* JITRT_ListSlice(PyObject* list, PyObject* start, PyObject* stop);
 
 /*
+ * Pop and return the last item from an exact list, matching list.pop()'s
+ * default-index behavior.
+ */
+extern "C" PyObject* JITRT_ListPopLast(PyObject* list);
+
+/*
  * Fast path for `list[:k+1] = list[k::-1]` on exact lists.
  *
  * Falls back to generic Python slicing semantics when operand types are not
@@ -280,6 +287,94 @@ PyObject* JITRT_CallMethod(
     size_t nargsf,
     PyObject* kwnames);
 
+PyObject* JITRT_CallMethodFixed0(PyObject* callable, PyObject* self_or_null);
+
+PyObject* JITRT_CallMethodFixed1(
+    PyObject* callable,
+    PyObject* self_or_null,
+    PyObject* arg0);
+
+PyObject* JITRT_CallMethodFixed2(
+    PyObject* callable,
+    PyObject* self_or_null,
+    PyObject* arg0,
+    PyObject* arg1);
+
+PyObject* JITRT_CallMethodFixed3(
+    PyObject* callable,
+    PyObject* self_or_null,
+    PyObject* arg0,
+    PyObject* arg1,
+    PyObject* arg2);
+
+/*
+ * Fuse a LoadMethodCache lookup and method-shaped call. The first fixed
+ * argument is a LoadMethodCache* passed through the vectorcall callable slot;
+ * args[0] is the method name, args[1] is the receiver, and the rest are
+ * explicit call arguments.
+ */
+PyObject* JITRT_CallMethodCached(
+    PyObject* cache,
+    PyObject* const* args,
+    size_t nargsf,
+    PyObject* kwnames);
+
+PyObject* JITRT_CallMethodCached0(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver);
+
+PyObject* JITRT_CallMethodCached1(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* arg0);
+
+PyObject* JITRT_CallMethodCached2(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* arg0,
+    PyObject* arg1);
+
+PyObject* JITRT_CallMethodCached3(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* arg0,
+    PyObject* arg1,
+    PyObject* arg2);
+
+PyObject* JITRT_CallMethodCachedKw0(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames);
+
+PyObject* JITRT_CallMethodCachedKw1(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames,
+    PyObject* arg0);
+
+PyObject* JITRT_CallMethodCachedKw2(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames,
+    PyObject* arg0,
+    PyObject* arg1);
+
+PyObject* JITRT_CallMethodCachedKw3(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames,
+    PyObject* arg0,
+    PyObject* arg1,
+    PyObject* arg2);
+
 /*
  * Performs a function call with a vectorcall. Will check and handle any
  * eval breaker events after the call.
@@ -308,6 +403,17 @@ PyObject* JITRT_CallMethodDescrFast1(
     PyObject* callable,
     PyObject* self,
     PyObject* arg0);
+
+/*
+ * Call an exact method descriptor with METH_FASTCALL or
+ * METH_FASTCALL|METH_KEYWORDS using vectorcall-shaped arguments, then handle
+ * periodic activities like JITRT_Vectorcall().
+ */
+PyObject* JITRT_CallMethodDescrFastVectorcall(
+    PyObject* callable,
+    PyObject* const* args,
+    size_t nargsf,
+    PyObject* kwnames);
 
 /*
  * Perform a method lookup on an object.
@@ -603,14 +709,24 @@ int JITRT_UnicodeEquals(PyObject* s1, PyObject* s2, int equals);
 /* Return Py_True if needle is in haystack else return Py_False. Return nullptr
  * with exception raised on error. */
 PyObject* JITRT_SequenceContains(PyObject* haystack, PyObject* needle);
+PyObject* JITRT_DictContains(PyObject* haystack, PyObject* needle);
+PyObject* JITRT_SetContains(PyObject* haystack, PyObject* needle);
+
+/* Exact dict subscript. Returns a new reference on hit or nullptr with an
+ * exception raised on miss/error. */
+PyObject* JITRT_DictSubscrExact(PyObject* dict, PyObject* key);
 
 /* Return Py_True if needle is not in haystack else return Py_False. Return
  * nullptr with exception raised on error. */
 PyObject* JITRT_SequenceNotContains(PyObject* haystack, PyObject* needle);
+PyObject* JITRT_DictNotContains(PyObject* haystack, PyObject* needle);
+PyObject* JITRT_SetNotContains(PyObject* haystack, PyObject* needle);
 
 /* Inverse form of PySequence_Contains for "not in"
  */
 int JITRT_NotContainsBool(PyObject* w, PyObject* v);
+int JITRT_DictNotContainsBool(PyObject* w, PyObject* v);
+int JITRT_SetNotContainsBool(PyObject* w, PyObject* v);
 
 /* Perform a rich comparison with integer result.  This wraps
    PyObject_RichCompare(), returning -1 for error, 0 for false, 1 for true.

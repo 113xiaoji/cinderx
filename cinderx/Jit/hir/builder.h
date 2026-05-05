@@ -179,6 +179,10 @@ class HIRBuilder {
       TranslationContext& tc,
       const jit::BytecodeInstruction& bc_instr,
       CallFlags flags);
+  bool tryEmitCachedMethodCall(
+      TranslationContext& tc,
+      const jit::BytecodeInstruction& bc_instr,
+      CallFlags flags);
   void emitCallEx(
       TranslationContext& tc,
       const jit::BytecodeInstruction& bc_instr,
@@ -192,7 +196,7 @@ class HIRBuilder {
       const jit::BytecodeInstruction& bc_instr);
   void emitKwNames(TranslationContext& tc, const BytecodeInstruction& bc_instr);
   void emitIsOp(TranslationContext& tc, int oparg);
-  void emitContainsOp(TranslationContext& tc, int oparg);
+  void emitContainsOp(TranslationContext& tc, const BytecodeInstruction& bc_instr);
   void emitCompareOp(
       TranslationContext& tc,
       const jit::BytecodeInstruction& bc_instr);
@@ -210,7 +214,9 @@ class HIRBuilder {
   void emitLoadAttr(
       TranslationContext& tc,
       const jit::BytecodeInstruction& bc_instr);
-  void emitLoadMethod(TranslationContext& tc, int name_idx);
+  void emitLoadMethod(
+      TranslationContext& tc,
+      const jit::BytecodeInstruction& bc_instr);
   void emitLoadMethodOrAttrSuper(
       CFG& cfg,
       TranslationContext& tc,
@@ -635,6 +641,12 @@ class HIRBuilder {
     bool delayed_lookup{false};
   };
 
+  struct PendingCachedMethodCall {
+    Register* receiver{nullptr};
+    Register* placeholder{nullptr};
+    int name_idx{-1};
+  };
+
   TempAllocator temps_{nullptr};
 
   // Tracks the function for compilations that require it.
@@ -653,6 +665,7 @@ class HIRBuilder {
   CFG* inline_genexpr_cfg_{nullptr};
   std::vector<std::unique_ptr<FrameState>> inline_genexpr_parent_frames_;
   std::optional<PendingMethodWithValuesCall> pending_method_with_values_call_;
+  std::optional<PendingCachedMethodCall> pending_cached_method_call_;
   bool stop_block_translation_{false};
 };
 

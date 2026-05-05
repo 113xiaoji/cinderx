@@ -352,10 +352,16 @@ void InlineFunctionCalls::Run(Function& irfunc) {
   // Scan through all function calls in `irfunc` and mark the ones that are
   // suitable for inlining.
   std::vector<AbstractCall> to_inline;
+  const bool method_value_only =
+      getConfig().method_value_inliner && !getConfig().hir_opts.inliner;
   for (auto& block : irfunc.cfg.blocks) {
     for (auto& instr : block) {
       if (instr.IsVectorCall()) {
         auto call = static_cast<VectorCall*>(&instr);
+        if (method_value_only &&
+            !(call->flags() & CallFlags::ProfiledMethodValue)) {
+          continue;
+        }
         Register* target = call->func();
         const std::string& caller_name = irfunc.fullname;
         if (!target->isA(TFunc)) {
@@ -386,6 +392,9 @@ void InlineFunctionCalls::Run(Function& irfunc) {
         BorrowedRef<PyFunctionObject> callee{target->type().objectSpec()};
         to_inline.emplace_back(callee, call->numArgs(), call, target);
       } else if (instr.IsInvokeStaticFunction()) {
+        if (method_value_only) {
+          continue;
+        }
         auto call = static_cast<InvokeStaticFunction*>(&instr);
         to_inline.emplace_back(call->func(), call->NumArgs() - 1, call);
       }

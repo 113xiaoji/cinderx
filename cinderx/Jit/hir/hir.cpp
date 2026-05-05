@@ -439,6 +439,7 @@ bool Instr::isReplayable() const {
     case Opcode::kCallInd:
     case Opcode::kCallIntrinsic:
     case Opcode::kCallMethod:
+    case Opcode::kCallMethodCached:
     case Opcode::kCallStatic:
     case Opcode::kCallStaticRetVoid:
     case Opcode::kCompare:
@@ -714,6 +715,7 @@ bool isPassthrough(const Instr& instr) {
     case Opcode::kCallInd:
     case Opcode::kCallIntrinsic:
     case Opcode::kCallMethod:
+    case Opcode::kCallMethodCached:
     case Opcode::kCallStatic:
     case Opcode::kCallStaticRetVoid:
     case Opcode::kCheckSequenceBounds:

@@ -432,6 +432,25 @@ bool isBuiltinListMethodDescr(PyObject* descr) {
   return method->d_common.d_type == &PyList_Type;
 }
 
+std::optional<Type> builtinNoDictMethodReceiverType(PyObject* descr) {
+  if (descr == nullptr || Py_TYPE(descr) != &PyMethodDescr_Type) {
+    return std::nullopt;
+  }
+  auto* method = reinterpret_cast<PyMethodDescrObject*>(descr);
+  const char* name = method->d_method->ml_name;
+  if (
+      method->d_common.d_type == &PySet_Type &&
+      std::strcmp(name, "add") == 0) {
+    return TSetExact;
+  }
+  if (
+      method->d_common.d_type == &PyList_Type &&
+      std::strcmp(name, "pop") == 0) {
+    return TListExact;
+  }
+  return std::nullopt;
+}
+
 #if PY_VERSION_HEX >= 0x030E0000
 bool isBuilderResumeCheckOpcode(const BytecodeInstruction& instr) {
   int opcode = instr.opcode();
@@ -549,49 +568,132 @@ bool isSmallOneArgMethodValueCallCandidate(PyObject* descr) {
     return false;
   }
 
+  constexpr size_t kMaxSmallOneArgOpcodes = 16;
+  constexpr size_t kMaxStatefulOneArgOpcodes = 24;
   size_t opcodes = 0;
+  bool has_call{false};
+  bool has_state_store{false};
   for (auto bc_instr : BytecodeInstructionBlock{code}) {
     if (bc_instr.opcode() == RESUME || isBuilderResumeCheckOpcode(bc_instr) ||
         bc_instr.opcode() == NOT_TAKEN ||
         bc_instr.specializedOpcode() == NOT_TAKEN) {
       continue;
     }
+    has_call |= bc_instr.opcode() == CALL || bc_instr.opcode() == CALL_METHOD ||
+        bc_instr.opcode() == CALL_KW;
+    has_state_store |= bc_instr.opcode() == STORE_ATTR ||
+        bc_instr.specializedOpcode() == STORE_ATTR_INSTANCE_VALUE ||
+        bc_instr.specializedOpcode() == STORE_ATTR_SLOT ||
+        bc_instr.specializedOpcode() == STORE_ATTR_WITH_HINT;
     opcodes++;
-    if (opcodes > 16) {
+    if (opcodes > kMaxStatefulOneArgOpcodes) {
       return false;
     }
   }
-  return opcodes > 0;
+  return opcodes > 0 &&
+      (opcodes <= kMaxSmallOneArgOpcodes || (has_call && has_state_store));
 }
 
-bool isBuilderSideEffectFreeArgLoad(const BytecodeInstruction& instr) {
+int builderSideEffectFreeArgLoadCount(const BytecodeInstruction& instr) {
   switch (instr.opcode()) {
     case LOAD_CONST:
     case LOAD_FAST:
     case LOAD_FAST_BORROW:
+      return 1;
+    case LOAD_FAST_LOAD_FAST:
+    case LOAD_FAST_BORROW_LOAD_FAST_BORROW:
+      return 2;
+    default:
+      return 0;
+  }
+}
+
+bool isBuilderPositionalCall(const BytecodeInstruction& instr) {
+  switch (instr.opcode()) {
+    case CALL:
+    case CALL_METHOD:
+    case CALL_KW:
       return true;
     default:
       return false;
   }
 }
 
-bool isSideEffectFreeOneArgMethodValueCall(
+bool hasOnlyInitializedArgumentLocals(
     BorrowedRef<PyCodeObject> code,
-    const BytecodeInstruction& load_attr_instr) {
+    int initialized_arg_count) {
+  return code->co_nlocals == initialized_arg_count &&
+      numLocalsplus(code) == initialized_arg_count;
+}
+
+bool isSideEffectFreeMethodValueCall(
+    BorrowedRef<PyCodeObject> code,
+    const BytecodeInstruction& load_attr_instr,
+    int initialized_arg_count,
+    bool allow_zero_arg_delayed_lookup) {
+  constexpr int kMaxDelayedLookupArgs = 3;
   BytecodeInstructionBlock block{code};
   if (load_attr_instr.nextInstrOffset() >= block.endOffset()) {
     return false;
   }
-  BytecodeInstruction arg_instr = load_attr_instr.nextInstr();
-  if (!isBuilderSideEffectFreeArgLoad(arg_instr)) {
+
+  int arg_count = 0;
+  BytecodeInstruction instr = load_attr_instr.nextInstr();
+  while (true) {
+    if (isBuilderPositionalCall(instr)) {
+      if (instr.opcode() == CALL_KW) {
+        return arg_count > 1 && instr.oparg() + 1 == arg_count;
+      }
+      if (instr.oparg() != arg_count) {
+        return false;
+      }
+      return arg_count > 0 ||
+          (allow_zero_arg_delayed_lookup &&
+           hasOnlyInitializedArgumentLocals(code, initialized_arg_count));
+    }
+    int loaded_args = builderSideEffectFreeArgLoadCount(instr);
+    if (loaded_args == 0) {
+      return false;
+    }
+    arg_count += loaded_args;
+    if (arg_count > kMaxDelayedLookupArgs ||
+        instr.nextInstrOffset() >= block.endOffset()) {
+      return false;
+    }
+    instr = instr.nextInstr();
+  }
+}
+
+bool isSideEffectFreeCachedMethodCall(
+    BorrowedRef<PyCodeObject> code,
+    const BytecodeInstruction& load_method_instr) {
+  constexpr int kMaxDelayedLookupArgs = 3;
+  BytecodeInstructionBlock block{code};
+  if (load_method_instr.nextInstrOffset() >= block.endOffset()) {
     return false;
   }
-  if (arg_instr.nextInstrOffset() >= block.endOffset()) {
-    return false;
+
+  int arg_count = 0;
+  BytecodeInstruction instr = load_method_instr.nextInstr();
+  while (true) {
+    if (instr.opcode() == CALL || instr.opcode() == CALL_METHOD) {
+      return instr.oparg() == arg_count && arg_count <= kMaxDelayedLookupArgs;
+    }
+    if (instr.opcode() == CALL_KW) {
+      return arg_count > 1 && instr.oparg() + 1 == arg_count &&
+          instr.oparg() <= kMaxDelayedLookupArgs;
+    }
+    int loaded_args = builderSideEffectFreeArgLoadCount(instr);
+    if (loaded_args == 0) {
+      return false;
+    }
+    arg_count += loaded_args;
+    if (arg_count > kMaxDelayedLookupArgs ||
+        instr.nextInstrOffset() >= block.endOffset()) {
+      return false;
+    }
+    instr = instr.nextInstr();
   }
-  BytecodeInstruction call_instr = arg_instr.nextInstr();
-  return (call_instr.opcode() == CALL || call_instr.opcode() == CALL_METHOD) &&
-      call_instr.oparg() == 1;
 }
 #endif
 
@@ -1934,7 +2036,7 @@ void HIRBuilder::translate(
           break;
         }
         case CONTAINS_OP: {
-          emitContainsOp(tc, bc_instr.oparg());
+          emitContainsOp(tc, bc_instr);
           break;
         }
         case COMPARE_OP: {
@@ -1962,7 +2064,7 @@ void HIRBuilder::translate(
           break;
         }
         case LOAD_METHOD: {
-          emitLoadMethod(tc, bc_instr.oparg());
+          emitLoadMethod(tc, bc_instr);
           break;
         }
         case LOAD_METHOD_STATIC: {
@@ -2934,6 +3036,9 @@ void HIRBuilder::emitAnyCall(
   if (tryEmitProfiledMethodWithValuesCall(cfg, tc, bc_instr, flags)) {
     return;
   }
+  if (tryEmitCachedMethodCall(tc, bc_instr, flags)) {
+    return;
+  }
 
   auto opcode = bc_instr.opcode();
   switch (opcode) {
@@ -3104,9 +3209,14 @@ bool HIRBuilder::tryEmitProfiledMethodWithValuesCall(
     JIT_DLOG("profiled-mwv call skipped: kwnames present");
     return false;
   }
-  if (bc_instr.opcode() != CALL && bc_instr.opcode() != CALL_METHOD) {
+  bool is_call_kw = bc_instr.opcode() == CALL_KW;
+  if (bc_instr.opcode() != CALL && bc_instr.opcode() != CALL_METHOD &&
+      !is_call_kw) {
     JIT_DLOG("profiled-mwv call skipped: opcode {}", bc_instr.opcode());
     return false;
+  }
+  if (is_call_kw) {
+    flags |= CallFlags::KwArgs;
   }
 
   const PendingMethodWithValuesCall pending = *pending_method_with_values_call_;
@@ -3119,6 +3229,10 @@ bool HIRBuilder::tryEmitProfiledMethodWithValuesCall(
     return false;
   };
   std::size_t num_operands = static_cast<std::size_t>(bc_instr.oparg()) + 2;
+  if (is_call_kw) {
+    // CALL_KW carries the keyword-name tuple on the stack in Python 3.14.
+    num_operands++;
+  }
   if (tc.frame.stack.size() < num_operands) {
     JIT_DLOG(
         "profiled-mwv call skipped: stack too small {} < {}",
@@ -3195,7 +3309,8 @@ bool HIRBuilder::tryEmitProfiledMethodWithValuesCall(
     }
 
     Register* call_out = temps_.AllocateStack();
-    auto vector_call = call_tc.emit<VectorCall>(num_operands, call_out, flags);
+    auto vector_call = call_tc.emit<VectorCall>(
+        num_operands, call_out, flags | CallFlags::ProfiledMethodValue);
     vector_call->SetOperand(0, funcreg);
     vector_call->SetOperand(1, self);
     for (std::size_t i = 2; i < num_operands; i++) {
@@ -3336,6 +3451,75 @@ bool HIRBuilder::tryEmitProfiledMethodWithValuesCall(
   JIT_DLOG("profiled-mwv call emitted for instr {}", bc_instr.baseOffset().value());
   tc.block = done.block;
   tc.frame = done.frame;
+  return true;
+}
+
+bool HIRBuilder::tryEmitCachedMethodCall(
+    TranslationContext& tc,
+    const jit::BytecodeInstruction& bc_instr,
+    CallFlags flags) {
+  if (!pending_cached_method_call_.has_value()) {
+    return false;
+  }
+  if (kwnames_ != nullptr || (flags & CallFlags::KwArgs)) {
+    JIT_DLOG("cached method-call helper skipped: kwargs present");
+    pending_cached_method_call_.reset();
+    return false;
+  }
+  const bool is_call_kw = bc_instr.opcode() == CALL_KW;
+  if (bc_instr.opcode() != CALL && bc_instr.opcode() != CALL_METHOD &&
+      !is_call_kw) {
+    JIT_DLOG(
+        "cached method-call helper skipped: opcode {}", bc_instr.opcode());
+    pending_cached_method_call_.reset();
+    return false;
+  }
+
+  const PendingCachedMethodCall pending = *pending_cached_method_call_;
+  const std::size_t explicit_arg_count =
+      static_cast<std::size_t>(bc_instr.oparg());
+  const std::size_t num_stack_inputs =
+      explicit_arg_count + 2 + (is_call_kw ? 1 : 0);
+  if (tc.frame.stack.size() < num_stack_inputs ||
+      tc.frame.stack.peek(num_stack_inputs) != pending.placeholder) {
+    JIT_DLOG("cached method-call helper skipped: stack mismatch");
+    pending_cached_method_call_.reset();
+    return false;
+  }
+
+  if (is_call_kw) {
+    flags |= CallFlags::KwArgs;
+  }
+  Register* kwnames = is_call_kw ? tc.frame.stack.pop() : nullptr;
+
+  std::vector<Register*> args(explicit_arg_count, nullptr);
+  for (auto i = explicit_arg_count + 2; i > 2; i--) {
+    args[i - 3] = tc.frame.stack.pop();
+  }
+  Register* receiver = tc.frame.stack.pop();
+  Register* placeholder = tc.frame.stack.pop();
+  JIT_CHECK(receiver == pending.receiver, "cached method receiver mismatch");
+  JIT_CHECK(
+      placeholder == pending.placeholder, "cached method placeholder mismatch");
+
+  Register* out = temps_.AllocateStack();
+  auto call = tc.emit<CallMethodCached>(
+      args.size() + 1 + (is_call_kw ? 1 : 0),
+      out,
+      pending.name_idx,
+      flags);
+  call->SetOperand(0, receiver);
+  for (std::size_t i = 0; i < args.size(); i++) {
+    call->SetOperand(i + 1, args[i]);
+  }
+  if (is_call_kw) {
+    call->SetOperand(args.size() + 1, kwnames);
+  }
+  call->setFrameState(tc.frame);
+  tc.frame.stack.push(out);
+
+  pending_cached_method_call_.reset();
+  JIT_DLOG("cached method-call helper emitted for instr {}", bc_instr.baseOffset().value());
   return true;
 }
 
@@ -4632,11 +4816,58 @@ void HIRBuilder::emitIsOp(TranslationContext& tc, int oparg) {
   stack.push(result);
 }
 
-void HIRBuilder::emitContainsOp(TranslationContext& tc, int oparg) {
+void HIRBuilder::emitContainsOp(
+    TranslationContext& tc,
+    const BytecodeInstruction& bc_instr) {
   auto& stack = tc.frame.stack;
   Register* right = stack.pop();
   Register* left = stack.pop();
+  if (getConfig().specialized_opcodes && getConfig().specialized_contains_op) {
+    auto emit_direct_contains = [&](PyTypeObject* type,
+                                    void* contains_helper,
+                                    void* not_contains_helper,
+                                    const char* descr) {
+      Register* actual_type = temps_.AllocateStack();
+      tc.emit<LoadField>(
+          actual_type, right, "ob_type", offsetof(PyObject, ob_type), TType);
+      auto* guard = tc.emit<GuardIs>(
+          actual_type, reinterpret_cast<PyObject*>(type), actual_type);
+      guard->setGuiltyReg(right);
+      guard->setDescr(descr);
+
+      Register* result = temps_.AllocateStack();
+      void* helper = bc_instr.oparg() == 0 ? contains_helper
+                                           : not_contains_helper;
+      auto* call = tc.emit<CallStatic>(2, result, helper, TBool);
+      call->SetOperand(0, right);
+      call->SetOperand(1, left);
+      tc.emit<CheckExc>(result, result, tc.frame);
+      stack.push(result);
+    };
+
+    switch (bc_instr.specializedOpcode()) {
+#if PY_VERSION_HEX >= 0x030E0000
+      case CONTAINS_OP_DICT:
+        emit_direct_contains(
+            &PyDict_Type,
+            reinterpret_cast<void*>(JITRT_DictContains),
+            reinterpret_cast<void*>(JITRT_DictNotContains),
+            "CONTAINS_OP_DICT");
+        return;
+      case CONTAINS_OP_SET:
+        emit_direct_contains(
+            &PySet_Type,
+            reinterpret_cast<void*>(JITRT_SetContains),
+            reinterpret_cast<void*>(JITRT_SetNotContains),
+            "CONTAINS_OP_SET");
+        return;
+#endif
+      default:
+        break;
+    }
+  }
   Register* result = temps_.AllocateStack();
+  int oparg = bc_instr.oparg();
   CompareOp op = oparg == 0 ? CompareOp::kIn : CompareOp::kNotIn;
   tc.emit<Compare>(result, op, left, right, tc.frame);
   stack.push(result);
@@ -4834,6 +5065,17 @@ void HIRBuilder::emitLoadAttr(
     }
     return std::strcmp(arg0_name, "self") == 0;
   };
+  auto is_argument_receiver = [&]() {
+    int arg_count = preloader_.numArgs();
+    for (int arg_idx = 0; arg_idx < arg_count; arg_idx++) {
+      if (
+          arg_idx < static_cast<int>(tc.frame.localsplus.size()) &&
+          receiver == tc.frame.localsplus[arg_idx]) {
+        return true;
+      }
+    }
+    return false;
+  };
   bool is_method =
 #if PY_VERSION_HEX >= 0x030C0000
       (oparg & 1) != 0;
@@ -5017,10 +5259,14 @@ void HIRBuilder::emitLoadAttr(
             bc_instr.cacheU32(2) != 0 &&
             bc_instr.cacheU32(4) != 0 && tc.frame.parent == nullptr;
         bool delayed_method_value_fast_path =
-            isSmallOneArgMethodValueCallCandidate(descr) &&
-            is_nonexact_self_receiver() && bc_instr.cacheU32(2) != 0 &&
+            PyFunction_Check(descr) && bc_instr.cacheU32(2) != 0 &&
             bc_instr.cacheU32(4) != 0 && tc.frame.parent == nullptr &&
-            isSideEffectFreeOneArgMethodValueCall(code_, bc_instr);
+            isSideEffectFreeMethodValueCall(
+                code_,
+                bc_instr,
+                preloader_.numArgs(),
+                getConfig().zero_arg_mwv_delayed_lookup &&
+                    !is_argument_receiver());
         if (!canUseMethodWithValuesFastPath(
                 receiver, descr, code_, preloader_.globals()) &&
             !deopt_only_method_value_fast_path) {
@@ -5040,6 +5286,16 @@ void HIRBuilder::emitLoadAttr(
                   name_idx,
                   true};
               tc.frame.stack.push(result);
+              tc.frame.stack.push(receiver);
+              return;
+            }
+            if (getConfig().cached_method_call_helper &&
+                isSideEffectFreeCachedMethodCall(code_, bc_instr)) {
+              Register* placeholder = temps_.AllocateStack();
+              tc.emit<LoadConst>(placeholder, TNullptr);
+              pending_cached_method_call_ =
+                  PendingCachedMethodCall{receiver, placeholder, name_idx};
+              tc.frame.stack.push(placeholder);
               tc.frame.stack.push(receiver);
               return;
             }
@@ -5074,6 +5330,21 @@ void HIRBuilder::emitLoadAttr(
         tc.frame.stack.push(receiver);
         return;
       }
+      case LOAD_ATTR_METHOD_NO_DICT: {
+        PyObject* descr = bc_instr.cacheObj(6);
+        std::optional<Type> receiver_type =
+            builtinNoDictMethodReceiverType(descr);
+        if (!receiver_type.has_value()) {
+          break;
+        }
+        emit_type_version_guard(bc_instr.cacheU32(2), "LOAD_ATTR_METHOD_NO_DICT");
+        tc.emit<GuardType>(receiver, *receiver_type, receiver, tc.frame);
+        Register* result = temps_.AllocateStack();
+        tc.emit<LoadConst>(result, Type::fromObject(descr));
+        tc.frame.stack.push(result);
+        tc.frame.stack.push(receiver);
+        return;
+      }
 #endif
       default:
         break;
@@ -5081,6 +5352,18 @@ void HIRBuilder::emitLoadAttr(
   }
 
   if (is_method) {
+#if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
+    if (getConfig().cached_method_call_helper && tc.frame.parent == nullptr &&
+        isSideEffectFreeCachedMethodCall(code_, bc_instr)) {
+      Register* placeholder = temps_.AllocateStack();
+      tc.emit<LoadConst>(placeholder, TNullptr);
+      pending_cached_method_call_ =
+          PendingCachedMethodCall{receiver, placeholder, name_idx};
+      tc.frame.stack.push(placeholder);
+      tc.frame.stack.push(receiver);
+      return;
+    }
+#endif
     Register* result = temps_.AllocateStack();
     Register* method_instance = temps_.AllocateStack();
     tc.emit<LoadMethod>(result, receiver, name_idx, tc.frame);
@@ -5095,8 +5378,23 @@ void HIRBuilder::emitLoadAttr(
   tc.frame.stack.push(result);
 }
 
-void HIRBuilder::emitLoadMethod(TranslationContext& tc, int name_idx) {
+void HIRBuilder::emitLoadMethod(
+    TranslationContext& tc,
+    const BytecodeInstruction& bc_instr) {
+  int name_idx = bc_instr.oparg();
   Register* receiver = tc.frame.stack.pop();
+#if PY_VERSION_HEX >= 0x030E0000 && PY_VERSION_HEX < 0x030F0000
+  if (getConfig().cached_method_call_helper && tc.frame.parent == nullptr &&
+      isSideEffectFreeCachedMethodCall(code_, bc_instr)) {
+    Register* placeholder = temps_.AllocateStack();
+    tc.emit<LoadConst>(placeholder, TNullptr);
+    pending_cached_method_call_ =
+        PendingCachedMethodCall{receiver, placeholder, name_idx};
+    tc.frame.stack.push(placeholder);
+    tc.frame.stack.push(receiver);
+    return;
+  }
+#endif
   Register* result = temps_.AllocateStack();
   Register* method_instance = temps_.AllocateStack();
   tc.emit<LoadMethod>(result, receiver, name_idx, tc.frame);
@@ -6194,6 +6492,46 @@ void HIRBuilder::emitStoreAttr(
       guard->setDescr(descr);
       return obj_type;
     };
+#if PY_VERSION_HEX >= 0x030E0000
+    auto emit_inline_values_valid_guard =
+        [&](Register* obj_type, const char* descr) {
+      Register* basicsize = temps_.AllocateStack();
+      tc.emit<LoadField>(
+          basicsize,
+          obj_type,
+          "tp_basicsize",
+          offsetof(PyTypeObject, tp_basicsize),
+          TCInt64);
+
+      Register* valid_extra = temps_.AllocateStack();
+      tc.emit<LoadConst>(
+          valid_extra,
+          Type::fromCInt(offsetof(PyDictValues, valid), TCInt64));
+
+      Register* valid_offset = temps_.AllocateStack();
+      tc.emit<IntBinaryOp>(
+          valid_offset, BinaryOpKind::kAdd, basicsize, valid_extra);
+
+      Register* valid_addr = temps_.AllocateStack();
+      tc.emit<LoadFieldAddress>(valid_addr, receiver, valid_offset);
+
+      Register* zero_idx = temps_.AllocateStack();
+      tc.emit<LoadConst>(zero_idx, Type::fromCInt(0, TCInt64));
+
+      Register* valid = temps_.AllocateStack();
+      tc.emit<LoadArrayItem>(valid, valid_addr, zero_idx, receiver, 0, TCUInt8);
+
+      Register* zero = temps_.AllocateStack();
+      tc.emit<LoadConst>(zero, Type::fromCUInt(0, TCUInt8));
+
+      Register* valid_nonzero = temps_.AllocateStack();
+      tc.emit<PrimitiveCompare>(
+          valid_nonzero, PrimitiveCompareOp::kNotEqual, valid, zero);
+      auto* guard = tc.emit<Guard>(valid_nonzero, deopt_frame);
+      guard->setGuiltyReg(receiver);
+      guard->setDescr(descr);
+    };
+#endif
     switch (bc_instr.specializedOpcode()) {
       case STORE_ATTR_SLOT: {
         BorrowedRef<PyUnicodeObject> name =
@@ -6223,10 +6561,43 @@ void HIRBuilder::emitStoreAttr(
       }
 #if PY_VERSION_HEX >= 0x030E0000
       case STORE_ATTR_INSTANCE_VALUE: {
-        // CPython's specialized store also records insertion order when the
-        // inline value slot is empty. Until the JIT models that side effect,
-        // keep this on the generic path instead of direct field stores.
-        break;
+        if (!getConfig().store_attr_instance_value_existing) {
+          break;
+        }
+        BorrowedRef<PyUnicodeObject> name =
+            PyTuple_GET_ITEM(code_->co_names, bc_instr.oparg());
+        const char* field_name = PyUnicode_AsUTF8(name);
+        if (field_name == nullptr) {
+          clearPyErrIfPresent();
+          field_name = "<unknown>";
+        }
+        Register* obj_type = emit_type_version_guard(
+            bc_instr.cacheU32(2), "STORE_ATTR_INSTANCE_VALUE");
+        emit_inline_values_valid_guard(obj_type, "STORE_ATTR_INSTANCE_VALUE");
+        Register* previous = temps_.AllocateStack();
+        tc.emit<LoadField>(
+            previous,
+            receiver,
+            field_name,
+            bc_instr.cacheU16(4),
+            TOptObject,
+            /* borrowed= */ false);
+        Register* nullp = temps_.AllocateStack();
+        tc.emit<LoadConst>(nullp, TNullptr);
+        Register* previous_exists = temps_.AllocateStack();
+        tc.emit<PrimitiveCompare>(
+            previous_exists, PrimitiveCompareOp::kNotEqual, previous, nullp);
+        auto* guard = tc.emit<Guard>(previous_exists, deopt_frame);
+        guard->setGuiltyReg(receiver);
+        guard->setDescr("STORE_ATTR_INSTANCE_VALUE existing slot");
+        tc.emit<StoreField>(
+            receiver,
+            field_name,
+            bc_instr.cacheU16(4),
+            value,
+            TOptObject,
+            previous);
+        return;
       }
 #endif
       default:

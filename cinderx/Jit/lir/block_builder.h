@@ -174,6 +174,10 @@ class BasicBlockBuilder {
 
   Instruction* getDefInstr(const hir::Register* reg);
 
+  BasicBlock* currentBlock() const {
+    return cur_bb_;
+  }
+
   void createInstrInput(Instruction* instr, hir::Register* reg);
   void createInstrOutput(Instruction* instr, hir::Register* dst);
 

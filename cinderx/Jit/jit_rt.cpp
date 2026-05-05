@@ -4,9 +4,12 @@
 
 #include "internal/pycore_call.h"
 #include "internal/pycore_ceval.h"
+#include "internal/pycore_list.h"
 #include "internal/pycore_object.h"
 #include "internal/pycore_pyerrors.h"
 #include "internal/pycore_pystate.h"
+#include "internal/pycore_range.h"
+#include "internal/pycore_tuple.h"
 
 #include "cinderx/Common/log.h"
 #include "cinderx/Common/py-portability.h"
@@ -19,6 +22,7 @@
 #include "cinderx/Jit/context.h"
 #include "cinderx/Jit/frame.h"
 #include "cinderx/Jit/generators_rt.h"
+#include "cinderx/Jit/inline_cache.h"
 // NOLINTNEXTLINE(facebook-unused-include-check)
 #include "cinderx/Immortalize/immortalize.h"
 #include "cinderx/StaticPython/classloader.h"
@@ -41,7 +45,9 @@
 #include "internal/pycore_qsbr.h"
 #endif
 
+#include <array>
 #include <cmath>
+#include <memory>
 #include <mutex>
 
 // This is mostly taken from ceval.c _PyEval_EvalCodeWithName
@@ -929,6 +935,30 @@ PyObject* JITRT_ListSlice(PyObject* list, PyObject* start, PyObject* stop) {
   return PyList_GetSlice(list, start_index, stop_index);
 }
 
+extern "C" PyObject* JITRT_ListPopLast(PyObject* list) {
+  if (!PyList_CheckExact(list)) {
+    PyErr_Format(
+        PyExc_TypeError,
+        "descriptor 'pop' for 'list' objects doesn't apply to a '%.100s' object",
+        Py_TYPE(list)->tp_name);
+    return nullptr;
+  }
+
+  Py_ssize_t size = PyList_GET_SIZE(list);
+  if (size == 0) {
+    PyErr_SetString(PyExc_IndexError, "pop from empty list");
+    return nullptr;
+  }
+
+  PyObject* item = PyList_GET_ITEM(list, size - 1);
+  Py_INCREF(item);
+  if (PyList_SetSlice(list, size - 1, size, nullptr) < 0) {
+    Py_DECREF(item);
+    return nullptr;
+  }
+  return item;
+}
+
 int JITRT_ListPrefixReverseAssign(PyObject* list, PyObject* index) {
   if (!PyList_CheckExact(list) || !PyLong_CheckExact(index)) {
     Ref<> minus_one = Ref<>::steal(PyLong_FromLong(-1));
@@ -1389,6 +1419,240 @@ PyObject* JITRT_CallMethod(
   return res;
 }
 
+static PyObject* JITRT_CallMethodFixed(
+    PyObject* callable,
+    PyObject* self_or_null,
+    PyObject* const* explicit_args,
+    Py_ssize_t explicit_arg_count) {
+  constexpr Py_ssize_t kMaxFixedExplicitArgs = 3;
+  JIT_DCHECK(
+      explicit_arg_count <= kMaxFixedExplicitArgs,
+      "fixed method-call helper only supports up to 3 args");
+  std::array<PyObject*, kMaxFixedExplicitArgs + 2> call_args_storage;
+  PyObject** call_args = call_args_storage.data() + 1;
+  call_args[0] = self_or_null;
+  for (Py_ssize_t i = 0; i < explicit_arg_count; i++) {
+    call_args[i + 1] = explicit_args[i];
+  }
+  return JITRT_CallMethod(
+      callable,
+      call_args,
+      static_cast<size_t>(explicit_arg_count + 1) |
+          PY_VECTORCALL_ARGUMENTS_OFFSET,
+      nullptr);
+}
+
+PyObject* JITRT_CallMethodFixed0(PyObject* callable, PyObject* self_or_null) {
+  return JITRT_CallMethodFixed(callable, self_or_null, nullptr, 0);
+}
+
+PyObject* JITRT_CallMethodFixed1(
+    PyObject* callable,
+    PyObject* self_or_null,
+    PyObject* arg0) {
+  PyObject* args[] = {arg0};
+  return JITRT_CallMethodFixed(callable, self_or_null, args, 1);
+}
+
+PyObject* JITRT_CallMethodFixed2(
+    PyObject* callable,
+    PyObject* self_or_null,
+    PyObject* arg0,
+    PyObject* arg1) {
+  PyObject* args[] = {arg0, arg1};
+  return JITRT_CallMethodFixed(callable, self_or_null, args, 2);
+}
+
+PyObject* JITRT_CallMethodFixed3(
+    PyObject* callable,
+    PyObject* self_or_null,
+    PyObject* arg0,
+    PyObject* arg1,
+    PyObject* arg2) {
+  PyObject* args[] = {arg0, arg1, arg2};
+  return JITRT_CallMethodFixed(callable, self_or_null, args, 3);
+}
+
+PyObject* JITRT_CallMethodCached(
+    PyObject* cache_obj,
+    PyObject* const* args,
+    size_t nargsf,
+    PyObject* kwnames) {
+  Py_ssize_t positional_arg_count = PyVectorcall_NARGS(nargsf);
+  if (positional_arg_count < 2) {
+    PyErr_SetString(
+        PyExc_SystemError,
+        "JITRT_CallMethodCached requires name and receiver arguments");
+    return nullptr;
+  }
+  Py_ssize_t keyword_arg_count =
+      kwnames == nullptr ? 0 : PyTuple_GET_SIZE(kwnames);
+  Py_ssize_t total_arg_count = positional_arg_count + keyword_arg_count;
+
+  auto* cache = reinterpret_cast<jit::LoadMethodCache*>(cache_obj);
+  PyObject* name = const_cast<PyObject*>(args[0]);
+  PyObject* receiver = const_cast<PyObject*>(args[1]);
+  auto method = cache->lookupForCall(receiver, name);
+  if (method.callable == nullptr) {
+    return nullptr;
+  }
+
+  Py_ssize_t explicit_arg_count = total_arg_count - 2;
+  Py_ssize_t explicit_positional_arg_count = positional_arg_count - 2;
+  Py_ssize_t call_arg_count = explicit_arg_count + 1;
+  Py_ssize_t call_positional_arg_count = explicit_positional_arg_count + 1;
+  constexpr Py_ssize_t kInlineArgCapacity = 8;
+  std::array<PyObject*, kInlineArgCapacity + 1> inline_args;
+  std::unique_ptr<PyObject*[]> heap_args;
+  PyObject** call_args = inline_args.data() + 1;
+  if (call_arg_count + 1 > static_cast<Py_ssize_t>(inline_args.size())) {
+    heap_args = std::make_unique<PyObject*[]>(call_arg_count + 1);
+    call_args = heap_args.get() + 1;
+  }
+
+  call_args[0] = method.self_or_null;
+  for (Py_ssize_t i = 0; i < explicit_arg_count; i++) {
+    call_args[i + 1] = const_cast<PyObject*>(args[i + 2]);
+  }
+
+  PyObject* result = JITRT_CallMethod(
+      method.callable,
+      call_args,
+      static_cast<size_t>(call_positional_arg_count) |
+          PY_VECTORCALL_ARGUMENTS_OFFSET,
+      kwnames);
+  if (!method.borrowed_self) {
+    Py_XDECREF(method.self_or_null);
+  }
+  Py_DECREF(method.callable);
+  return result;
+}
+
+static PyObject* JITRT_CallMethodCachedFixed(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* const* explicit_args,
+    Py_ssize_t explicit_arg_count,
+    PyObject* kwnames) {
+  Py_ssize_t keyword_arg_count =
+      kwnames == nullptr ? 0 : PyTuple_GET_SIZE(kwnames);
+  if (keyword_arg_count > explicit_arg_count) {
+    PyErr_SetString(
+        PyExc_SystemError,
+        "cached method-call helper has more keyword names than arguments");
+    return nullptr;
+  }
+
+  auto method = cache->lookupForCall(receiver, name);
+  if (method.callable == nullptr) {
+    return nullptr;
+  }
+
+  constexpr Py_ssize_t kMaxFixedExplicitArgs = 3;
+  JIT_DCHECK(
+      explicit_arg_count <= kMaxFixedExplicitArgs,
+      "fixed cached-method helper only supports up to 3 args");
+  std::array<PyObject*, kMaxFixedExplicitArgs + 2> call_args_storage;
+  PyObject** call_args = call_args_storage.data() + 1;
+  call_args[0] = method.self_or_null;
+  for (Py_ssize_t i = 0; i < explicit_arg_count; i++) {
+    call_args[i + 1] = explicit_args[i];
+  }
+
+  Py_ssize_t positional_arg_count =
+      explicit_arg_count - keyword_arg_count + 1;
+  PyObject* result = JITRT_CallMethod(
+      method.callable,
+      call_args,
+      static_cast<size_t>(positional_arg_count) |
+          PY_VECTORCALL_ARGUMENTS_OFFSET,
+      kwnames);
+  if (!method.borrowed_self) {
+    Py_XDECREF(method.self_or_null);
+  }
+  Py_DECREF(method.callable);
+  return result;
+}
+
+PyObject* JITRT_CallMethodCached0(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver) {
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, nullptr, 0, nullptr);
+}
+
+PyObject* JITRT_CallMethodCached1(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* arg0) {
+  PyObject* args[] = {arg0};
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, args, 1, nullptr);
+}
+
+PyObject* JITRT_CallMethodCached2(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* arg0,
+    PyObject* arg1) {
+  PyObject* args[] = {arg0, arg1};
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, args, 2, nullptr);
+}
+
+PyObject* JITRT_CallMethodCached3(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* arg0,
+    PyObject* arg1,
+    PyObject* arg2) {
+  PyObject* args[] = {arg0, arg1, arg2};
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, args, 3, nullptr);
+}
+
+PyObject* JITRT_CallMethodCachedKw0(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames) {
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, nullptr, 0, kwnames);
+}
+
+PyObject* JITRT_CallMethodCachedKw1(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames,
+    PyObject* arg0) {
+  PyObject* args[] = {arg0};
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, args, 1, kwnames);
+}
+
+PyObject* JITRT_CallMethodCachedKw2(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames,
+    PyObject* arg0,
+    PyObject* arg1) {
+  PyObject* args[] = {arg0, arg1};
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, args, 2, kwnames);
+}
+
+PyObject* JITRT_CallMethodCachedKw3(
+    jit::LoadMethodCache* cache,
+    PyObject* name,
+    PyObject* receiver,
+    PyObject* kwnames,
+    PyObject* arg0,
+    PyObject* arg1,
+    PyObject* arg2) {
+  PyObject* args[] = {arg0, arg1, arg2};
+  return JITRT_CallMethodCachedFixed(cache, name, receiver, args, 3, kwnames);
+}
+
 PyObject* JITRT_Vectorcall(
     PyObject* callable,
     PyObject* const* args,
@@ -1447,6 +1711,47 @@ PyObject* JITRT_CallMethodDescrFast1(
   PyObject* args[1] = {arg0};
   auto cfunc = _PyCFunctionFast_CAST(method->d_method->ml_meth);
   PyObject* res = cfunc(self, args, /*nargs=*/1);
+#if PY_VERSION_HEX >= 0x030C0000
+  PyThreadState* tstate = _PyThreadState_GET();
+  if (handle_periodic_activities_on_call(tstate, res, callable)) {
+    Py_DECREF(res);
+    return nullptr;
+  }
+#endif
+  return res;
+}
+
+PyObject* JITRT_CallMethodDescrFastVectorcall(
+    PyObject* callable,
+    PyObject* const* args,
+    size_t nargsf,
+    PyObject* kwnames) {
+  JIT_DCHECK(
+      Py_IS_TYPE(callable, &PyMethodDescr_Type),
+      "expected method descriptor");
+  auto* method = reinterpret_cast<PyMethodDescrObject*>(callable);
+  const int flags = method->d_method->ml_flags;
+  JIT_DCHECK(
+      flags == METH_FASTCALL || flags == (METH_FASTCALL | METH_KEYWORDS),
+      "expected METH_FASTCALL descriptor");
+
+  Py_ssize_t nargs = PyVectorcall_NARGS(nargsf);
+  JIT_DCHECK(nargs >= 1, "expected descriptor call to include self");
+  PyObject* self = args[0];
+  PyObject* const* cargs = args + 1;
+  Py_ssize_t cnargs = nargs - 1;
+
+  PyObject* res;
+  if (flags == (METH_FASTCALL | METH_KEYWORDS)) {
+    auto cfunc =
+        _PyCFunctionFastWithKeywords_CAST(method->d_method->ml_meth);
+    res = cfunc(self, cargs, cnargs, kwnames);
+  } else {
+    JIT_DCHECK(kwnames == nullptr, "METH_FASTCALL descriptor got keywords");
+    auto cfunc = _PyCFunctionFast_CAST(method->d_method->ml_meth);
+    res = cfunc(self, cargs, cnargs);
+  }
+
 #if PY_VERSION_HEX >= 0x030C0000
   PyThreadState* tstate = _PyThreadState_GET();
   if (handle_periodic_activities_on_call(tstate, res, callable)) {
@@ -2407,8 +2712,9 @@ int JITRT_UnicodeEquals(PyObject* s1, PyObject* s2, int equals) {
   return PyObject_RichCompareBool(s1, s2, equals);
 }
 
-PyObject* JITRT_SequenceContains(PyObject* haystack, PyObject* needle) {
-  int result = PySequence_Contains(haystack, needle);
+namespace {
+
+PyObject* boxContainsResult(int result) {
   if (result < 0) {
     return nullptr;
   }
@@ -2418,19 +2724,70 @@ PyObject* JITRT_SequenceContains(PyObject* haystack, PyObject* needle) {
   Py_RETURN_FALSE;
 }
 
+} // namespace
+
+PyObject* JITRT_SequenceContains(PyObject* haystack, PyObject* needle) {
+  int result = PySequence_Contains(haystack, needle);
+  return boxContainsResult(result);
+}
+
+PyObject* JITRT_DictContains(PyObject* haystack, PyObject* needle) {
+  int result = PyDict_Contains(haystack, needle);
+  return boxContainsResult(result);
+}
+
+PyObject* JITRT_SetContains(PyObject* haystack, PyObject* needle) {
+  int result = PySet_Contains(haystack, needle);
+  return boxContainsResult(result);
+}
+
+PyObject* JITRT_DictSubscrExact(PyObject* dict, PyObject* key) {
+  JIT_DCHECK(PyDict_CheckExact(dict), "expected exact dict");
+
+  PyObject* value = nullptr;
+  int result = PyDict_GetItemRef(dict, key, &value);
+  if (result > 0) {
+    return value;
+  }
+  if (result == 0) {
+    _PyErr_SetKeyError(key);
+  }
+  return nullptr;
+}
+
 PyObject* JITRT_SequenceNotContains(PyObject* haystack, PyObject* needle) {
   int result = PySequence_Contains(haystack, needle);
-  if (result < 0) {
-    return nullptr;
-  }
-  if (result) {
-    Py_RETURN_FALSE;
-  }
-  Py_RETURN_TRUE;
+  return boxContainsResult(result < 0 ? result : !result);
+}
+
+PyObject* JITRT_DictNotContains(PyObject* haystack, PyObject* needle) {
+  int result = PyDict_Contains(haystack, needle);
+  return boxContainsResult(result < 0 ? result : !result);
+}
+
+PyObject* JITRT_SetNotContains(PyObject* haystack, PyObject* needle) {
+  int result = PySet_Contains(haystack, needle);
+  return boxContainsResult(result < 0 ? result : !result);
 }
 
 int JITRT_NotContainsBool(PyObject* w, PyObject* v) {
   int res = PySequence_Contains(w, v);
+  if (res == -1) {
+    return -1;
+  }
+  return !res;
+}
+
+int JITRT_DictNotContainsBool(PyObject* w, PyObject* v) {
+  int res = PyDict_Contains(w, v);
+  if (res == -1) {
+    return -1;
+  }
+  return !res;
+}
+
+int JITRT_SetNotContainsBool(PyObject* w, PyObject* v) {
+  int res = PySet_Contains(w, v);
   if (res == -1) {
     return -1;
   }
@@ -2654,6 +3011,59 @@ PyObject JITRT_IterDoneSentinel = {
     nullptr};
 
 PyObject* JITRT_InvokeIterNext(PyObject* iterator) {
+#ifndef Py_GIL_DISABLED
+  if (Py_TYPE(iterator) == &PyListIter_Type) {
+    auto* it = reinterpret_cast<_PyListIterObject*>(iterator);
+    PyListObject* seq = it->it_seq;
+    if (seq == nullptr ||
+        static_cast<size_t>(it->it_index) >=
+            static_cast<size_t>(PyList_GET_SIZE(seq))) {
+      it->it_index = -1;
+      if (seq != nullptr) {
+        it->it_seq = nullptr;
+        Py_DECREF(seq);
+      }
+      Py_INCREF(&JITRT_IterDoneSentinel);
+      return &JITRT_IterDoneSentinel;
+    }
+
+    PyObject* next = PyList_GET_ITEM(seq, it->it_index++);
+    Py_INCREF(next);
+    return next;
+  }
+  if (Py_TYPE(iterator) == &PyTupleIter_Type) {
+    auto* it = reinterpret_cast<_PyTupleIterObject*>(iterator);
+    PyTupleObject* seq = it->it_seq;
+    if (seq == nullptr ||
+        static_cast<size_t>(it->it_index) >=
+            static_cast<size_t>(PyTuple_GET_SIZE(seq))) {
+      if (seq != nullptr) {
+        it->it_seq = nullptr;
+        Py_DECREF(seq);
+      }
+      Py_INCREF(&JITRT_IterDoneSentinel);
+      return &JITRT_IterDoneSentinel;
+    }
+
+    PyObject* next = PyTuple_GET_ITEM(seq, it->it_index++);
+    Py_INCREF(next);
+    return next;
+  }
+
+  if (Py_TYPE(iterator) == &PyRangeIter_Type) {
+    auto* it = reinterpret_cast<_PyRangeIterObject*>(iterator);
+    if (it->len <= 0) {
+      Py_INCREF(&JITRT_IterDoneSentinel);
+      return &JITRT_IterDoneSentinel;
+    }
+
+    long value = it->start;
+    it->start = value + it->step;
+    it->len--;
+    return PyLong_FromLong(value);
+  }
+#endif
+
   iternextfunc iternext_f = Py_TYPE(iterator)->tp_iternext;
   if (iternext_f == nullptr) {
     PyErr_Format(

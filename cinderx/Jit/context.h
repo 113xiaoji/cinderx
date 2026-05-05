@@ -146,6 +146,10 @@ struct FunctionTierState {
   std::size_t policy_resets{0};
   bool promotion_blocked{false};
   std::string promotion_blocked_reason{"none"};
+  bool helper_promotion_deferred{false};
+  std::size_t helper_promotion_threshold{0};
+  std::size_t helper_promotion_ready{0};
+  std::string helper_promotion_reason{"none"};
 };
 
 class Builtins {
@@ -225,6 +229,20 @@ class Context : public IJitContext {
   bool addBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func);
   bool removeBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func);
   bool isBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func);
+  bool addDeferredHelperPromotionFunc(
+      BorrowedRef<PyFunctionObject> func,
+      std::size_t threshold,
+      const char* reason);
+  bool removeDeferredHelperPromotionFunc(
+      BorrowedRef<PyFunctionObject> func,
+      const char* reason);
+  bool isDeferredHelperPromotionFunc(BorrowedRef<PyFunctionObject> func);
+  std::optional<std::size_t> deferredHelperPromotionThresholdIfDeferred(
+      BorrowedRef<PyFunctionObject> func);
+  std::size_t deferredHelperPromotionThreshold(
+      BorrowedRef<PyFunctionObject> func);
+  const UnorderedSet<BorrowedRef<PyFunctionObject>>&
+  deferredHelperPromotionFuncs();
   void clearBaselineScheduledTierState(const char* reason);
   void noteUncompiledFunc(
       BorrowedRef<PyFunctionObject> func,
@@ -645,6 +663,9 @@ class Context : public IJitContext {
 
   /* Set of functions scheduled only for a future baseline-tier transition. */
   UnorderedSet<BorrowedRef<PyFunctionObject>> baseline_scheduled_funcs_;
+
+  /* Set of filtered helper functions waiting for runtime evidence to promote. */
+  UnorderedSet<BorrowedRef<PyFunctionObject>> helper_promotion_deferred_funcs_;
 
   /*
    * Per-function tier policy state. This intentionally mirrors the legacy sets

@@ -411,6 +411,35 @@ HIRParser::parseInstr(std::string_view opcode, Register* dst, int bb_index) {
       }
       break;
     }
+    case Opcode::kCallMethodCached: {
+      expect("<");
+      int num_args = GetNextInteger();
+      expect(",");
+      int name_idx = GetNextNameIdx();
+      auto flags = CallFlags::None;
+      while (peekNextToken() == ",") {
+        expect(",");
+        auto tok = GetNextToken();
+        if (tok == "awaited") {
+          flags |= CallFlags::Awaited;
+        } else if (tok == "kwnames") {
+          flags |= CallFlags::KwArgs;
+        } else {
+          JIT_ABORT("Unexpected CallMethodCached immediate '{}'", tok);
+        }
+      }
+      expect(">");
+      std::vector<Register*> args(num_args);
+      std::generate(
+          args.begin(),
+          args.end(),
+          std::bind(std::mem_fn(&HIRParser::ParseRegister), this));
+      instruction = newInstr<CallMethodCached>(args.size(), dst, name_idx, flags);
+      for (std::size_t i = 0; i < args.size(); i++) {
+        instruction->SetOperand(i, args[i]);
+      }
+      break;
+    }
     case Opcode::kCondBranch: {
       expect("<");
       auto true_bb = GetNextInteger();

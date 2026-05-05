@@ -282,6 +282,8 @@ Type outputTypeWithRecursiveCoroHint(
       return returnType(static_cast<const VectorCall&>(instr).func()->type());
     case Opcode::kCallMethod:
       return returnType(static_cast<const CallMethod&>(instr).func()->type());
+    case Opcode::kCallMethodCached:
+      return TObject;
 
     case Opcode::kCompare: {
       CompareOp op = static_cast<const Compare&>(instr).op();

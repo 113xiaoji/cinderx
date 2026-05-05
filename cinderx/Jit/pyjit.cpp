@@ -26,6 +26,7 @@
 #include "cinderx/Common/util.h"
 #include "cinderx/Interpreter/interpreter.h"
 #include "cinderx/Jit/code_allocator.h"
+#include "cinderx/Jit/bytecode.h"
 #include "cinderx/Jit/compiled_function.h"
 #include "cinderx/Jit/compiler.h"
 #include "cinderx/Jit/config.h"
@@ -58,10 +59,12 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -100,6 +103,434 @@ CompilerContext<Compiler>* jitCtx() {
 constexpr int required_code_flags = CO_OPTIMIZED | CO_NEWLOCALS;
 bool hasRequiredFlags(BorrowedRef<PyCodeObject> code) {
   return (code->co_flags & required_code_flags) == required_code_flags;
+}
+
+bool isPolicyBackedgeOpcode(int opcode) {
+  switch (opcode) {
+    case JUMP_BACKWARD:
+    case JUMP_BACKWARD_NO_INTERRUPT:
+#if PY_VERSION_HEX >= 0x030E0000
+    case JUMP_BACKWARD_JIT:
+    case JUMP_BACKWARD_NO_JIT:
+#endif
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool codeHasPolicyBackedge(BorrowedRef<PyCodeObject> code) {
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    if (isPolicyBackedgeOpcode(bc_instr.opcode())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isSimpleSelfMethodCode(BorrowedRef<PyCodeObject> code) {
+  if (code->co_argcount < 1 || !PyUnicode_CheckExact(code->co_qualname)) {
+    return false;
+  }
+
+  BorrowedRef<> arg0_name_obj{getVarname(code, 0)};
+  if (!PyUnicode_CheckExact(arg0_name_obj)) {
+    return false;
+  }
+  const char* arg0_name = PyUnicode_AsUTF8(arg0_name_obj);
+  if (arg0_name == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  if (std::strcmp(arg0_name, "self") != 0) {
+    return false;
+  }
+
+  const char* qualname = PyUnicode_AsUTF8(code->co_qualname);
+  if (qualname == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+  std::string_view qualname_view{qualname};
+  std::size_t dot = qualname_view.find('.');
+  return dot != std::string_view::npos && dot != 0 &&
+      qualname_view.rfind('.') == dot &&
+      qualname_view.find('<') == std::string_view::npos;
+}
+
+bool isStateHelperSubscriptOpcode(int opcode) {
+  switch (opcode) {
+    case BINARY_SUBSCR:
+    case BINARY_SUBSCR_DICT:
+    case BINARY_SUBSCR_DICT_STR:
+    case BINARY_SUBSCR_LIST:
+    case BINARY_SUBSCR_LIST_INT:
+    case BINARY_SUBSCR_TUPLE:
+    case BINARY_SUBSCR_TUPLE_CONST_INT:
+    case BINARY_SUBSCR_TUPLE_INT:
+#if PY_VERSION_HEX >= 0x030E0000
+    case BINARY_OP_SUBSCR_DICT:
+    case BINARY_OP_SUBSCR_GETITEM:
+    case BINARY_OP_SUBSCR_LIST_INT:
+    case BINARY_OP_SUBSCR_LIST_SLICE:
+    case BINARY_OP_SUBSCR_STR_INT:
+    case BINARY_OP_SUBSCR_TUPLE_INT:
+#endif
+#if PY_VERSION_HEX >= 0x030F0000
+    case BINARY_OP_SUBSCR_USTR_INT:
+#endif
+    case STORE_SUBSCR:
+    case STORE_SUBSCR_DICT:
+    case STORE_SUBSCR_LIST_INT:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isStateHelperSubscriptInstruction(const BytecodeInstruction& bc_instr) {
+  int opcode = bc_instr.opcode();
+  int specialized_opcode = bc_instr.specializedOpcode();
+  return isStateHelperSubscriptOpcode(opcode) ||
+      isStateHelperSubscriptOpcode(specialized_opcode) ||
+      (opcode == BINARY_OP && bc_instr.oparg() == NB_SUBSCR);
+}
+
+bool isStateHelperAttrStoreOpcode(int opcode) {
+  switch (opcode) {
+    case STORE_ATTR:
+    case STORE_ATTR_INSTANCE_VALUE:
+    case STORE_ATTR_SLOT:
+    case STORE_ATTR_WITH_HINT:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isStateHelperAttrStoreInstruction(const BytecodeInstruction& bc_instr) {
+  int opcode = bc_instr.opcode();
+  int specialized_opcode = bc_instr.specializedOpcode();
+  return isStateHelperAttrStoreOpcode(opcode) ||
+      isStateHelperAttrStoreOpcode(specialized_opcode);
+}
+
+bool isStateHelperAttrLoadOpcode(int opcode) {
+  switch (opcode) {
+    case LOAD_ATTR:
+    case LOAD_ATTR_CLASS:
+    case LOAD_ATTR_GETATTRIBUTE_OVERRIDDEN:
+    case LOAD_ATTR_INSTANCE_VALUE:
+    case LOAD_ATTR_MODULE:
+    case LOAD_ATTR_PROPERTY:
+    case LOAD_ATTR_SLOT:
+    case LOAD_ATTR_WITH_HINT:
+#if PY_VERSION_HEX >= 0x030F0000
+    case LOAD_ATTR_CLASS_WITH_METACLASS_CHECK:
+    case LOAD_ATTR_NONDESCRIPTOR_NO_DICT:
+    case LOAD_ATTR_NONDESCRIPTOR_WITH_VALUES:
+#endif
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isStatePredicateAllowedOpcode(int opcode, bool allow_contains_op) {
+  switch (opcode) {
+    case CACHE:
+    case COPY:
+    case NOP:
+    case NOT_TAKEN:
+    case POP_TOP:
+    case RESUME:
+    case RESUME_CHECK:
+    case LOAD_FAST:
+    case LOAD_FAST_AND_CLEAR:
+    case LOAD_FAST_BORROW:
+    case LOAD_FAST_BORROW_LOAD_FAST_BORROW:
+    case LOAD_FAST_CHECK:
+    case LOAD_FAST_LOAD_FAST:
+    case LOAD_CONST:
+    case LOAD_CONST_IMMORTAL:
+    case LOAD_CONST_MORTAL:
+    case RETURN_VALUE:
+    case UNARY_NOT:
+    case TO_BOOL:
+    case TO_BOOL_ALWAYS_TRUE:
+    case TO_BOOL_BOOL:
+    case TO_BOOL_INT:
+    case TO_BOOL_LIST:
+    case TO_BOOL_NONE:
+    case TO_BOOL_STR:
+    case JUMP_IF_FALSE_OR_POP:
+    case JUMP_IF_TRUE_OR_POP:
+    case POP_JUMP_IF_FALSE:
+    case POP_JUMP_IF_TRUE:
+    case EXTENDED_ARG:
+      return true;
+    case CONTAINS_OP:
+      return allow_contains_op;
+    default:
+      return isStateHelperAttrLoadOpcode(opcode);
+  }
+}
+
+bool isStateHelperAttrPredicateCode(
+    BorrowedRef<PyCodeObject> code,
+    bool allow_contains_op = false) {
+  bool has_attr_load{false};
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    int opcode = bc_instr.opcode();
+    int specialized_opcode = bc_instr.specializedOpcode();
+    has_attr_load |= isStateHelperAttrLoadOpcode(opcode) ||
+        isStateHelperAttrLoadOpcode(specialized_opcode);
+    if (!isStatePredicateAllowedOpcode(opcode, allow_contains_op) &&
+        !isStatePredicateAllowedOpcode(specialized_opcode, allow_contains_op)) {
+      return false;
+    }
+  }
+  return has_attr_load;
+}
+
+bool isHelperPromotionCallOpcode(int opcode) {
+  switch (opcode) {
+    case CALL:
+    case CALL_FUNCTION:
+    case CALL_FUNCTION_EX:
+    case CALL_FUNCTION_KW:
+    case CALL_INTRINSIC_1:
+    case CALL_INTRINSIC_2:
+    case CALL_KW:
+    case CALL_METHOD:
+    case INVOKE_FUNCTION:
+    case INVOKE_METHOD:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool codeHasHelperPromotionCall(BorrowedRef<PyCodeObject> code) {
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    if (isHelperPromotionCallOpcode(bc_instr.opcode()) ||
+        isHelperPromotionCallOpcode(bc_instr.specializedOpcode())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool codeHasStateHelperMutationOrSubscript(BorrowedRef<PyCodeObject> code) {
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    if (isStateHelperSubscriptInstruction(bc_instr) ||
+        isStateHelperAttrStoreInstruction(bc_instr)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isStateHelperMethodLoadOpcode(int opcode) {
+  switch (opcode) {
+    case LOAD_METHOD:
+    case LOAD_METHOD_STATIC:
+    case LOAD_METHOD_SUPER:
+    case LOAD_ATTR_METHOD_WITH_VALUES:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isStateHelperMethodLoadInstruction(const BytecodeInstruction& bc_instr) {
+  if (isStateHelperMethodLoadOpcode(bc_instr.opcode()) ||
+      isStateHelperMethodLoadOpcode(bc_instr.specializedOpcode())) {
+    return true;
+  }
+#if PY_VERSION_HEX >= 0x030C0000
+  return bc_instr.opcode() == LOAD_ATTR && (bc_instr.oparg() & 1) != 0;
+#else
+  return false;
+#endif
+}
+
+bool isStateHelperMethodValueOpcode(int opcode) {
+  return opcode == LOAD_ATTR_METHOD_WITH_VALUES;
+}
+
+bool isReadyStateHelperMethodValueInstruction(
+    const BytecodeInstruction& bc_instr) {
+  int opcode = bc_instr.opcode();
+  int specialized_opcode = bc_instr.specializedOpcode();
+  if (
+      !isStateHelperMethodValueOpcode(opcode) &&
+      !isStateHelperMethodValueOpcode(specialized_opcode)) {
+    return false;
+  }
+  PyObject* descr = bc_instr.cacheObj(6);
+  return descr != nullptr && PyFunction_Check(descr) && bc_instr.cacheU32(2) != 0 &&
+      bc_instr.cacheU32(4) != 0;
+}
+
+bool shouldWaitForDeferredHelperMethodValueCache(
+    BorrowedRef<PyCodeObject> code,
+    uint64_t calls) {
+  constexpr uint64_t kMinMethodValueCacheWarmupCalls = 64;
+  bool has_attr_store{false};
+  bool has_method_load{false};
+  bool has_ready_method_value{false};
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    has_attr_store |= isStateHelperAttrStoreInstruction(bc_instr);
+    has_method_load |= isStateHelperMethodLoadInstruction(bc_instr);
+    has_ready_method_value |= isReadyStateHelperMethodValueInstruction(bc_instr);
+  }
+  if (!has_attr_store || !has_method_load) {
+    return false;
+  }
+  return calls < kMinMethodValueCacheWarmupCalls || !has_ready_method_value;
+}
+
+bool shouldAdmitStateHelperCode(BorrowedRef<PyCodeObject> code) {
+  const auto& config = getConfig();
+  if (codeHasPolicyBackedge(code) || !isSimpleSelfMethodCode(code)) {
+    return false;
+  }
+
+  if (config.admit_state_helpers) {
+    for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+      if (isStateHelperSubscriptInstruction(bc_instr)) {
+        return true;
+      }
+    }
+  }
+
+  if (!config.admit_calling_state_helpers ||
+      !codeHasHelperPromotionCall(code)) {
+    return false;
+  }
+
+  return codeHasStateHelperMutationOrSubscript(code) ||
+      isStateHelperAttrPredicateCode(
+             code, getConfig().defer_contains_state_helpers);
+}
+
+bool shouldDeferFilteredHelperPromotionCode(BorrowedRef<PyCodeObject> code) {
+  if (!isSimpleSelfMethodCode(code)) {
+    return false;
+  }
+
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    if (isStateHelperSubscriptInstruction(bc_instr) ||
+        isStateHelperAttrStoreInstruction(bc_instr)) {
+      return true;
+    }
+  }
+
+  return isStateHelperAttrPredicateCode(
+      code, getConfig().defer_contains_state_helpers);
+}
+
+bool shouldFilterTinyNoBackedgeCode(BorrowedRef<PyCodeObject> code) {
+  const auto& config = getConfig();
+  if (!config.filter_tiny_no_backedge_functions ||
+      config.tiny_no_backedge_instruction_limit == 0 ||
+      codeHasPolicyBackedge(code)) {
+    return false;
+  }
+  if (shouldAdmitStateHelperCode(code)) {
+    return false;
+  }
+
+  std::size_t instruction_count{0};
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    (void)bc_instr;
+    instruction_count++;
+    if (instruction_count > config.tiny_no_backedge_instruction_limit) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool isShapeProfitabilityCallOpcode(int opcode) {
+  return isHelperPromotionCallOpcode(opcode);
+}
+
+bool isShapeProfitabilityMethodOpcode(int opcode) {
+  switch (opcode) {
+    case LOAD_ATTR_METHOD_WITH_VALUES:
+    case LOAD_METHOD:
+    case LOAD_METHOD_STATIC:
+    case LOAD_METHOD_SUPER:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool isShapeProfitabilityUnpackOpcode(int opcode) {
+  switch (opcode) {
+    case UNPACK_SEQUENCE:
+    case UNPACK_SEQUENCE_LIST:
+    case UNPACK_SEQUENCE_TUPLE:
+    case UNPACK_SEQUENCE_TWO_TUPLE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool shouldFilterUnprofitableShapeCode(BorrowedRef<PyCodeObject> code) {
+  if (!getConfig().filter_unprofitable_shapes) {
+    return false;
+  }
+  if (shouldAdmitStateHelperCode(code)) {
+    return false;
+  }
+
+  bool has_backedge{false};
+  bool has_call{false};
+  bool has_make_function{false};
+  bool has_method{false};
+  bool has_unpack{false};
+  for (const auto& bc_instr : BytecodeInstructionBlock{code}) {
+    int opcode = bc_instr.opcode();
+    has_call |= isShapeProfitabilityCallOpcode(opcode);
+    has_method |= isShapeProfitabilityMethodOpcode(opcode);
+    has_unpack |= isShapeProfitabilityUnpackOpcode(opcode);
+    has_make_function |= opcode == MAKE_FUNCTION;
+    has_backedge |= isPolicyBackedgeOpcode(opcode);
+  }
+
+  // First policy iteration: keep unpack-heavy loops, where the JIT has shown
+  // a positive signal, and skip currently unprofitable call/object-heavy shapes.
+  if (has_unpack) {
+    return false;
+  }
+
+  return !has_backedge || has_call || has_make_function || has_method;
+}
+
+bool isGeneratedHelperCode(BorrowedRef<PyCodeObject> code) {
+  if (code->co_name == nullptr || !PyUnicode_Check(code->co_name)) {
+    return false;
+  }
+
+  const char* name = PyUnicode_AsUTF8(code->co_name);
+  if (name == nullptr) {
+    PyErr_Clear();
+    return false;
+  }
+
+  std::string_view name_view{name};
+  return name_view == "<listcomp>" || name_view == "<dictcomp>" ||
+      name_view == "<setcomp>" || name_view == "<genexpr>";
+}
+
+bool shouldFilterGeneratedCode(BorrowedRef<PyCodeObject> code) {
+  return getConfig().filter_generated_functions && isGeneratedHelperCode(code);
 }
 
 uint64_t countCalls(PyCodeObject* code) {
@@ -386,6 +817,22 @@ PyObject* jitVectorcall(
     return entry(func_obj, stack, nargsf, kwnames);
   }
 
+  if (ctx != nullptr) {
+    std::optional<std::size_t> threshold =
+        ctx->deferredHelperPromotionThresholdIfDeferred(func);
+    if (threshold.has_value()) {
+      uint64_t helper_calls = get_calls();
+      if (*threshold == 0 || helper_calls < *threshold ||
+          shouldWaitForDeferredHelperMethodValueCache(code, helper_calls)) {
+        incrementShadowcodeCall(code);
+        auto entry = getInterpretedVectorcall(func);
+        return entry(func_obj, stack, nargsf, kwnames);
+      }
+      ctx->removeDeferredHelperPromotionFunc(func, "helper_promotion_ready");
+      return forcedJitVectorcall(func_obj, stack, nargsf, kwnames);
+    }
+  }
+
   if (baseline_limit.has_value() && ctx != nullptr && !isJitCompiled(func) &&
       !ctx->isBaselineFunc(func)) {
     uint64_t call_count = get_calls();
@@ -533,6 +980,70 @@ FlagProcessor initFlagProcessor() {
       },
       "Enable baseline-tier auto mode, which moves functions into the "
       "baseline tier after the given threshold");
+
+  flag_processor
+      .addOption(
+          "jit-filter-tiny",
+          "PYTHONJITFILTERTINY",
+          [](int val) {
+            auto& config = getMutableConfig();
+            config.filter_tiny_no_backedge_functions = val > 0;
+            if (val > 1) {
+              config.tiny_no_backedge_instruction_limit =
+                  static_cast<std::size_t>(val);
+            }
+          },
+          "Skip tiny no-backedge functions during auto/JIT-list scheduling")
+      .withFlagParamName("0|1|instruction_limit");
+
+  flag_processor.addOption(
+      "jit-shape-profit-filter",
+      "PYTHONJITSHAPEPROFITFILTER",
+      getMutableConfig().filter_unprofitable_shapes,
+      "Skip call-heavy/object-heavy shapes during auto/JIT-list scheduling");
+
+  flag_processor.addOption(
+      "jit-filter-generated",
+      "PYTHONJITFILTERGENERATED",
+      getMutableConfig().filter_generated_functions,
+      "Skip generated comprehension/generator helper code during "
+      "auto/JIT-list scheduling");
+
+  flag_processor.addOption(
+      "jit-admit-state-helpers",
+      "PYTHONJITADMITSTATEHELPERS",
+      getMutableConfig().admit_state_helpers,
+      "Admit object-state helper methods through no-backedge scheduler filters");
+
+  flag_processor.addOption(
+      "jit-admit-calling-state-helpers",
+      "PYTHONJITADMITCALLINGSTATEHELPERS",
+      getMutableConfig().admit_calling_state_helpers,
+      "Admit tiny object-state helper methods that call other helpers through "
+      "no-backedge scheduler filters");
+
+  flag_processor
+      .addOption(
+          "jit-defer-filtered-helpers",
+          "PYTHONJITDEFERFILTEREDHELPERS",
+          [](int val) {
+            auto& config = getMutableConfig();
+            config.defer_filtered_no_backedge_helpers = val > 0;
+            if (val > 1) {
+              config.deferred_no_backedge_helper_threshold =
+                  static_cast<std::size_t>(val);
+            }
+          },
+          "Defer filtered no-backedge helpers and promote them after a hotness "
+          "threshold")
+      .withFlagParamName("0|1|call_threshold");
+
+  flag_processor.addOption(
+      "jit-defer-contains-state-helpers",
+      "PYTHONJITDEFERCONTAINSHELPERS",
+      getMutableConfig().defer_contains_state_helpers,
+      "Allow deferred filtered helper promotion for simple self-state "
+      "membership predicates");
 
   flag_processor.addOption(
       "jit-debug",
@@ -818,6 +1329,11 @@ FlagProcessor initFlagProcessor() {
       getMutableConfig().inliner_cost_limit,
       "Limit how much the inliner is able to inline. The number's definition "
       "is only relevant to the inliner itself.");
+  flag_processor.addOption(
+      "jit-enable-method-value-inliner",
+      "PYTHONJITENABLEMETHODVALUEINLINER",
+      getMutableConfig().method_value_inliner,
+      "Enable only the profiled method-value subset of the HIR inliner");
 
   flag_processor.addOption(
       "jit-lir-inliner",
@@ -956,6 +1472,72 @@ FlagProcessor initFlagProcessor() {
       "PYTHONJITSPECIALIZEDOPCODES",
       getMutableConfig().specialized_opcodes,
       "JIT specialized opcodes or to fall back to their generic counterparts.");
+
+  flag_processor.addOption(
+      "jit-specialized-contains-op",
+      "PYTHONJITENABLESPECIALIZEDCONTAINS",
+      getMutableConfig().specialized_contains_op,
+      "Lower specialized set/dict membership opcodes to exact helper calls.");
+
+  flag_processor.addOption(
+      "jit-dynamic-method-cache-split",
+      "PYTHONJITDYNAMICMETHODCACHESPLIT",
+      getMutableConfig().dynamic_method_cache_split,
+      "Split dynamic method cache loads into a type-check fast path and a "
+      "cache-fill slow path.");
+
+  flag_processor.addOption(
+      "jit-kw-pyfunc-vectorcall",
+      "PYTHONJITENABLEKWPYFUNCVECTORCALL",
+      getMutableConfig().specialized_kw_pyfunc_vectorcall,
+      "Use the exact Python function vectorcall helper for CALL_KW when the "
+      "callee is known to be an exact PyFunction.");
+
+  flag_processor.addOption(
+      "jit-zero-arg-mwv-delayed-lookup",
+      "PYTHONJITZEROARGMWVDELAYEDLOOKUP",
+      getMutableConfig().zero_arg_mwv_delayed_lookup,
+      "Delay generic lookup for safe zero-argument method-with-values calls.");
+
+  flag_processor.addOption(
+      "jit-exact-dict-subscr",
+      "PYTHONJITEXACTDICTSUBSCR",
+      getMutableConfig().exact_dict_subscr_helper,
+      "Use a direct helper for exact dict subscripts.");
+
+  flag_processor.addOption(
+      "jit-method-descr-fast-vectorcall",
+      "PYTHONJITMETHODDESCRFASTVECTORCALL",
+      getMutableConfig().method_descr_fast_vectorcall,
+      "Use a direct helper for exact method descriptors with METH_FASTCALL "
+      "shapes beyond the legacy one-explicit-argument case.");
+
+  flag_processor.addOption(
+      "jit-inline-list-iter-next",
+      "PYTHONJITINLINELISTITERNEXT",
+      getMutableConfig().inline_list_iter_next,
+      "Inline exact list iterator hot iterations in LIR while preserving the "
+      "generic InvokeIterNext helper for fallback and exhaustion.");
+
+  flag_processor.addOption(
+      "jit-list-pop-last-helper",
+      "PYTHONJITLISTPOPLASTHELPER",
+      getMutableConfig().list_pop_last_helper,
+      "Use a direct helper for exact list.pop() with the default index.");
+
+  flag_processor.addOption(
+      "jit-cached-method-call-helper",
+      "PYTHONJITCACHEDMETHODCALLHELPER",
+      getMutableConfig().cached_method_call_helper,
+      "Fuse safe dynamic LOAD_METHOD/CALL pairs into one cached method-call "
+      "helper.");
+
+  flag_processor.addOption(
+      "jit-store-attr-instance-value-existing",
+      "PYTHONJITSTOREATTRINSTANCEVALUEEXISTING",
+      getMutableConfig().store_attr_instance_value_existing,
+      "Lower STORE_ATTR_INSTANCE_VALUE to direct StoreField when the inline "
+      "value slot already contains an object.");
 
 #if PY_VERSION_HEX >= 0x030C0000
   flag_processor.addOption(
@@ -1169,6 +1751,10 @@ bool shouldAttemptPreloadedUnit(BorrowedRef<> unit, const char* reason) {
     return true;
   }
   BorrowedRef<PyFunctionObject> func{unit.get()};
+  if (std::strcmp(reason, "precompile_all") == 0 &&
+      jitCtx()->isDeferredHelperPromotionFunc(func)) {
+    return false;
+  }
   if (!jitCtx()->shouldAttemptOptimizedPromotion(func, reason)) {
     return false;
   }
@@ -1615,6 +2201,14 @@ void disable_jit_impl(bool deopt_all) {
         jitCtx()->baselineScheduledFuncs().begin(),
         jitCtx()->baselineScheduledFuncs().end()};
     for (BorrowedRef<PyFunctionObject> func : baseline_scheduled_funcs) {
+      cinderx::getModuleState()->registered_compilation_units.erase(
+          func.getObj());
+      setVectorcall(func, getInterpretedVectorcall(func));
+    }
+    std::vector<BorrowedRef<PyFunctionObject>> deferred_helper_funcs{
+        jitCtx()->deferredHelperPromotionFuncs().begin(),
+        jitCtx()->deferredHelperPromotionFuncs().end()};
+    for (BorrowedRef<PyFunctionObject> func : deferred_helper_funcs) {
       cinderx::getModuleState()->registered_compilation_units.erase(
           func.getObj());
       setVectorcall(func, getInterpretedVectorcall(func));
@@ -2117,7 +2711,10 @@ PyObject* force_uncompile(PyObject* /* self */, PyObject* arg) {
   bool was_baseline = jitCtx() != nullptr && jitCtx()->isBaselineFunc(func);
   bool was_baseline_scheduled =
       jitCtx() != nullptr && jitCtx()->isBaselineScheduledFunc(func);
-  if (!was_compiled && !was_baseline && !was_baseline_scheduled) {
+  bool was_deferred_helper =
+      jitCtx() != nullptr && jitCtx()->isDeferredHelperPromotionFunc(func);
+  if (!was_compiled && !was_baseline && !was_baseline_scheduled &&
+      !was_deferred_helper) {
     Py_RETURN_FALSE;
   }
 
@@ -2350,7 +2947,17 @@ PyObject* get_function_tier_state(PyObject* /* self */, PyObject* arg) {
       !set_bool("promotion_blocked", state.promotion_blocked) ||
       !set_string(
           "promotion_blocked_reason",
-          state.promotion_blocked_reason.c_str())) {
+          state.promotion_blocked_reason.c_str()) ||
+      !set_bool(
+          "helper_promotion_deferred",
+          state.helper_promotion_deferred) ||
+      !set_size(
+          "helper_promotion_threshold",
+          state.helper_promotion_threshold) ||
+      !set_size("helper_promotion_ready", state.helper_promotion_ready) ||
+      !set_string(
+          "helper_promotion_reason",
+          state.helper_promotion_reason.c_str())) {
     return nullptr;
   }
 
@@ -4597,6 +5204,33 @@ bool shouldScheduleCompile(BorrowedRef<PyFunctionObject> func) {
       getConfig().compile_after_n_calls.has_value();
 }
 
+bool deferFilteredNoBackedgeHelperPromotion(BorrowedRef<PyFunctionObject> func) {
+  const auto& config = getConfig();
+  BorrowedRef<PyCodeObject> code{func->func_code};
+  if (!config.defer_filtered_no_backedge_helpers ||
+      config.deferred_no_backedge_helper_threshold == 0 ||
+      !shouldDeferFilteredHelperPromotionCode(code) || jitCtx() == nullptr ||
+      !isJitUsable()) {
+    return false;
+  }
+
+  setVectorcall(func, jitVectorcall);
+  if (!registerFunction(func, /* allow_reopt= */ false)) {
+    setVectorcall(func, getInterpretedVectorcall(func));
+    return false;
+  }
+  if (!jitCtx()->addDeferredHelperPromotionFunc(
+          func,
+          config.deferred_no_backedge_helper_threshold,
+          "tiny_no_backedge_filter")) {
+    cinderx::getModuleState()->registered_compilation_units.erase(
+        func.getObj());
+    setVectorcall(func, getInterpretedVectorcall(func));
+    return false;
+  }
+  return true;
+}
+
 bool scheduleJitCompile(BorrowedRef<PyFunctionObject> func) {
   auto eligible = getCompilationEligibility(func);
   if (eligible == JitEligibility::Ineligible) {
@@ -4625,6 +5259,26 @@ bool scheduleJitCompile(BorrowedRef<PyFunctionObject> func) {
   // JIT-compiled code despite the JIT being disabled.
   if (reoptFunc(func)) {
     return true;
+  }
+
+  BorrowedRef<PyCodeObject> code{func->func_code};
+  if (shouldFilterGeneratedCode(code)) {
+    JIT_DLOG("Skipping generated helper code during JIT scheduling");
+    return false;
+  }
+  if (shouldFilterTinyNoBackedgeCode(code)) {
+    if (deferFilteredNoBackedgeHelperPromotion(func)) {
+      JIT_DLOG(
+          "Deferring tiny no-backedge function during JIT scheduling until it "
+          "is hot");
+      return true;
+    }
+    JIT_DLOG("Skipping tiny no-backedge function during JIT scheduling");
+    return false;
+  }
+  if (shouldFilterUnprofitableShapeCode(code)) {
+    JIT_DLOG("Skipping unprofitable bytecode shape during JIT scheduling");
+    return false;
   }
 
   if (!isJitUsable()) {

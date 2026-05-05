@@ -821,6 +821,7 @@ enum class CallFlags : uint32_t {
   Awaited = 1 << 1,
   Static = 1 << 2,
   NoSpecialize = 1 << 3,
+  ProfiledMethodValue = 1 << 4,
 };
 
 constexpr uint32_t raw(CallFlags flags) {
@@ -2555,6 +2556,61 @@ DEFINE_SIMPLE_INSTR(
     HasOutput,
     Operands<1>,
     LoadMethodBase);
+
+// Fuse a cached method lookup and method-shaped call at a bytecode call site.
+// Operand 0 is the original lookup receiver; remaining operands are explicit
+// call arguments. The runtime helper uses the same LoadMethodCache machinery as
+// LoadMethodCached, so instance shadowing and type invalidation semantics stay
+// centralized.
+class INSTR_CLASS(
+    CallMethodCached,
+    (TOptObject),
+    HasOutput,
+    Operands<>,
+    DeoptBaseWithNameIdx) {
+ public:
+  CallMethodCached(Register* dst, int name_idx, CallFlags flags)
+      : InstrT(dst, name_idx), flags_(flags) {
+    JIT_CHECK(
+        !(flags_ & CallFlags::Static),
+        "CallMethodCached doesn't support Static Python");
+  }
+
+  CallMethodCached(
+      Register* dst,
+      int name_idx,
+      CallFlags flags,
+      const FrameState& frame)
+      : CallMethodCached(dst, name_idx, flags) {
+    setFrameState(frame);
+  }
+
+  Register* receiver() const {
+    return GetOperand(0);
+  }
+
+  std::size_t NumArgs() const {
+    return NumOperands() - 1 - ((flags_ & CallFlags::KwArgs) ? 1 : 0);
+  }
+
+  Register* arg(std::size_t i) const {
+    return GetOperand(i + 1);
+  }
+
+  Register* kwnames() const {
+    JIT_CHECK(
+        flags_ & CallFlags::KwArgs,
+        "CallMethodCached has no keyword-name operand");
+    return GetOperand(NumOperands() - 1);
+  }
+
+  CallFlags flags() const {
+    return flags_;
+  }
+
+ private:
+  CallFlags flags_;
+};
 
 // Like LoadMethod, but specialized for loading an attribute from a module
 DEFINE_SIMPLE_INSTR(

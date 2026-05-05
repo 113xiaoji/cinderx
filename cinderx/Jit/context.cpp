@@ -214,6 +214,7 @@ void Builtins::init() {
   PyTypeObject* types[] = {
       &PyDict_Type,
       &PyList_Type,
+      &PySet_Type,
       &PyTuple_Type,
       &PyUnicode_Type,
   };
@@ -747,6 +748,11 @@ Context::baselineScheduledFuncs() {
   return baseline_scheduled_funcs_;
 }
 
+const UnorderedSet<BorrowedRef<PyFunctionObject>>&
+Context::deferredHelperPromotionFuncs() {
+  return helper_promotion_deferred_funcs_;
+}
+
 void Context::addCompileTime(std::chrono::nanoseconds time) {
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(time);
   total_compile_time_ms_.fetch_add(ms.count(), std::memory_order_relaxed);
@@ -773,6 +779,7 @@ void Context::funcDestroyed(BorrowedRef<PyFunctionObject> func) {
   deopted_funcs_.erase(func);
   baseline_funcs_.erase(func);
   baseline_scheduled_funcs_.erase(func);
+  helper_promotion_deferred_funcs_.erase(func);
   tier_states_.erase(func);
   for (const CodeRuntime* runtime : forgetCodeRuntimeOwner(func)) {
     forgetTypeDeoptPatchersForRuntime(runtime);
@@ -812,12 +819,15 @@ bool Context::addBaselineFunc(BorrowedRef<PyFunctionObject> func) {
     return false;
   }
   baseline_scheduled_funcs_.erase(func);
+  helper_promotion_deferred_funcs_.erase(func);
   bool inserted = baseline_funcs_.emplace(func).second;
   FunctionTierState& state = tierStateFor(func);
   state.active_tier = FunctionTier::kBaseline;
   state.baseline_scheduled = false;
   state.compiled = false;
   state.deopted = false;
+  state.helper_promotion_deferred = false;
+  state.helper_promotion_threshold = 0;
   state.last_transition = "baseline";
   return inserted;
 }
@@ -870,6 +880,71 @@ bool Context::isBaselineScheduledFunc(BorrowedRef<PyFunctionObject> func) {
   return baseline_scheduled_funcs_.contains(func);
 }
 
+bool Context::addDeferredHelperPromotionFunc(
+    BorrowedRef<PyFunctionObject> func,
+    std::size_t threshold,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  if (compiled_funcs_.contains(func) || baseline_funcs_.contains(func)) {
+    return false;
+  }
+  bool inserted = helper_promotion_deferred_funcs_.emplace(func).second;
+  FunctionTierState& state = tierStateFor(func);
+  state.active_tier = FunctionTier::kInterp;
+  state.baseline_scheduled = false;
+  state.compiled = false;
+  state.deopted = false;
+  state.helper_promotion_deferred = true;
+  state.helper_promotion_threshold = threshold;
+  state.helper_promotion_reason = reason;
+  state.last_policy_event = "helper_promotion_deferred";
+  state.last_policy_reason = reason;
+  state.last_transition = "helper_promotion_deferred";
+  return inserted;
+}
+
+bool Context::removeDeferredHelperPromotionFunc(
+    BorrowedRef<PyFunctionObject> func,
+    const char* reason) {
+  ThreadedCompileSerialize guard;
+  bool removed = helper_promotion_deferred_funcs_.erase(func) == 1;
+  FunctionTierState& state = tierStateFor(func);
+  if (removed || state.helper_promotion_deferred) {
+    state.helper_promotion_deferred = false;
+    state.helper_promotion_threshold = 0;
+    state.helper_promotion_ready++;
+    state.last_policy_event = reason;
+    state.last_policy_reason = reason;
+    if (state.active_tier == FunctionTier::kInterp) {
+      state.last_transition = reason;
+    }
+  }
+  return removed;
+}
+
+bool Context::isDeferredHelperPromotionFunc(BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  return helper_promotion_deferred_funcs_.contains(func);
+}
+
+std::optional<std::size_t> Context::deferredHelperPromotionThresholdIfDeferred(
+    BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  if (!helper_promotion_deferred_funcs_.contains(func)) {
+    return std::nullopt;
+  }
+  return tierStateFor(func).helper_promotion_threshold;
+}
+
+std::size_t Context::deferredHelperPromotionThreshold(
+    BorrowedRef<PyFunctionObject> func) {
+  ThreadedCompileSerialize guard;
+  if (!helper_promotion_deferred_funcs_.contains(func)) {
+    return 0;
+  }
+  return tierStateFor(func).helper_promotion_threshold;
+}
+
 void Context::clearBaselineScheduledTierState(const char* reason) {
   ThreadedCompileSerialize guard;
   for (BorrowedRef<PyFunctionObject> func : baseline_scheduled_funcs_) {
@@ -890,11 +965,14 @@ void Context::noteUncompiledFunc(
   deopted_funcs_.erase(func);
   baseline_funcs_.erase(func);
   baseline_scheduled_funcs_.erase(func);
+  helper_promotion_deferred_funcs_.erase(func);
   FunctionTierState& state = tierStateFor(func);
   state.active_tier = FunctionTier::kInterp;
   state.baseline_scheduled = false;
   state.compiled = false;
   state.deopted = false;
+  state.helper_promotion_deferred = false;
+  state.helper_promotion_threshold = 0;
   clearPendingFallback(state);
   state.last_transition = reason;
   for (const CodeRuntime* runtime : forgetCodeRuntimeOwner(func)) {
@@ -919,8 +997,17 @@ void Context::clearBaselineTierState(const char* reason) {
       state.last_transition = reason;
     }
   }
+  for (BorrowedRef<PyFunctionObject> func : helper_promotion_deferred_funcs_) {
+    FunctionTierState& state = tierStateFor(func);
+    state.helper_promotion_deferred = false;
+    state.helper_promotion_threshold = 0;
+    if (state.active_tier == FunctionTier::kInterp) {
+      state.last_transition = reason;
+    }
+  }
   baseline_funcs_.clear();
   baseline_scheduled_funcs_.clear();
+  helper_promotion_deferred_funcs_.clear();
 }
 
 void Context::recordCompileFailure(
@@ -1129,6 +1216,8 @@ FunctionTierState Context::getFunctionTierState(
   state.compiled = compiled_funcs_.contains(func);
   state.deopted = deopted_funcs_.contains(func);
   state.baseline_scheduled = baseline_scheduled_funcs_.contains(func);
+  state.helper_promotion_deferred =
+      helper_promotion_deferred_funcs_.contains(func);
   if (state.compiled) {
     state.active_tier = FunctionTier::kOptimized;
   } else if (baseline_funcs_.contains(func)) {
@@ -1147,6 +1236,9 @@ bool Context::addCompiledFunc(BorrowedRef<PyFunctionObject> func) {
     state.compiled = true;
     state.deopted = false;
     state.baseline_scheduled = false;
+    state.helper_promotion_deferred = false;
+    state.helper_promotion_threshold = 0;
+    helper_promotion_deferred_funcs_.erase(func);
     clearPendingFallback(state);
     state.last_transition = "optimized";
   }

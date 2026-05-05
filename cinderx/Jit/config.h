@@ -138,6 +138,33 @@ struct Config {
   };
   bool allow_jit_list_wildcards{false};
   bool compile_all_static_functions{false};
+  // Opt-in policy experiment: skip scheduling tiny functions with no loop
+  // backedge for auto/JIT-list compilation. Explicit force_compile() is not
+  // routed through the scheduler and remains unaffected.
+  bool filter_tiny_no_backedge_functions{false};
+  // Opt-in policy experiment: admit only shapes that have shown a positive
+  // signal in the pyperformance matrix, while leaving call-heavy/object-heavy
+  // functions interpreted until the optimized tier is more profitable.
+  bool filter_unprofitable_shapes{false};
+  // Opt-in policy experiment: skip generated comprehension/generator helper
+  // code during auto/JIT-list scheduling. These helpers are often too cold or
+  // short-lived to amortize optimized compile cost in pyperformance-style
+  // single-value runs.
+  bool filter_generated_functions{false};
+  // Opt-in policy experiment: when filtering no-backedge helpers, still admit
+  // small object-state methods that read/write container-like self state.
+  bool admit_state_helpers{false};
+  // Opt-in policy experiment: admit tiny object-state methods that also call
+  // other helpers. These are often dispatcher/path-compression methods where
+  // deferred interpretation keeps a hot object operation outside compiled code.
+  bool admit_calling_state_helpers{false};
+  // Opt-in policy experiment: keep filtered no-backedge helpers interpreted at
+  // first, but leave a call-counting entrypoint so very hot helpers can promote
+  // after they prove themselves at runtime.
+  bool defer_filtered_no_backedge_helpers{false};
+  // Opt-in extension for deferred helpers: include simple membership
+  // predicates such as "value in self.values".
+  bool defer_contains_state_helpers{false};
   bool multiple_code_sections{false};
   bool multithreaded_compile_test{false};
   bool use_huge_pages{true};
@@ -156,11 +183,41 @@ struct Config {
   };
   // Collect stats information about attribute caches.
   bool collect_attr_cache_stats{false};
+  // Split dynamic LoadMethodCached into a monomorphic type-check fast path and
+  // a cache-fill slow path even when the receiver type is not statically known.
+  bool dynamic_method_cache_split{false};
   // Use type annotations to create runtime checks.
   bool emit_type_annotation_guards{false};
   // Whether or not to JIT specialized opcodes or to fall back to their generic
   // counterparts.
   bool specialized_opcodes{true};
+  // Whether specialized CONTAINS_OP_SET/DICT may lower directly to exact
+  // set/dict helper calls instead of generic PySequence_Contains.
+  bool specialized_contains_op{true};
+  // Whether CALL_KW to exact PyFunction objects may use the exact Python
+  // function vectorcall helper instead of the generic vectorcall entrypoint.
+  bool specialized_kw_pyfunc_vectorcall{true};
+  // Whether zero-argument method-with-values calls may delay generic lookup
+  // until fallback when the caller has no uninitialized localsplus entries.
+  bool zero_arg_mwv_delayed_lookup{true};
+  // Whether exact dict subscripts should use a direct PyDict_GetItemRef helper
+  // instead of dispatching through the mapping slot.
+  bool exact_dict_subscr_helper{false};
+  // Whether exact method descriptors with METH_FASTCALL shapes beyond the
+  // legacy one-explicit-argument case may use a direct helper.
+  bool method_descr_fast_vectorcall{false};
+  // Whether list iterator hot iterations may lower directly in LIR while
+  // preserving the generic InvokeIterNext helper for fallback/exhaustion.
+  bool inline_list_iter_next{false};
+  // Whether exact list.pop() with the default index may call a direct helper
+  // instead of going through method-descriptor vectorcall.
+  bool list_pop_last_helper{true};
+  // Whether safe LOAD_METHOD/CALL pairs may fuse method-cache lookup and the
+  // method-shaped call into a single runtime helper.
+  bool cached_method_call_helper{false};
+  // Whether STORE_ATTR_INSTANCE_VALUE may lower to direct StoreField when the
+  // inline value slot already contains an object.
+  bool store_attr_instance_value_existing{false};
   // Support instrumentation (monitoring/tracing/profiling) by falling back to
   // the interpreter
   bool support_instrumentation{false};
@@ -179,6 +236,10 @@ struct Config {
   // the inliner, doesn't have any specific meaning, and can change as the
   // inliner's algorithm changes.
   size_t inliner_cost_limit{2000};
+  // Enable only the profiled method-value subset of the HIR inliner. This keeps
+  // global/function inlining disabled while allowing warmed object method calls
+  // to use the narrow inliner path.
+  bool method_value_inliner{false};
   // Number of workers to use for batch compilation, like in precompile_all().
   // If this number isn't configured then batch compilation will happen inline
   // on the calling thread.
@@ -186,6 +247,8 @@ struct Config {
   // When a function is being compiled, this is the maximum number of dependent
   // functions called by it that can be compiled along with it.
   size_t preload_dependent_limit{99};
+  size_t tiny_no_backedge_instruction_limit{8};
+  size_t deferred_no_backedge_helper_threshold{32};
   // Sizes (in bytes) of the hot and cold code sections. Only applicable if
   // multiple code sections are enabled.
   size_t cold_code_section_size{0};

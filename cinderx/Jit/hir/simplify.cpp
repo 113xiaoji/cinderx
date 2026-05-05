@@ -1125,6 +1125,28 @@ Register* simplifyLoadTypeMethodCached(Env& env, const LoadMethod* load_meth) {
       });
 }
 
+Register* emitSplitLoadMethodCache(Env& env, const LoadMethod* load_meth) {
+  Register* receiver = load_meth->GetOperand(0);
+  const int cache_id = env.func.env.allocateLoadMethodCache();
+  Register* obj_type = env.emit<LoadField>(
+      receiver, "ob_type", offsetof(PyObject, ob_type), TType);
+  Register* cached_type = env.emit<LoadMethodCacheEntryType>(cache_id);
+  Register* type_matches = env.emit<PrimitiveCompare>(
+      PrimitiveCompareOp::kEqual, cached_type, obj_type);
+  return env.emitCond(
+      [&](BasicBlock* fast_path, BasicBlock* slow_path) {
+        env.emit<CondBranch>(type_matches, fast_path, slow_path);
+      },
+      [&] { return env.emit<LoadMethodCacheEntryValue>(cache_id, receiver); },
+      [&] {
+        return env.emit<FillMethodCache>(
+            receiver,
+            load_meth->name_idx(),
+            cache_id,
+            *load_meth->frameState());
+      });
+}
+
 Register* simplifyLoadMethod(Env& env, const LoadMethod* load_meth) {
   if (!getConfig().attr_caches) {
     return nullptr;
@@ -1142,25 +1164,11 @@ Register* simplifyLoadMethod(Env& env, const LoadMethod* load_meth) {
       useExactMethodCacheSplit() && type != nullptr &&
       type != &PyModule_Type && type != &Ci_StrictModule_Type &&
       PyType_HasFeature(type, Py_TPFLAGS_MANAGED_DICT)) {
-    const int cache_id = env.func.env.allocateLoadMethodCache();
     env.emit<UseType>(receiver, receiver->type());
-    Register* obj_type = env.emit<LoadField>(
-        receiver, "ob_type", offsetof(PyObject, ob_type), TType);
-    Register* guard = env.emit<LoadMethodCacheEntryType>(cache_id);
-    Register* type_matches =
-        env.emit<PrimitiveCompare>(PrimitiveCompareOp::kEqual, guard, obj_type);
-    return env.emitCond(
-        [&](BasicBlock* fast_path, BasicBlock* slow_path) {
-          env.emit<CondBranch>(type_matches, fast_path, slow_path);
-        },
-        [&] { return env.emit<LoadMethodCacheEntryValue>(cache_id, receiver); },
-        [&] {
-          return env.emit<FillMethodCache>(
-              receiver,
-              load_meth->name_idx(),
-              cache_id,
-              *load_meth->frameState());
-        });
+    return emitSplitLoadMethodCache(env, load_meth);
+  }
+  if (getConfig().dynamic_method_cache_split && type == nullptr) {
+    return emitSplitLoadMethodCache(env, load_meth);
   }
   return env.emit<LoadMethodCached>(
       load_meth->GetOperand(0),
@@ -4343,6 +4351,25 @@ Register* simplifyVectorCallStatic(Env& env, const VectorCall* instr) {
     env.emit<UseType>(func, func->type());
     env.emit<ListAppend>(instr->arg(0), instr->arg(1), *instr->frameState());
     return env.emit<LoadConst>(TNoneType);
+  }
+  if (isBuiltin(func, "set.add") && instr->numArgs() == 2) {
+    env.emit<UseType>(func, func->type());
+    env.emit<SetSetItem>(instr->arg(0), instr->arg(1), *instr->frameState());
+    return env.emit<LoadConst>(TNoneType);
+  }
+  if (
+      getConfig().list_pop_last_helper && isBuiltin(func, "list.pop") &&
+      instr->numArgs() == 1) {
+    Register* list = instr->arg(0);
+    if (list->type() <= TListExact) {
+      env.emit<UseType>(func, func->type());
+      Register* result = env.emitVariadic<CallStatic>(
+          1,
+          reinterpret_cast<void*>(JITRT_ListPopLast),
+          instr->output()->type() | TNullptr,
+          list);
+      return env.emit<CheckExc>(result, *instr->frameState());
+    }
   }
 
   return trySpecializeCCall(env, instr);
