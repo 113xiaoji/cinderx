@@ -10772,3 +10772,51 @@ coverage, not as a claimed default performance win.
   evidence/documentation commits. The full combined optimization mode remains
   gated/off because the benchmark matrix still shows `go` and `raytrace`
   regressions under the aggressive combo.
+
+### Full Default Pyperformance Coverage Probe
+
+- User question:
+  the earlier combined matrix used an 8-row JIT-relevant subset; what happens
+  if the full pyperformance default suite is run instead?
+- Remote entrypoint:
+  `/root/work/incoming/remote_update_build_test.sh`.
+- Log:
+  `arm-results/full_pyperf_20260505_1_entry.log`.
+- Result directory:
+  `arm-results/full_pyperf_20260505_1/`.
+- Scope:
+  `python -m pyperformance list` reported 97 default benchmark entries. The
+  run expanded those into 124 concrete result rows because several
+  pyperformance entries, for example `logging`, `scimark`, `base64`,
+  `xml_etree`, and `networkx`, emit multiple concrete rows.
+- Method:
+  `MODE=jitlist`, `SAMPLES=1`, chunked by 8 benchmark entries, with automatic
+  per-benchmark retry on chunk failure. All three cases completed with
+  `failures=0`.
+- `baseline_disabled`:
+  124 concrete rows, 0 failures.
+- `combo_all_retained`:
+  124 concrete rows, 0 failures; geomean speedup `+5.7678%`, time ratio
+  `0.94232`, still `24.2322` percentage points short of the 30% target.
+  Regressions over 5%: 11 rows. Important object-workload signal:
+  `go -10.3733%`, while `richards +12.185%`, `deltablue +24.959%`,
+  `comprehensions +12.792%`, `unpack_sequence +12.693%`,
+  `raytrace +2.011%`.
+- `combo_all_plus_generated`:
+  124 concrete rows, 0 failures; geomean speedup `+5.7499%`, time ratio
+  `0.94250`, still `24.2501` percentage points short of the 30% target.
+  Regressions over 5%: 16 rows. Important object-workload signal:
+  `go -9.297%`, while `richards +12.188%`, `deltablue +24.396%`,
+  `comprehensions +12.254%`, `unpack_sequence +12.125%`,
+  `raytrace +0.772%`.
+- Caveat:
+  this is a full-coverage `SAMPLES=1` probe, so row-level outliers such as
+  `coverage` and `scimark_sor` need repeat sampling before being treated as
+  stable per-benchmark conclusions. The suite-level result is still useful:
+  broadening from 8 selected rows to the full default suite does not move the
+  branch closer to the 30% goal; it moves the geomean farther away.
+- Decision:
+  keep the aggressive combo gated/off. Full default pyperformance confirms the
+  same high-level answer as the 8-row matrix: there is real localized upside,
+  but the current optimization set is not the 30% solution and still has an
+  unresolved `go` regression.

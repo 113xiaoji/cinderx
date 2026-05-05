@@ -3577,3 +3577,37 @@
 - Next:
   commit this evidence-only update and push
   `codex/perf-jit-retained-20260505` to the SSH remote.
+
+## Session Update: 2026-05-05 (full default pyperformance probe)
+
+- User asked whether the earlier 8-row matrix misses the broader
+  pyperformance picture.
+- Ran a full default pyperformance coverage probe through
+  `/root/work/incoming/remote_update_build_test.sh` using a post-pyperf
+  command.
+- Scope:
+  - `python -m pyperformance list` reported 97 default benchmark entries.
+  - the run expanded to 124 concrete result rows.
+  - `SAMPLES=1`, `MODE=jitlist`, chunk size 8.
+  - cases:
+    `baseline_disabled`, `combo_all_retained`,
+    `combo_all_plus_generated`.
+- Evidence:
+  - entry log:
+    `arm-results/full_pyperf_20260505_1_entry.log`.
+  - result directory:
+    `arm-results/full_pyperf_20260505_1/`.
+- Completion:
+  all three cases completed with 124 concrete rows and 0 benchmark execution
+  failures.
+- Result:
+  - retained combo:
+    geomean speedup `+5.7678%`, gap to 30% target `24.2322` pct points,
+    `go -10.3733%`.
+  - plus-generated combo:
+    geomean speedup `+5.7499%`, gap to 30% target `24.2501` pct points,
+    `go -9.297%`.
+- Decision:
+  full default pyperformance does not rescue the current optimization set.
+  It weakens the 8-row signal and reinforces keeping the aggressive policy
+  combo gated/off until the `go` object-state regression is addressed.
