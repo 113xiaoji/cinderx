@@ -95,6 +95,75 @@ def _append_worker_jitlists(jit_ext, raw_entries: str) -> None:
             seen.add(main_entry)
 
 
+def _safe_jit_call(jit_ext, name: str, default=None):
+    if jit_ext is None:
+        return default
+    func = getattr(jit_ext, name, None)
+    if func is None:
+        return default
+    try:
+        return func()
+    except Exception:
+        return default
+
+
+def _format_func_name(func) -> str:
+    module = getattr(func, "__module__", None) or "<unknown>"
+    qualname = getattr(func, "__qualname__", None) or getattr(
+        func, "__name__", "<unknown>"
+    )
+    return f"{module}:{qualname}"
+
+
+def _write_worker_probe(phase: str, jit_ext=None, error: str | None = None) -> None:
+    path = os.environ.get("CINDERX_PYPERF_HOOK_PROBE_FILE")
+    if not path:
+        return
+    import json
+
+    compiled = _safe_jit_call(jit_ext, "get_compiled_functions", []) or []
+    try:
+        compiled = list(compiled)
+    except Exception:
+        compiled = []
+
+    payload = {
+        "phase": phase,
+        "worker": worker,
+        "skip": skip,
+        "argv0": argv0,
+        "env": {
+            "PYPERFORMANCE_RUNID": os.environ.get("PYPERFORMANCE_RUNID"),
+            "CINDERX_DISABLE": os.environ.get("CINDERX_DISABLE"),
+            "CINDERX_WORKER_PYTHONJITAUTO": os.environ.get(
+                "CINDERX_WORKER_PYTHONJITAUTO"
+            ),
+            "CINDERX_JITLIST_ENTRIES": os.environ.get("CINDERX_JITLIST_ENTRIES"),
+            "CINDERX_JITLIST_AUTOJIT": os.environ.get("CINDERX_JITLIST_AUTOJIT"),
+            "CINDERX_ENABLE_SPECIALIZED_OPCODES": os.environ.get(
+                "CINDERX_ENABLE_SPECIALIZED_OPCODES"
+            ),
+            "PYTHONJITFILTERGENERATED": os.environ.get("PYTHONJITFILTERGENERATED"),
+            "PYTHONJITADMITCALLINGSTATEHELPERS": os.environ.get(
+                "PYTHONJITADMITCALLINGSTATEHELPERS"
+            ),
+        },
+        "jit_enabled": _safe_jit_call(jit_ext, "is_enabled"),
+        "compile_after": _safe_jit_call(jit_ext, "get_compile_after_n_calls"),
+        "compiled_count": len(compiled),
+        "compiled_sample": [_format_func_name(func) for func in compiled[:30]],
+    }
+    if error is not None:
+        payload["error"] = error
+
+    try:
+        with open(path, "a", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, sort_keys=True)
+            fp.write("\n")
+    except Exception:
+        pass
+
+
 if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
     if os.environ.get("PYPERFORMANCE_RUNID"):
         # pyperf metadata collection can trip over os._Environ methods after
@@ -103,6 +172,7 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
 
     worker_autojit = os.environ.get("CINDERX_WORKER_PYTHONJITAUTO")
     raw_jitlist = os.environ.get("CINDERX_JITLIST_ENTRIES", "")
+    jitlist_autojit = os.environ.get("CINDERX_JITLIST_AUTOJIT")
 
     try:
         if os.environ.get("PYPERFORMANCE_RUNID"):
@@ -122,14 +192,26 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
 
         if raw_jitlist:
             # JIT-list entries are compiled on first call when auto-JIT is at
-            # the eager setting. Keep the scope narrow by using the JIT list as
-            # the filter rather than broad worker-wide auto-JIT.
-            jit.compile_after_n_calls(0)
+            # the eager setting. A separate threshold is useful for measuring
+            # filtered tier policy without compiling every matching function on
+            # first call.
+            if jitlist_autojit not in (None, ""):
+                jit.compile_after_n_calls(int(jitlist_autojit))
+            else:
+                jit.compile_after_n_calls(0)
             _append_worker_jitlists(jit, raw_jitlist)
         elif worker_autojit not in (None, ""):
             try:
                 jit.compile_after_n_calls(int(worker_autojit))
             except Exception:
                 pass
-    except Exception:
+        if os.environ.get("CINDERX_PYPERF_HOOK_PROBE_FILE"):
+            _write_worker_probe("enabled", jit)
+            import atexit
+
+            atexit.register(lambda: _write_worker_probe("atexit", jit))
+    except Exception as exc:
+        _write_worker_probe("error", error=f"{type(exc).__name__}:{exc}")
         pass
+elif worker and not skip:
+    _write_worker_probe("disabled")

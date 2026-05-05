@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 
@@ -29,6 +30,7 @@ def main() -> int:
 
     rows = []
     regressions = []
+    ratios = []
     for name in names:
         base_val = base.get(name)
         current_val = current.get(name)
@@ -39,24 +41,43 @@ def main() -> int:
                     "base_median": base_val,
                     "current_median": current_val,
                     "delta_pct": None,
+                    "time_ratio": None,
+                    "speedup_pct": None,
                 }
             )
             continue
         delta_pct = ((current_val / base_val) - 1.0) * 100.0
+        time_ratio = current_val / base_val
+        speedup_pct = (1.0 - time_ratio) * 100.0
         row = {
             "name": name,
             "base_median": base_val,
             "current_median": current_val,
             "delta_pct": delta_pct,
+            "time_ratio": time_ratio,
+            "speedup_pct": speedup_pct,
         }
         rows.append(row)
+        if base_val > 0.0 and current_val > 0.0:
+            ratios.append(time_ratio)
         if delta_pct >= args.warn_threshold_pct:
             regressions.append(row)
+
+    geomean_time_ratio = None
+    geomean_speedup_pct = None
+    if ratios:
+        geomean_time_ratio = math.exp(
+            sum(math.log(ratio) for ratio in ratios) / len(ratios)
+        )
+        geomean_speedup_pct = (1.0 - geomean_time_ratio) * 100.0
 
     payload = {
         "rows": rows,
         "warn_threshold_pct": args.warn_threshold_pct,
         "regressions": regressions,
+        "geomean_time_ratio": geomean_time_ratio,
+        "geomean_speedup_pct": geomean_speedup_pct,
+        "geomean_benchmark_count": len(ratios),
     }
 
     output = Path(args.output)
