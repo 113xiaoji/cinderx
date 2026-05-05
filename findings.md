@@ -10820,3 +10820,70 @@ coverage, not as a claimed default performance win.
   same high-level answer as the 8-row matrix: there is real localized upside,
   but the current optimization set is not the 30% solution and still has an
   unresolved `go` regression.
+
+### Expanded 28-Row JIT Set Current-Branch Matrix
+
+- User question:
+  rerun the "about 20 JIT cases" suite, i.e. the 2026-05-03 expanded
+  JIT-relevant pyperformance set.
+- Remote entrypoint:
+  `/root/work/incoming/remote_update_build_test.sh`.
+- Log:
+  `arm-results/ext28_pyperf_20260505_1_entry.log`.
+- Result directory:
+  `arm-results/ext28_pyperf_20260505_1/`.
+- Scope:
+  22 pyperformance filter entries, expanded to 28 concrete rows:
+  `richards,go,deltablue,raytrace,nqueens,generators,coroutines,`
+  `comprehensions,unpack_sequence,chaos,logging,coverage,nbody,`
+  `spectral_norm,scimark,float,fannkuch,pickle,pickle_dict,`
+  `pickle_list,json_dumps,json_loads`.
+- Method:
+  `MODE=jitlist`, `SAMPLES=5`. Three cases were measured:
+  `baseline_disabled`, `combo_all_retained`, and
+  `combo_all_plus_generated`.
+- Completion:
+  all three cases completed with `28` rows and `5` samples per row.
+- Same-branch `baseline_disabled` vs `combo_all_retained`:
+  geomean speedup `-4.6058%`, time ratio `1.04606`,
+  `34.6058` percentage points short of the 30% target.
+  Regressions over 5%: 7 rows. Main regressions:
+  `coverage -895.30%`, `scimark_sor -43.64%`,
+  `spectral_norm -14.15%`, `pickle_list -8.59%`,
+  `go -8.51%`, `chaos -8.15%`, `pickle -6.23%`.
+  Main wins:
+  `logging_format +62.28%`, `deltablue +24.40%`,
+  `json_dumps +19.50%`, `richards +12.58%`,
+  `nqueens +11.91%`, `comprehensions +11.85%`,
+  `unpack_sequence +8.20%`.
+- Same-branch `baseline_disabled` vs `combo_all_plus_generated`:
+  geomean speedup `-3.0969%`, time ratio `1.03097`,
+  `33.0969` percentage points short of the 30% target.
+  Regressions over 5%: 8 rows. Main regressions:
+  `coverage -893.46%`, `scimark_sor -37.24%`,
+  `spectral_norm -11.42%`, `go -8.65%`,
+  `pickle_list -8.19%`, `fannkuch -6.73%`,
+  `chaos -6.71%`, `pickle -5.53%`.
+  Main wins:
+  `logging_format +62.22%`, `nqueens +32.21%`,
+  `deltablue +24.90%`, `json_dumps +19.39%`,
+  `richards +12.25%`, `comprehensions +11.67%`,
+  `unpack_sequence +7.65%`.
+- Cross-version check against
+  `arm-results/pyperf_ext_jitlist_20260503_1.json`:
+  current `baseline_disabled` is almost neutral at `-0.3855%` geomean,
+  which suggests the 2026-05-05 matrix is comparable to the original
+  2026-05-03 extended JIT baseline. Current `combo_all_retained` is
+  `-5.0091%` versus the old baseline, and
+  `combo_all_plus_generated` is `-3.4943%`.
+- Outlier-adjusted read:
+  excluding only `coverage`, retained becomes `+3.7681%` and plus-generated
+  becomes `+5.2008%`. Excluding both `coverage` and `scimark_sor`, retained
+  becomes `+5.2394%` and plus-generated becomes `+6.5401%`.
+  This confirms there is localized upside, but even after removing the two
+  worst noisy/problem rows the current combo remains far below the 30% target.
+- Decision:
+  on the 28-row JIT-relevant suite, the current aggressive combo is not
+  mergeable as a default performance mode. The right next optimization target
+  remains fixing the `go` object-state regression and understanding why
+  `coverage` / `scimark_sor` explode under the policy/helper combo.

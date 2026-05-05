@@ -3611,3 +3611,41 @@
   full default pyperformance does not rescue the current optimization set.
   It weakens the 8-row signal and reinforces keeping the aggressive policy
   combo gated/off until the `go` object-state regression is addressed.
+
+## Session Update: 2026-05-05 (expanded 28-row JIT set rerun)
+
+- User asked to use the "about 20 JIT cases" suite to compare this version's
+  performance.
+- Reran the 2026-05-03 expanded JIT-relevant pyperformance set through the
+  remote entrypoint:
+  `/root/work/incoming/remote_update_build_test.sh`.
+- Scope:
+  22 pyperformance entries expanded to 28 concrete rows.
+- Method:
+  `MODE=jitlist`, `SAMPLES=5`.
+- Cases:
+  `baseline_disabled`, `combo_all_retained`,
+  `combo_all_plus_generated`.
+- Evidence:
+  `arm-results/ext28_pyperf_20260505_1_entry.log` and
+  `arm-results/ext28_pyperf_20260505_1/`.
+- Completion:
+  all three cases completed with 28 rows and 5 samples per row.
+- Same-branch results:
+  - retained combo:
+    geomean speedup `-4.6058%`, gap to 30% target `34.6058` pct points,
+    `go -8.5093%`.
+  - plus-generated combo:
+    geomean speedup `-3.0969%`, gap to 30% target `33.0969` pct points,
+    `go -8.6523%`.
+- Cross-version sanity check:
+  current `baseline_disabled` vs old
+  `pyperf_ext_jitlist_20260503_1.json` is nearly flat at `-0.3855%`
+  geomean, so the rerun is comparable to the original expanded baseline.
+- Outlier-adjusted read:
+  excluding `coverage` and `scimark_sor`, retained is `+5.2394%` and
+  plus-generated is `+6.5401%`, still far below 30%.
+- Decision:
+  do not default-enable the aggressive combo for the 28-row JIT suite.
+  It has strong localized wins, but `coverage`, `scimark_sor`, and `go`
+  dominate the overall regression.
