@@ -3562,3 +3562,18 @@
   - do not default-enable the full policy/cached-call combo.
   - split commits so runner/measurement fixes, default-safe micro wins, and
     gated/off research knobs are distinguishable.
+
+## Session Update: 2026-05-05 (final branch verification)
+
+- Re-uploaded the committed branch state to the remote test host because the
+  standard entrypoint consumes `/root/work/incoming/cinderx-update.tar`.
+- Ran final verification through `/root/work/incoming/remote_update_build_test.sh`
+  with pyperformance skipped, using the same remote build/test path.
+- Evidence:
+  `arm-results/final_branch_arm_runtime_20260505_1.log`.
+- Result:
+  build completed; ARM runtime verification reported `Ran 141 tests`,
+  `OK (skipped=3)`.
+- Next:
+  commit this evidence-only update and push
+  `codex/perf-jit-retained-20260505` to the SSH remote.

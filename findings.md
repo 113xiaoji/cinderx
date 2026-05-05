@@ -10754,3 +10754,21 @@ coverage, not as a claimed default performance win.
   because `go` regresses sharply. The next high-leverage work should target:
   split-dict/state guard-load CSE, `Square.find`-style recursive state
   method lowering, and instance-field-derived exact container fast paths.
+
+### Final Branch Verification Before Push
+
+- Branch:
+  `codex/perf-jit-retained-20260505`, based on remote
+  `bench-cur-7c361dce` at `17f386f8`.
+- Remote entrypoint:
+  `/root/work/incoming/remote_update_build_test.sh`.
+- Log:
+  `arm-results/final_branch_arm_runtime_20260505_1.log`.
+- Result:
+  build completed and ARM runtime verification passed:
+  `Ran 141 tests`, `OK (skipped=3)`.
+- Push scope:
+  split into runner/test hardening, retained JIT optimization code, and
+  evidence/documentation commits. The full combined optimization mode remains
+  gated/off because the benchmark matrix still shows `go` and `raytrace`
+  regressions under the aggressive combo.
