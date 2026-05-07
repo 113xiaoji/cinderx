@@ -27,6 +27,7 @@ export JIT_LIST=${JIT_LIST:-"$RUN_ROOT/jit_list.txt"}
 export RESULT_DIR=${RESULT_DIR:-"$RUN_ROOT/results"}
 export PYPERF_VERSION=${PYPERF_VERSION:-1.13.0}
 export PYPERF_WARMUP=${PYPERF_WARMUP:-3}
+export EXPECTED_CINDERX_SOURCE=${EXPECTED_CINDERX_SOURCE:-"$CINDERX_REPO"}
 ```
 
 如果 `python3.14` 不在 `PATH` 里，不要修改文档里的命令，直接把实际 Python 路径
@@ -51,6 +52,24 @@ if [ -n "${PYPERF_AFFINITY:-}" ]; then
 fi
 ```
 
+生成 `--inherit-environ` 参数。这个函数必须在本次要传给 worker 的所有
+`PYTHONJIT*` 变量都 `export` 之后调用：
+
+```bash
+build_pyperf_inherit_env() {
+  local names=(http_proxy https_proxy LD_LIBRARY_PATH PYTHONPATH)
+  local name
+
+  while IFS='=' read -r name _; do
+    case "$name" in
+      PYTHONJIT*) names+=("$name") ;;
+    esac
+  done < <(env)
+
+  (IFS=,; echo "${names[*]}")
+}
+```
+
 检查变量是否有效：
 
 ```bash
@@ -59,47 +78,73 @@ test -n "$BASE_PYTHON" && test -x "$BASE_PYTHON"
 mkdir -p "$RUN_ROOT" "$RESULT_DIR"
 ```
 
-## 2. 获取测试分支
+## 2. 确认测试 checkout
 
-当前固定测试分支：
-
-```text
-https://github.com/113xiaoji/cinderx/tree/bench-cur-7c361dce
-```
-
-如果仓库还不存在：
-
-```bash
-git clone https://github.com/113xiaoji/cinderx.git "$CINDERX_REPO"
-cd "$CINDERX_REPO"
-git checkout bench-cur-7c361dce
-```
-
-如果仓库已经存在：
+默认测试当前 checkout，不在文档里固定某个 fork 或临时分支。进入仓库后先记录本轮
+实际要测的提交：
 
 ```bash
 cd "$CINDERX_REPO"
-git fetch origin
-git checkout bench-cur-7c361dce
-git pull --ff-only
+git status --short --branch
+git rev-parse --show-toplevel
+git rev-parse HEAD
+```
+
+如果仓库还不存在，先 clone 本轮明确要测试的目标仓库。`CINDERX_REMOTE` 必须由执行者
+按本轮任务显式给出，不要在文档里写死：
+
+```bash
+export CINDERX_REMOTE="<repository-url-to-test>"
+git clone "$CINDERX_REMOTE" "$CINDERX_REPO"
+cd "$CINDERX_REPO"
+```
+
+只有在复现某个历史实验或远端临时分支时，才显式设置 `CINDERX_REF`。这会让本轮测试
+离开当前 checkout，所以必须在 `findings.md` 里记录原因、remote、ref 和最终 commit：
+
+```bash
+cd "$CINDERX_REPO"
+if [ -n "${CINDERX_REF:-}" ]; then
+  git fetch "${CINDERX_REMOTE:-origin}" "$CINDERX_REF"
+  git switch --detach FETCH_HEAD
+  git rev-parse HEAD
+fi
 ```
 
 ## 3. 构建或复用 CinderX
 
-如果当前 `BASE_PYTHON` 已经能导入本轮要测的 CinderX，可以直接进入第 4 章：
+构建 CinderX 前先确认 C/C++ toolchain 满足当前要求：`GCC 13+` 或 `Clang 18+`。
+不要只看机器上存在 `gcc` 或 `clang`；必须记录实际会被构建使用的编译器版本：
 
 ```bash
-"$BASE_PYTHON" - <<'PY'
-import cinderx
-print("cinderx import ok", cinderx.__file__)
-PY
+${CC:-gcc} --version
+${CXX:-g++} --version
+clang --version || true
+clang++ --version || true
 ```
 
-如果需要从源码安装，默认构建：
+如果系统默认编译器版本不满足要求，先显式切到合格 toolchain，再执行后续
+`pip install`。使用隔离 GCC prefix 时同时带上运行时库路径，避免构建或运行时加载旧
+`libstdc++`：
+
+```bash
+export GCC_PREFIX="<gcc-13-or-newer-prefix>"
+export CC="$GCC_PREFIX/bin/gcc"
+export CXX="$GCC_PREFIX/bin/g++"
+export PATH="$GCC_PREFIX/bin:$PATH"
+export LD_LIBRARY_PATH="$GCC_PREFIX/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+gcc --version
+g++ --version
+```
+
+正式测试前必须让 `BASE_PYTHON` 安装本轮 checkout，避免复用机器上残留的旧 wheel。
+先选择一种安装方式。
+
+默认构建：
 
 ```bash
 cd "$CINDERX_REPO"
-"$BASE_PYTHON" -m pip install .
+"$BASE_PYTHON" -m pip install --force-reinstall --no-deps "$CINDERX_REPO"
 ```
 
 推荐性能构建：
@@ -110,16 +155,72 @@ CMAKE_BUILD_TYPE=Release \
 CINDERX_ENABLE_PGO=1 \
 CINDERX_ENABLE_LTO=1 \
 ENABLE_STATIC_PYTHON=0 \
-"$BASE_PYTHON" -m pip install .
+"$BASE_PYTHON" -m pip install --force-reinstall --no-deps "$CINDERX_REPO"
 ```
 
-构建后再次确认：
+安装后不能只看 `import` 是否成功；必须记录并校验包来源，确认它就是本轮要测的
+checkout 或本轮明确指定的构建产物：
 
 ```bash
 "$BASE_PYTHON" - <<'PY'
+import importlib.metadata as metadata
+import json
+import os
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
 import cinderx
 print("cinderx import ok", cinderx.__file__)
+
+dist = metadata.distribution("cinderx")
+print("cinderx distribution", dist.metadata.get("Name"), dist.version)
+
+expected = Path(os.environ["EXPECTED_CINDERX_SOURCE"]).resolve()
+direct_url = None
+for file in dist.files or []:
+    if (
+        len(file.parts) >= 2
+        and file.name == "direct_url.json"
+        and file.parts[-2].endswith(".dist-info")
+    ):
+        path = Path(dist.locate_file(file))
+        direct_url = json.loads(path.read_text())
+        print("cinderx direct_url", direct_url)
+        break
+
+if not direct_url:
+    raise SystemExit("cinderx direct_url.json missing; package provenance unknown")
+
+url = direct_url.get("url", "")
+if not url.startswith("file://"):
+    raise SystemExit(f"cinderx source is not a local file URL: {url}")
+
+actual = Path(unquote(urlparse(url).path)).resolve()
+if actual != expected:
+    raise SystemExit(f"cinderx source mismatch: {actual} != {expected}")
 PY
+```
+
+如果 `BASE_PYTHON` 本身是 venv，后续 pyperformance worker venv 的
+`--system-site-packages` 可能只能看到更底层 Python 的全局 site-packages，而看不到
+`BASE_PYTHON` 这个 venv 里刚安装的 CinderX。为了让 driver 和 worker 都优先导入本轮
+确认过来源的 CinderX，把它所在的 site-packages 放到 `PYTHONPATH` 最前面：
+
+```bash
+export CINDERX_SITE_PACKAGES=$("$BASE_PYTHON" - <<'PY'
+from pathlib import Path
+import cinderx
+
+path = Path(cinderx.__file__).resolve()
+for parent in path.parents:
+    if parent.name == "site-packages":
+        print(parent)
+        break
+else:
+    raise SystemExit(f"could not locate site-packages for {path}")
+PY
+)
+export PYTHONPATH="$CINDERX_SITE_PACKAGES${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
 ## 4. 创建 driver venv
@@ -177,8 +278,13 @@ for old, new in replacements.items():
         text = text.replace(old, new)
         changed = True
 
-if "--system-site-packages" not in text:
-    raise SystemExit(f"failed to patch {venv_py}: target lines not found")
+expected = [
+    'args = ["-m", "venv", "--system-site-packages", root]',
+    'args = ["-m", "venv", "--without-pip", "--system-site-packages", root]',
+]
+missing = [line for line in expected if line not in text]
+if missing:
+    raise SystemExit(f"failed to patch {venv_py}; missing: {missing}")
 
 if changed:
     venv_py.write_text(text)
@@ -196,14 +302,15 @@ from pathlib import Path
 import pyperformance
 
 p = Path(pyperformance.__file__).with_name("_venv.py")
-lines = [
-    line.strip()
-    for line in p.read_text().splitlines()
-    if '"-m", "venv"' in line or "--system-site-packages" in line
+text = p.read_text()
+expected = [
+    'args = ["-m", "venv", "--system-site-packages", root]',
+    'args = ["-m", "venv", "--without-pip", "--system-site-packages", root]',
 ]
-print("\n".join(lines))
-if not any("--system-site-packages" in line for line in lines):
-    raise SystemExit("pyperformance worker venv patch missing")
+for line in expected:
+    print(line)
+    if line not in text:
+        raise SystemExit(f"pyperformance worker venv patch missing: {line}")
 PY
 ```
 
@@ -260,7 +367,7 @@ grep -q '^__main__:\*$' "$JIT_LIST"
 ```text
 1. 使用 DRIVER_PYTHON 启动 pyperformance。
 2. 传入 PYTHONJITLISTFILE="$JIT_LIST"。
-3. 通过 --inherit-environ 传递 LD_LIBRARY_PATH 和所有 PYTHONJIT* 变量。
+3. 通过 --inherit-environ 传递 LD_LIBRARY_PATH、PYTHONPATH 和所有 PYTHONJIT* 变量。
 4. affinity 只通过 PYPERF_AFFINITY_ARGS 注入，不在命令里写死。
 5. 输出 JSON 到 RESULT_DIR。
 ```
@@ -273,17 +380,20 @@ cd "$CINDERX_REPO"
 export BENCH=${BENCH:-2to3}
 export OUT_JSON=${OUT_JSON:-"$RESULT_DIR/${BENCH}-cinderx.json"}
 
-PYTHONJITTYPEANNOTATIONGUARDS=1 \
-PYTHONJITENABLEJITLISTWILDCARDS=1 \
-PYTHONJITENABLEHIRINLINER=1 \
-PYTHONJITAUTO=2 \
-PYTHONJITSPECIALIZEDOPCODES=1 \
-PYTHONJITLISTFILE="$JIT_LIST" \
+export PYTHONJITTYPEANNOTATIONGUARDS=1
+export PYTHONJITENABLEJITLISTWILDCARDS=1
+export PYTHONJITENABLEHIRINLINER=1
+export PYTHONJITAUTO=2
+export PYTHONJITSPECIALIZEDOPCODES=1
+export PYTHONJITLISTFILE="$JIT_LIST"
+export PYPERF_INHERIT_ENV
+PYPERF_INHERIT_ENV=$(build_pyperf_inherit_env)
+
 "$DRIVER_PYTHON" -m pyperformance run \
   "${PYPERF_AFFINITY_ARGS[@]}" \
   -b "$BENCH" \
-  --warmup "$PYPERF_WARMUP" \
-  --inherit-environ http_proxy,https_proxy,LD_LIBRARY_PATH,PYTHONJITAUTO,PYTHONJITSPECIALIZEDOPCODES,PYTHONJITLISTFILE,PYTHONJITENABLEJITLISTWILDCARDS,PYTHONJITENABLEHIRINLINER,PYTHONJITTYPEANNOTATIONGUARDS \
+  --warmups "$PYPERF_WARMUP" \
+  --inherit-environ "$PYPERF_INHERIT_ENV" \
   -o "$OUT_JSON"
 ```
 
@@ -300,17 +410,20 @@ cd "$CINDERX_REPO"
 
 export SMOKE_JSON=${SMOKE_JSON:-"$RESULT_DIR/nbody-smoke-cinderx.json"}
 
-PYTHONJITTYPEANNOTATIONGUARDS=1 \
-PYTHONJITENABLEJITLISTWILDCARDS=1 \
-PYTHONJITENABLEHIRINLINER=1 \
-PYTHONJITAUTO=2 \
-PYTHONJITSPECIALIZEDOPCODES=1 \
-PYTHONJITLISTFILE="$JIT_LIST" \
+export PYTHONJITTYPEANNOTATIONGUARDS=1
+export PYTHONJITENABLEJITLISTWILDCARDS=1
+export PYTHONJITENABLEHIRINLINER=1
+export PYTHONJITAUTO=2
+export PYTHONJITSPECIALIZEDOPCODES=1
+export PYTHONJITLISTFILE="$JIT_LIST"
+export PYPERF_INHERIT_ENV
+PYPERF_INHERIT_ENV=$(build_pyperf_inherit_env)
+
 "$DRIVER_PYTHON" -m pyperformance run \
   --debug-single-value \
   "${PYPERF_AFFINITY_ARGS[@]}" \
   -b nbody \
-  --inherit-environ http_proxy,https_proxy,LD_LIBRARY_PATH,PYTHONJITAUTO,PYTHONJITSPECIALIZEDOPCODES,PYTHONJITLISTFILE,PYTHONJITENABLEJITLISTWILDCARDS,PYTHONJITENABLEHIRINLINER,PYTHONJITTYPEANNOTATIONGUARDS \
+  --inherit-environ "$PYPERF_INHERIT_ENV" \
   -o "$SMOKE_JSON"
 ```
 
@@ -332,6 +445,49 @@ print("benchmark_count", len(benchmarks))
 PY
 ```
 
+验证 worker Python 实际导入的 CinderX 来源。这个检查要在 smoke 之后执行，因为
+pyperformance 会在 smoke 时创建 worker venv：
+
+```bash
+WORKER_PYTHON=$(find "$CINDERX_REPO/venv" -path '*/bin/python' | head -n 1)
+test -x "$WORKER_PYTHON"
+PYTHONPATH="$PYTHONPATH" "$WORKER_PYTHON" - <<'PY'
+import importlib.metadata as metadata
+import json
+import os
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+import cinderx
+print("worker cinderx import ok", cinderx.__file__)
+
+dist = metadata.distribution("cinderx")
+expected = Path(os.environ["EXPECTED_CINDERX_SOURCE"]).resolve()
+direct_url = None
+for file in dist.files or []:
+    if (
+        len(file.parts) >= 2
+        and file.name == "direct_url.json"
+        and file.parts[-2].endswith(".dist-info")
+    ):
+        path = Path(dist.locate_file(file))
+        direct_url = json.loads(path.read_text())
+        print("worker cinderx direct_url", direct_url)
+        break
+
+if not direct_url:
+    raise SystemExit("worker cinderx direct_url.json missing")
+
+url = direct_url.get("url", "")
+if not url.startswith("file://"):
+    raise SystemExit(f"worker cinderx source is not a local file URL: {url}")
+
+actual = Path(unquote(urlparse(url).path)).resolve()
+if actual != expected:
+    raise SystemExit(f"worker cinderx source mismatch: {actual} != {expected}")
+PY
+```
+
 smoke 通过条件：
 
 ```text
@@ -339,6 +495,7 @@ smoke 通过条件：
 2. 结果 JSON 存在且可解析。
 3. JSON 至少包含一个 benchmark。
 4. 日志中的 worker venv 创建命令应包含 --system-site-packages。
+5. worker Python 导入的 CinderX 来源应匹配 `EXPECTED_CINDERX_SOURCE`。
 ```
 
 `nbody` 的绝对耗时只能作为同一机器、同一构建、同一 affinity 下的经验信号。不同目录、
@@ -370,7 +527,7 @@ worker 不能导入或结果异常时，优先检查：
 ```text
 1. 第 5 章 patch 后的 _venv.py 是否包含 --system-site-packages。
 2. 旧 worker venv 是否已经删除并重建。
-3. --inherit-environ 是否包含 LD_LIBRARY_PATH 和所有 PYTHONJIT* 变量。
+3. --inherit-environ 是否包含 LD_LIBRARY_PATH、PYTHONPATH 和所有 PYTHONJIT* 变量。
 4. PYTHONJITLISTFILE 是否指向第 6 章生成的 JIT_LIST。
 5. 当前 shell 的 BASE_PYTHON、DRIVER_PYTHON、CINDERX_REPO、RUN_ROOT 是否指向本轮实际目录。
 ```

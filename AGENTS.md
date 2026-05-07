@@ -17,7 +17,9 @@ method as the source of truth, including:
 - the driver venv with `--system-site-packages`;
 - the patched pyperformance worker venv creation logic;
 - the documented `jit_list`;
-- inherited `LD_LIBRARY_PATH` and `PYTHONJIT*` environment variables;
+- inherited `LD_LIBRARY_PATH`, `PYTHONPATH` when it is used to expose the
+  selected CinderX build, and dynamically collected `PYTHONJIT*`
+  environment variables;
 - the documented benchmark command shape and affinity variable.
 
 If the method needs to change, update
