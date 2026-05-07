@@ -7,6 +7,12 @@ directory.
 proceeding with any task. It contains additional context for internal
 development environments.
 
+**Repository performance testing rule**: For any CinderX pyperformance or
+performance benchmark work, first read the repository root `AGENTS.md` and
+follow `docs/pyperformance-cinderx-integration.md`. Do not use ad-hoc
+pyperformance setup flows unless the user explicitly asks for a one-off
+diagnostic.
+
 ## Overview
 
 CinderX is a Python runtime extension that adds (among other things)
