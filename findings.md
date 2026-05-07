@@ -7712,6 +7712,33 @@ Conclusion:
   - diff hygiene:
     - `git diff --check` exit code 0
     - only CRLF conversion warnings were reported by Git
+
+## 2026-05-07 pyperformance method hardening
+
+- Document updated:
+  `docs/pyperformance-cinderx-integration.md`.
+- Reason:
+  the first version still made one verified host's concrete Python and run
+  directories too prominent. The testing method should be stable, but machine
+  paths must be supplied by the current environment.
+- Change:
+  rewrote the document around variable-driven setup:
+  `BASE_PYTHON`, `CINDERX_REPO`, `RUN_ROOT`, `DRIVER_VENV`,
+  `DRIVER_PYTHON`, `JIT_LIST`, `RESULT_DIR`, and optional
+  `PYPERF_AFFINITY`.
+- Fixed method:
+  sections 5 through 8 are now the mandatory execution core:
+  patch pyperformance worker venv creation with `--system-site-packages`,
+  generate the fixed `jit_list`, run pyperformance with inherited
+  `LD_LIBRARY_PATH` and `PYTHONJIT*` variables, and run the `nbody` smoke.
+- Scope:
+  no new performance numbers are claimed in this update. Existing smoke
+  evidence remains valid; this change removes path coupling from the
+  documented procedure.
+- Verification:
+  local document checks confirmed the updated guide has no concrete host
+  Python path, keeps the required sections 5/6/7/8, and passes
+  `git diff --check`.
 - Review evidence:
   - Sagan final code review reported no Critical, Important, or Minor
     actionable findings.
