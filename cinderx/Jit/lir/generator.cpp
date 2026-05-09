@@ -2763,11 +2763,67 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       }
       case Opcode::kDictSubscr: {
         auto instr = static_cast<const DictSubscr*>(&i);
+#ifdef Py_GIL_DISABLED
         bbb.appendCallInstruction(
             instr->output(),
             PyDict_Type.tp_as_mapping->mp_subscript,
             instr->GetOperand(0),
             instr->GetOperand(1));
+#else
+        Instruction* key = bbb.getDefInstr(instr->GetOperand(1));
+        auto lookup_path = bbb.allocateBlock();
+        auto hit_path = bbb.allocateBlock();
+        auto slow_path = bbb.allocateBlock();
+        auto done = bbb.allocateBlock();
+
+        if (instr->GetOperand(1)->type() <= TUnicodeExact) {
+          bbb.appendBranch(Instruction::kBranch, lookup_path);
+        } else {
+          auto key_type = bbb.appendInstr(
+              OutVReg{OperandBase::kObject},
+              Instruction::kMove,
+              Ind{key, offsetof(PyObject, ob_type)});
+          auto is_exact_unicode = bbb.appendInstr(
+              OutVReg{OperandBase::k8bit},
+              Instruction::kEqual,
+              key_type,
+              Imm{
+                  reinterpret_cast<uint64_t>(&PyUnicode_Type),
+                  OperandBase::kObject});
+          bbb.appendBranch(
+              Instruction::kCondBranch,
+              is_exact_unicode,
+              lookup_path,
+              slow_path);
+        }
+
+        bbb.switchBlock(lookup_path);
+        auto borrowed_result = bbb.appendCallInstruction(
+            OutVReg{OperandBase::kObject},
+            PyDict_GetItemWithError,
+            instr->GetOperand(0),
+            instr->GetOperand(1));
+        bbb.appendBranch(
+            Instruction::kCondBranch, borrowed_result, hit_path, slow_path);
+
+        bbb.switchBlock(hit_path);
+        MakeIncref(bbb, borrowed_result);
+        auto hit_result_block = bbb.currentBlock();
+        bbb.appendBranch(Instruction::kBranch, done);
+
+        bbb.switchBlock(slow_path);
+        auto slow_result = bbb.appendCallInstruction(
+            OutVReg{OperandBase::kObject},
+            PyDict_Type.tp_as_mapping->mp_subscript,
+            instr->GetOperand(0),
+            instr->GetOperand(1));
+        bbb.appendBranch(Instruction::kBranch, done);
+
+        bbb.switchBlock(done);
+        Instruction* phi = bbb.appendInstr(instr->output(), Instruction::kPhi);
+        phi->addOperands(Lbl(hit_result_block), VReg(borrowed_result));
+        phi->addOperands(Lbl(slow_path), VReg(slow_result));
+#endif
         break;
       }
       case Opcode::kListSlice: {
