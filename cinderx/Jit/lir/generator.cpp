@@ -2910,16 +2910,100 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       case Opcode::kListAppend: {
         auto instr = static_cast<const ListAppend*>(&i);
 
+#ifdef Py_GIL_DISABLED
         bbb.appendCallInstruction(
             instr->output(),
-#ifdef Py_GIL_DISABLED
             // TODO(T250369690): Need thread-safe checked collections
             PyList_Append,
-#else
-            Ci_ListOrCheckedList_Append,
-#endif
             instr->GetOperand(0),
             instr->GetOperand(1));
+#else
+        Instruction* list = bbb.getDefInstr(instr->GetOperand(0));
+        Instruction* item = bbb.getDefInstr(instr->GetOperand(1));
+        auto capacity_check = bbb.allocateBlock();
+        auto fast_path = bbb.allocateBlock();
+        auto slow_path = bbb.allocateBlock();
+        auto done = bbb.allocateBlock();
+
+        if (instr->GetOperand(0)->type() <= TListExact) {
+          bbb.appendBranch(Instruction::kBranch, capacity_check);
+        } else {
+          auto type = bbb.appendInstr(
+              OutVReg{OperandBase::kObject},
+              Instruction::kMove,
+              Ind{list, offsetof(PyObject, ob_type)});
+          auto is_exact_list = bbb.appendInstr(
+              OutVReg{OperandBase::k8bit},
+              Instruction::kEqual,
+              type,
+              Imm{
+                  reinterpret_cast<uint64_t>(&PyList_Type),
+                  OperandBase::kObject});
+          bbb.appendBranch(
+              Instruction::kCondBranch,
+              is_exact_list,
+              capacity_check,
+              slow_path);
+        }
+
+        bbb.switchBlock(capacity_check);
+        auto size = bbb.appendInstr(
+            OutVReg{OperandBase::k64bit},
+            Instruction::kMove,
+            Ind{list, offsetof(PyVarObject, ob_size), DataType::k64bit});
+        auto allocated = bbb.appendInstr(
+            OutVReg{OperandBase::k64bit},
+            Instruction::kMove,
+            Ind{list, offsetof(PyListObject, allocated), DataType::k64bit});
+        auto has_capacity = bbb.appendInstr(
+            OutVReg{OperandBase::k8bit},
+            Instruction::kLessThanSigned,
+            size,
+            allocated);
+        bbb.appendBranch(
+            Instruction::kCondBranch, has_capacity, fast_path, slow_path);
+
+        bbb.switchBlock(fast_path);
+        MakeIncref(bbb, item);
+        auto fast_result_block = bbb.currentBlock();
+        auto items = bbb.appendInstr(
+            OutVReg{OperandBase::kObject},
+            Instruction::kMove,
+            Ind{list, offsetof(PyListObject, ob_item)});
+        bbb.appendInstr(
+            OutInd{
+                items,
+                size,
+                sizeof(PyObject*),
+                0,
+                OperandBase::kObject},
+            Instruction::kMove,
+            item);
+        auto new_size = bbb.appendInstr(
+            OutVReg{OperandBase::k64bit}, Instruction::kAdd, size, Imm{1});
+        bbb.appendInstr(
+            OutInd{list, offsetof(PyVarObject, ob_size), OperandBase::k64bit},
+            Instruction::kMove,
+            new_size);
+        auto fast_result = bbb.appendInstr(
+            OutVReg{OperandBase::k32bit},
+            Instruction::kMove,
+            Imm{0, OperandBase::k32bit});
+        bbb.appendBranch(Instruction::kBranch, done);
+
+        bbb.switchBlock(slow_path);
+        auto slow_result = bbb.appendCallInstruction(
+            OutVReg{OperandBase::k32bit},
+            Ci_ListOrCheckedList_Append,
+            instr->GetOperand(0),
+            instr->GetOperand(1));
+        bbb.appendBranch(Instruction::kBranch, done);
+
+        bbb.switchBlock(done);
+        Instruction* phi = bbb.appendInstr(instr->output(), Instruction::kPhi);
+        phi->addOperands(Lbl(fast_result_block), VReg(fast_result));
+        phi->addOperands(Lbl(slow_path), VReg(slow_result));
+#endif
         break;
       }
       case Opcode::kListExtend: {

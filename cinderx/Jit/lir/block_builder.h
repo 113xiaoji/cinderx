@@ -36,6 +36,10 @@ class BasicBlockBuilder {
   // Allocate a new block, not yet attached anywhere in the current CFG.
   BasicBlock* allocateBlock();
 
+  BasicBlock* currentBlock() const {
+    return cur_bb_;
+  }
+
   // Append a block to the CFG and switch to it.
   void appendBlock(BasicBlock* block);
 
