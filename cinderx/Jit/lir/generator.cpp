@@ -1240,11 +1240,65 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
       }
       case Opcode::kIndexUnbox: {
         auto instr = static_cast<const IndexUnbox*>(&i);
-        bbb.appendCallInstruction(
-            instr->output(),
+        Instruction* value = bbb.getDefInstr(instr->GetOperand(0));
+        auto compact_path = bbb.allocateBlock();
+        auto slow_path = bbb.allocateBlock();
+        auto done = bbb.allocateBlock();
+
+        auto tag = bbb.appendInstr(
+            OutVReg{OperandBase::k64bit},
+            Instruction::kMove,
+            Ind{
+                value,
+                offsetof(PyLongObject, long_value.lv_tag),
+                DataType::k64bit});
+        auto is_compact = bbb.appendInstr(
+            OutVReg{OperandBase::k8bit},
+            Instruction::kLessThanUnsigned,
+            tag,
+            Imm{static_cast<uint64_t>(2 << _PyLong_NON_SIZE_BITS)});
+        bbb.appendBranch(
+            Instruction::kCondBranch, is_compact, compact_path, slow_path);
+
+        bbb.switchBlock(compact_path);
+        auto sign_bits = bbb.appendInstr(
+            OutVReg{OperandBase::k64bit},
+            Instruction::kAnd,
+            tag,
+            Imm{_PyLong_SIGN_MASK});
+        auto one = bbb.appendInstr(
+            Instruction::kMove, OutVReg{OperandBase::k64bit}, int64_t{1});
+        auto sign = bbb.appendInstr(
+            OutVReg{OperandBase::k64bit},
+            Instruction::kSub,
+            one,
+            sign_bits);
+        auto digit32 = bbb.appendInstr(
+            OutVReg{OperandBase::k32bit},
+            Instruction::kMove,
+            Ind{
+                value,
+                offsetof(PyLongObject, long_value.ob_digit),
+                DataType::k32bit});
+        auto digit =
+            bbb.appendInstr(
+                OutVReg{OperandBase::k64bit}, Instruction::kZext, digit32);
+        auto compact_result = bbb.appendInstr(
+            OutVReg{OperandBase::k64bit}, Instruction::kMul, digit, sign);
+        bbb.appendBranch(Instruction::kBranch, done);
+
+        bbb.switchBlock(slow_path);
+        auto call_result = bbb.appendCallInstruction(
+            OutVReg{OperandBase::k64bit},
             PyNumber_AsSsize_t,
             instr->GetOperand(0),
             instr->exception());
+        bbb.appendBranch(Instruction::kBranch, done);
+
+        bbb.switchBlock(done);
+        Instruction* phi = bbb.appendInstr(instr->output(), Instruction::kPhi);
+        phi->addOperands(Lbl(compact_path), VReg(compact_result));
+        phi->addOperands(Lbl(slow_path), VReg(call_result));
         break;
       }
       case Opcode::kPrimitiveUnaryOp: {
