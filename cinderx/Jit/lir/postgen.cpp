@@ -3,7 +3,10 @@
 #include "cinderx/Jit/lir/postgen.h"
 
 #include "cinderx/Jit/lir/inliner.h"
+#include "cinderx/Jit/lir/operand.h"
 #include "cinderx/Jit/lir/printer.h"
+
+#include <unordered_map>
 
 using namespace jit::codegen;
 
@@ -385,6 +388,78 @@ RewriteResult rewriteLoadSecondCallResult(instr_iter_t instr_iter) {
 }
 
 #if defined(CINDER_AARCH64)
+void countLinkedUse(
+    OperandBase* operand,
+    std::unordered_map<const Instruction*, size_t>& uses) {
+  if (operand == nullptr) {
+    return;
+  }
+
+  if (operand->isInd()) {
+    auto indirect = operand->getMemoryIndirect();
+    countLinkedUse(indirect->getBaseRegOperand(), uses);
+    countLinkedUse(indirect->getIndexRegOperand(), uses);
+    return;
+  }
+
+  if (operand->isLinked()) {
+    auto linked = static_cast<LinkedOperand*>(operand)->getLinkedInstr();
+    uses[linked]++;
+  }
+}
+
+RewriteResult rewriteCompareCondBranches(Function* function) {
+  std::unordered_map<const Instruction*, size_t> use_counts;
+  for (auto& block : function->basicblocks()) {
+    for (auto& instr : block->instructions()) {
+      instr->foreachInputOperand([&](OperandBase* operand) {
+        countLinkedUse(operand, use_counts);
+      });
+      countLinkedUse(instr->output(), use_counts);
+    }
+  }
+
+  bool changed = false;
+  for (auto& block : function->basicblocks()) {
+    auto& instrs = block->instructions();
+    for (auto iter = instrs.begin(); iter != instrs.end(); ++iter) {
+      auto compare = iter->get();
+      if (!compare->isCompare()) {
+        continue;
+      }
+
+      auto next_iter = std::next(iter);
+      if (next_iter == instrs.end()) {
+        continue;
+      }
+
+      auto branch = next_iter->get();
+      if (!branch->isCondBranch() || branch->getNumInputs() != 1) {
+        continue;
+      }
+
+      auto branch_input = branch->getInput(0);
+      if (!branch_input->isLinked()) {
+        continue;
+      }
+
+      auto linked = static_cast<LinkedOperand*>(branch_input)->getLinkedInstr();
+      if (linked != compare || use_counts[compare] != 1) {
+        continue;
+      }
+
+      auto branch_opcode = Instruction::compareToBranchCC(compare->opcode());
+      compare->setOpcode(Instruction::kCmp);
+      compare->output()->setNone();
+      branch->setOpcode(branch_opcode);
+      branch->setNumInputs(0);
+      changed = true;
+    }
+  }
+
+  return changed ? kChanged : kUnchanged;
+}
+
 // On AArch64, signed operations on sub-32-bit values need sign-extension.
 // LIR DataType doesn't track signedness (both cint8 and cuint8 become k8bit),
 // so values in registers are zero-extended by default (via ldrb/ldrh/cset).
@@ -469,6 +544,7 @@ void PostGenerationRewrite::registerRewrites() {
 #if defined(CINDER_X86_64)
   registerOneRewriteFunction(rewriteMoveToMemoryLargeConstant, 1);
 #elif defined(CINDER_AARCH64)
+  registerOneRewriteFunction(rewriteCompareCondBranches, 2);
   registerOneRewriteFunction(rewriteSignedSubWordOps, 1);
   registerOneRewriteFunction(rewritePromoteOutputSize, 1);
 #endif
