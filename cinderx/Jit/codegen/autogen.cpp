@@ -14,6 +14,7 @@
 #include "cinderx/Jit/lir/instruction.h"
 #include "cinderx/Jit/lir/printer.h"
 
+#include <optional>
 #include <type_traits>
 #include <vector>
 
@@ -2028,11 +2029,62 @@ void leaIndirect(
 
 // Resolve the memory address represented by a MemoryIndirect into an a64::Mem
 // operand suitable for load and store operations.
+uint8_t accessSizeShift(const OperandBase* operand) {
+  if (operand->isVecD()) {
+    return 3;
+  }
+
+  switch (operand->dataType()) {
+    case OperandBase::k8bit:
+      return 0;
+    case OperandBase::k16bit:
+      return 1;
+    case OperandBase::k32bit:
+      return 2;
+    case OperandBase::k64bit:
+    case OperandBase::kDouble:
+    case OperandBase::kObject:
+      return 3;
+  }
+  Py_UNREACHABLE();
+}
+
+std::optional<arch::Mem> ptrIndirectIndexed(
+    const MemoryIndirect* indirect,
+    uint8_t access_shift) {
+  auto indexRegOperand = indirect->getIndexRegOperand();
+  if (indexRegOperand == nullptr || indirect->getOffset() != 0) {
+    return std::nullopt;
+  }
+
+  auto base = getGpOrSP(indirect->getBaseRegOperand());
+  auto index = AT::getGp(indexRegOperand);
+  if (!index.isGpX()) {
+    return std::nullopt;
+  }
+
+  auto multiplier = indirect->getMultipiler();
+  if (multiplier == 0) {
+    return a64::ptr(base, index);
+  }
+  if (multiplier == access_shift) {
+    return a64::ptr(base, index, a64::lsl(access_shift));
+  }
+  return std::nullopt;
+}
+
 arch::Mem ptrIndirect(
     arch::Builder* as,
     arch::Gp scratch0,
     arch::Gp scratch1,
-    const MemoryIndirect* indirect) {
+    const MemoryIndirect* indirect,
+    std::optional<uint8_t> access_shift = std::nullopt) {
+  if (access_shift.has_value()) {
+    if (auto ptr = ptrIndirectIndexed(indirect, *access_shift)) {
+      return *ptr;
+    }
+  }
+
   auto base = getGpOrSP(indirect->getBaseRegOperand());
   auto indexRegOperand = indirect->getIndexRegOperand();
   auto offset = indirect->getOffset();
@@ -2233,7 +2285,8 @@ void translateMove(Environ* env, const Instruction* instr) {
               as,
               arch::reg_scratch_0,
               arch::reg_scratch_1,
-              input->getMemoryIndirect());
+              input->getMemoryIndirect(),
+              accessSizeShift(output));
 
           loadToReg(as, output, ptr);
           break;
@@ -2291,15 +2344,23 @@ void translateMove(Environ* env, const Instruction* instr) {
       if (input->isReg()) {
         // Storing the value of a register to an address relative to another
         // register.
-        auto ptr =
-            ptrIndirect(as, scratch0, scratch1, output->getMemoryIndirect());
+        auto ptr = ptrIndirect(
+            as,
+            scratch0,
+            scratch1,
+            output->getMemoryIndirect(),
+            accessSizeShift(input));
 
         storeFromReg(as, input, ptr);
       } else if (input->isImm()) {
         // Storing a constant immediate to an address relative to another
         // register.
-        auto ptr =
-            ptrIndirect(as, scratch0, scratch1, output->getMemoryIndirect());
+        auto ptr = ptrIndirect(
+            as,
+            scratch0,
+            scratch1,
+            output->getMemoryIndirect(),
+            accessSizeShift(output));
 
         // Use the output's data type to determine the store width.
         switch (output->dataType()) {
