@@ -2866,36 +2866,29 @@ void translateTst(Environ* env, const Instruction* instr) {
 void translateSelect(Environ* env, const Instruction* instr) {
   a64::Builder* as = env->as;
 
-  auto output_op = instr->output();
-  auto output = AT::getGpOutput(output_op);
+  auto output = AT::getGpOutput(instr->output());
   auto condition_op = instr->getInput(0);
+  arch::Gp condition_reg;
   switch (condition_op->dataType()) {
     case jit::lir::OperandBase::k8bit:
-    case jit::lir::OperandBase::k16bit: {
-      auto condition_reg =
+    case jit::lir::OperandBase::k16bit:
+      condition_reg =
           AT::getGp(DataType::k32bit, condition_op->getPhyRegister().loc);
-      as->tst(condition_reg, (1 << bitSize(condition_op->dataType())) - 1);
+      as->and_(
+          condition_reg,
+          condition_reg,
+          (1 << bitSize(condition_op->dataType())) - 1);
       break;
-    }
     default:
-      as->cmp(AT::getGp(condition_op), 0);
+      condition_reg = AT::getGp(condition_op);
       break;
   }
   auto true_val_reg = AT::getGpWiden(instr->getInput(1));
   auto false_val = instr->getInput(2)->getConstant();
 
-  arch::Gp false_val_reg;
-  if (false_val == 0) {
-    if (output.isGpW()) {
-      false_val_reg = a64::wzr;
-    } else {
-      false_val_reg = a64::xzr;
-    }
-  } else {
-    false_val_reg = AT::getGpOutput(output_op, arch::reg_scratch_0.id());
-    as->mov(false_val_reg, false_val);
-  }
-  as->csel(output, true_val_reg, false_val_reg, a64::CondCode::kNE);
+  as->mov(arch::reg_scratch_0, false_val);
+  as->cmp(condition_reg, 0);
+  as->csel(output, true_val_reg, arch::reg_scratch_0, a64::CondCode::kNE);
 }
 
 } // namespace
