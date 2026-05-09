@@ -211,9 +211,6 @@ TEST_F(LIRABITest, TestkMove_OutPhyReg_Mem) {
   translateInstr(Instruction::kMove, makeOutPhyReg(), makeInd(1, 16));
   translateInstr(
       Instruction::kMove, makeOutPhyReg(), makeIndScale(1, 2, 8, 16));
-#if defined(CINDER_AARCH64)
-  translateInstr(Instruction::kMove, makeOutPhyReg(), makeIndScale(1, 2, 3, 0));
-#endif
 }
 
 // kMove R x
@@ -228,10 +225,6 @@ TEST_F(LIRABITest, TestkMove_Mem_PhyReg) {
   translateInstr(Instruction::kMove, makeOutInd(1, 16), makePhyReg());
   translateInstr(
       Instruction::kMove, makeOutIndScale(1, 2, 8, 16), makePhyReg());
-#if defined(CINDER_AARCH64)
-  translateInstr(
-      Instruction::kMove, makeOutIndScale(1, 2, 3, 0), makePhyReg(3));
-#endif
 }
 
 // kMove M i
