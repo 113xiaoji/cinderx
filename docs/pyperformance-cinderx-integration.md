@@ -400,7 +400,170 @@ PYPERF_INHERIT_ENV=$(build_pyperf_inherit_env)
 全量或多 benchmark 测试也沿用同一命令形态，只调整 `-b` 或去掉 `-b`。不要为了
 方便另外创建一套 pyperformance venv 或遗漏 `--inherit-environ`。
 
-## 8. smoke 验证
+## 8. 热点函数编译确认
+
+所有用于性能结论的 benchmark 都必须确认热点函数确实进入 CinderX JIT。只看到
+`pyperformance` JSON 变快或变慢还不够；如果热点函数没有编译，结论只能写成环境或
+解释执行诊断，不能写成 JIT 代码质量结论。
+
+每个 benchmark 至少记录：
+
+```text
+1. benchmark 名称。
+2. 预期热点函数列表，使用 `module:qualname` 或可唯一匹配的子串。
+3. 热点来源，例如 pyperformance 源码、profile、HIR/LIR dump 或既有 findings。
+4. 与正式性能测试一致的 CinderX build、PYTHONJITAUTO=2、PYTHONJITLISTFILE、PYTHONJIT* 开关和 --warmups。
+5. 证明这些热点函数已编译的 probe/log 文件路径。
+```
+
+推荐用仓库里的 worker hook 做一次同口径探针。这个探针不是最终性能数据，但必须使用
+同一份 worker venv、同一份 JIT list、同一组 JIT 开关和同一个 warmup 设置：
+
+```bash
+cd "$CINDERX_REPO"
+
+export HOT_BENCH=${HOT_BENCH:-"$BENCH"}
+export HOT_JSON=${HOT_JSON:-"$RESULT_DIR/${HOT_BENCH}-hot-functions.json"}
+export HOT_PROBE_JSONL=${HOT_PROBE_JSONL:-"$RESULT_DIR/${HOT_BENCH}-hot-functions.jsonl"}
+
+# 用换行或逗号分隔。例：
+# export HOT_FUNCTION_PATTERNS='__main__:bench_json_dumps,json.encoder:_make_iterencode'
+test -n "${HOT_FUNCTION_PATTERNS:-}"
+
+export CINDERX_PYPERF_HOOK_PROBE_FILE="$HOT_PROBE_JSONL"
+export CINDERX_PYPERF_HOOK_COMPILED_FUNCTIONS=1
+export PYTHONPATH="$CINDERX_REPO/scripts/arm/pyperf_env_hook${PYTHONPATH:+:$PYTHONPATH}"
+
+export PYTHONJITTYPEANNOTATIONGUARDS=1
+export PYTHONJITENABLEJITLISTWILDCARDS=1
+export PYTHONJITENABLEHIRINLINER=1
+export PYTHONJITAUTO=2
+export PYTHONJITSPECIALIZEDOPCODES=1
+export PYTHONJITLISTFILE="$JIT_LIST"
+
+export PYPERF_INHERIT_ENV
+PYPERF_INHERIT_ENV="$(build_pyperf_inherit_env),CINDERX_PYPERF_HOOK_PROBE_FILE,CINDERX_PYPERF_HOOK_COMPILED_FUNCTIONS"
+
+"$DRIVER_PYTHON" -m pyperformance run \
+  --debug-single-value \
+  "${PYPERF_AFFINITY_ARGS[@]}" \
+  -b "$HOT_BENCH" \
+  --warmups "$PYPERF_WARMUP" \
+  --inherit-environ "$PYPERF_INHERIT_ENV" \
+  -o "$HOT_JSON"
+```
+
+验证 probe 文件时，至少检查 JIT 已开启、`compile_after` 是本轮要求的阈值、最终
+`atexit` 记录里有编译函数，并且所有预期热点函数都能匹配到：
+
+```bash
+"$DRIVER_PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+probe = Path(os.environ["HOT_PROBE_JSONL"])
+patterns = [
+    item.strip()
+    for item in os.environ["HOT_FUNCTION_PATTERNS"].replace(",", "\n").splitlines()
+    if item.strip()
+]
+
+records = [
+    json.loads(line)
+    for line in probe.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
+if not records:
+    raise SystemExit(f"empty JIT probe: {probe}")
+
+if not any(row.get("jit_enabled") is True for row in records):
+    raise SystemExit("JIT was not enabled in the pyperformance worker")
+
+compile_after = {
+    row.get("compile_after")
+    for row in records
+    if row.get("phase") in {"enabled", "atexit"}
+}
+if 2 not in compile_after:
+    raise SystemExit(f"expected compile_after=2, got {sorted(compile_after)!r}")
+
+compiled = []
+for row in records:
+    if row.get("phase") != "atexit":
+        continue
+    compiled.extend(row.get("compiled_functions") or row.get("compiled_sample") or [])
+
+if not compiled:
+    raise SystemExit("no compiled functions recorded at worker exit")
+
+missing = [
+    pattern
+    for pattern in patterns
+    if not any(pattern in name for name in compiled)
+]
+if missing:
+    print("compiled functions:")
+    for name in sorted(set(compiled)):
+        print(" ", name)
+    raise SystemExit(f"missing expected hot compiled functions: {missing!r}")
+
+print("hot functions compiled", probe)
+PY
+```
+
+如果某个热点函数没有编译，先修正 `jit_list`、`PYTHONJITAUTO`、worker 继承环境或
+热点函数判断，再重跑性能。不能把这组结果作为“JIT 开启后的最终性能”上报。
+
+## 9. 性能提升归因和噪音判定
+
+如果结果显示性能提升，不能只报告 geomean 或单行 speedup。必须先判断提升是代码或
+策略确实受益，还是测量噪音、host 负载、benchmark 方法变化、热点未编译、样本太少、
+或少数短 benchmark 支配了几何平均。
+
+每个性能提升结论至少记录：
+
+```text
+1. base/current 的 commit、build 类型、Python、driver/worker venv、affinity、warmup、样本数和完整 JIT 环境。
+2. base/current 是否使用同一份 benchmark 方法；如果方法不同，只能写成诊断，不能写成优化收益。
+3. 相关热点函数已编译的证据，见第 8 章。
+4. 每个 row 的 median/min/max 或 pyperformance compare 输出，不只记录 geomean。
+5. 是否有 >=5% 的单项回退，以及这些回退是否影响用户要求的 gate。
+6. 提升最大的 row 是否有代码层解释，例如 HIR/LIR 形态变化、调用路径变化、编译函数变化或计数器变化。
+7. 是否做过同口径复跑、开关反转 A/B 或相邻 baseline 对照来排除噪音。
+```
+
+判断规则：
+
+```text
+1. 小于约 1% 的 geomean 提升默认视为噪音，除非有高样本复跑和明确代码层证据。
+2. 1% 到 3% 的 geomean 提升只能写成候选信号；需要复跑或开关反转 A/B 后再称为真实收益。
+3. 超过 3% 的 geomean 提升仍需检查是否由少数短 benchmark、异常 min/max、host 抖动或方法变化支配。
+4. 如果某个开关或补丁声称带来收益，必须至少有一次只改变该开关/补丁的 A/B。
+5. 如果提升来自 precompile、worker hook、JIT list 扩大、warmup、样本数或 affinity 变化，结论必须写成方法影响或诊断结果，不得写成 JIT 代码质量提升。
+6. 如果数据正负混杂、复跑方向不一致，或热点函数没有编译，结论必须标记为不确定或噪音，不得作为完成依据。
+```
+
+推荐在 `findings.md` 中使用固定格式记录结论：
+
+```text
+Benefit classification:
+- status: confirmed / candidate / inconclusive / noise / regression
+- artifact(s):
+- method parity:
+- hot function compilation:
+- geomean:
+- largest wins:
+- regressions:
+- causality evidence:
+- repeat or A/B evidence:
+- final decision:
+```
+
+只有 `status: confirmed` 的结果才能作为最终性能收益上报。`candidate` 可以作为下一轮
+优化方向，`inconclusive` 或 `noise` 不能计入目标达成。
+
+## 10. smoke 验证
 
 正式性能测试前，先跑 `nbody` smoke。smoke 的目的不是给最终性能结论，而是确认
 pyperformance worker venv 能继承 CinderX，JIT 环境变量能进入 worker，结果 JSON 能生成。
@@ -502,7 +665,7 @@ smoke 通过条件：
 不同 Python 安装、debug-single-value、CPU 绑定和是否 Release/PGO/LTO 都会改变耗时，
 不要把某个机器上的毫秒数写成通用通过标准。
 
-## 9. 常见排查
+## 11. 常见排查
 
 基础 Python 不能导入 CinderX：
 
