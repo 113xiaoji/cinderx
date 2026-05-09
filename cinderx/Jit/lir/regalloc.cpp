@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <iterator>
 #include <utility>
-#include <vector>
 
 using namespace jit::codegen;
 
@@ -733,18 +732,14 @@ void LinearScanAllocator::linearScan() {
     auto position = current->startLocation();
 
     // Return no longer needed stack slots to the allocator.
-    std::vector<LiveInterval*> expired_stack_intervals;
     for (LiveInterval* interval : stack_intervals) {
       auto operand = interval->operand;
       auto iter = vreg_global_last_use_.find(operand);
       if (iter != vreg_global_last_use_.end() && iter->second <= position) {
         freeStackSlot(operand);
-        expired_stack_intervals.emplace_back(interval);
       }
     }
-    for (LiveInterval* interval : expired_stack_intervals) {
-      stack_intervals.erase(interval);
-    }
+    stack_intervals.clear();
 
     // Process active intervals, updating to inactive.
     for (auto iter = active.begin(); iter != active.end();) {
