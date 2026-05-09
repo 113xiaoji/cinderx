@@ -2030,10 +2030,6 @@ void leaIndirect(
 // Resolve the memory address represented by a MemoryIndirect into an a64::Mem
 // operand suitable for load and store operations.
 uint8_t accessSizeShift(const OperandBase* operand) {
-  if (operand->isVecD()) {
-    return 3;
-  }
-
   switch (operand->dataType()) {
     case OperandBase::k8bit:
       return 0;
@@ -2057,7 +2053,13 @@ std::optional<arch::Mem> ptrIndirectIndexed(
     return std::nullopt;
   }
 
-  auto base = getGpOrSP(indirect->getBaseRegOperand());
+  auto baseRegOperand = indirect->getBaseRegOperand();
+  if (baseRegOperand == nullptr || !baseRegOperand->isReg() ||
+      !indexRegOperand->isReg()) {
+    return std::nullopt;
+  }
+
+  auto base = getGpOrSP(baseRegOperand);
   auto index = AT::getGp(indexRegOperand);
   if (!index.isGpX()) {
     return std::nullopt;
