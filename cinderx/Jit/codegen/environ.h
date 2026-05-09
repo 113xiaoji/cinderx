@@ -54,17 +54,6 @@ struct Environ {
   };
   std::vector<DeoptExit> deopt_exits;
 
-  // AArch64 guard failure branches can only encode a short conditional
-  // displacement. Keep the hot guard's failed edge nearby and let that stub
-  // branch to the cold deopt exit.
-  struct Aarch64NearDeoptBranch {
-    Aarch64NearDeoptBranch(asmjit::Label near_lbl, asmjit::Label deopt_lbl)
-        : near_label(near_lbl), deopt_label(deopt_lbl) {}
-    asmjit::Label near_label;
-    asmjit::Label deopt_label;
-  };
-  std::vector<Aarch64NearDeoptBranch> aarch64_near_deopt_branches;
-
   struct PendingDeoptPatcher {
     PendingDeoptPatcher(JumpPatcher* p, asmjit::Label pp, asmjit::Label de)
         : patcher(p), patchpoint(pp), deopt_exit(de) {}

@@ -285,25 +285,35 @@ void TranslateGuard(Environ* env, const Instruction* instr) {
   auto deopt_label = as->newLabel();
   auto kind = instr->getInput(0)->getConstant();
 
-  auto near_deopt_label = [&]() {
-    auto near_label = as->newLabel();
-    env->aarch64_near_deopt_branches.emplace_back(near_label, deopt_label);
-    return near_label;
+  auto emit_b_eq_far = [&](asmjit::Label target) {
+    auto skip = as->newLabel();
+    as->b_ne(skip);
+    as->b(target);
+    as->bind(skip);
   };
-  auto emit_b_eq_deopt = [&]() {
-    as->b_eq(near_deopt_label());
+  auto emit_b_ne_far = [&](asmjit::Label target) {
+    auto skip = as->newLabel();
+    as->b_eq(skip);
+    as->b(target);
+    as->bind(skip);
   };
-  auto emit_b_ne_deopt = [&]() {
-    as->b_ne(near_deopt_label());
+  auto emit_cbz_far = [&](auto reg_arg, asmjit::Label target) {
+    auto skip = as->newLabel();
+    as->cbnz(reg_arg, skip);
+    as->b(target);
+    as->bind(skip);
   };
-  auto emit_cbz_deopt = [&](auto reg_arg) {
-    as->cbz(reg_arg, near_deopt_label());
+  auto emit_cbnz_far = [&](auto reg_arg, asmjit::Label target) {
+    auto skip = as->newLabel();
+    as->cbz(reg_arg, skip);
+    as->b(target);
+    as->bind(skip);
   };
-  auto emit_cbnz_deopt = [&](auto reg_arg) {
-    as->cbnz(reg_arg, near_deopt_label());
-  };
-  auto emit_b_mi_deopt = [&]() {
-    as->b_mi(near_deopt_label());
+  auto emit_b_mi_far = [&](asmjit::Label target) {
+    auto skip = as->newLabel();
+    as->b_pl(skip);
+    as->b(target);
+    as->bind(skip);
   };
 
   arch::Gp reg = arch::reg_scratch_0;
@@ -316,11 +326,11 @@ void TranslateGuard(Environ* env, const Instruction* instr) {
       switch (kind) {
         case kNotZero:
           as->fmov(reg, vecd_reg);
-          emit_cbz_deopt(reg);
+          emit_cbz_far(reg, deopt_label);
           break;
         case kNotNegative:
           as->fcmp(vecd_reg, 0.0);
-          emit_b_mi_deopt();
+          emit_b_mi_far(deopt_label);
           break;
         default:
           JIT_ABORT("Unsupported guard kind {} for double", kind);
@@ -362,9 +372,9 @@ void TranslateGuard(Environ* env, const Instruction* instr) {
       case kNotZero:
         if (mask) {
           as->tst(reg, mask);
-          emit_b_eq_deopt();
+          emit_b_eq_far(deopt_label);
         } else {
-          emit_cbz_deopt(reg);
+          emit_cbz_far(reg, deopt_label);
         }
         break;
       case kNotNegative: {
@@ -379,9 +389,9 @@ void TranslateGuard(Environ* env, const Instruction* instr) {
       case kZero:
         if (mask) {
           as->tst(reg, mask);
-          emit_b_ne_deopt();
+          emit_b_ne_far(deopt_label);
         } else {
-          emit_cbnz_deopt(reg);
+          emit_cbnz_far(reg, deopt_label);
         }
         break;
       case kAlwaysFail:
@@ -396,12 +406,15 @@ void TranslateGuard(Environ* env, const Instruction* instr) {
             as,
             arch::reg_scratch_0,
             static_cast<uint64_t>(2 << _PyLong_NON_SIZE_BITS));
-        as->b_hs(near_deopt_label());
+        auto skip = as->newLabel();
+        as->b_lo(skip);
+        as->b(deopt_label);
+        as->bind(skip);
         break;
       }
       case kIs:
         emit_cmp(reg);
-        emit_b_ne_deopt();
+        emit_b_ne_far(deopt_label);
         break;
       case kHasType: {
         as->ldr(
@@ -409,7 +422,7 @@ void TranslateGuard(Environ* env, const Instruction* instr) {
             arch::ptr_offset(reg, offsetof(PyObject, ob_type)));
 
         emit_cmp(arch::reg_scratch_0);
-        emit_b_ne_deopt();
+        emit_b_ne_far(deopt_label);
         break;
       }
     }
