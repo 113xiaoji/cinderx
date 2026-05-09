@@ -2423,6 +2423,25 @@ void NativeGenerator::generateDeoptExits(const asmjit::CodeHolder& code) {
 #endif
 }
 
+void NativeGenerator::generateAarch64NearDeoptBranches(
+    const asmjit::CodeHolder& code) {
+#if defined(CINDER_AARCH64)
+  if (env_.aarch64_near_deopt_branches.empty()) {
+    return;
+  }
+
+  CodeSectionOverride hot_override{as_, &code, &metadata_, CodeSection::kHot};
+  auto cursor = as_->cursor();
+  for (const auto& branch : env_.aarch64_near_deopt_branches) {
+    as_->bind(branch.near_label);
+    as_->b(branch.deopt_label);
+  }
+  env_.addAnnotation("AArch64 near deopt branches", cursor);
+#else
+  (void)code;
+#endif
+}
+
 void NativeGenerator::linkDeoptPatchers(const asmjit::CodeHolder& code) {
   JIT_CHECK(code.hasBaseAddress(), "code not generated!");
   uint64_t base = code.baseAddress();
@@ -2954,6 +2973,7 @@ void NativeGenerator::generateCode(CodeHolder& codeholder) {
         "Static argument typecheck failure stub", static_typecheck_cursor);
   }
 
+  generateAarch64NearDeoptBranches(codeholder);
   generateDeoptExits(codeholder);
   emitAarch64CallTargetLiteralPool();
 
