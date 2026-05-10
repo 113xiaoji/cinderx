@@ -539,22 +539,13 @@ RewriteResult rewriteLoadInstrs(instr_iter_t instr_iter) {
   return kChanged;
 }
 
-// Convert CondBranch to Test and BranchCC instructions.
+// Convert CondBranch to target-specific branch instructions.
 void doRewriteCondBranch(instr_iter_t instr_iter, BasicBlock* next_block) {
   auto instr = instr_iter->get();
 
   auto input = instr->getInput(0);
   auto block = instr->basicblock();
 
-  // insert test Reg, Reg instruction
-  auto size = input->dataType();
-  block->allocateInstrBefore(
-      instr_iter,
-      Instruction::kTest,
-      PhyReg(input->getPhyRegister(), size),
-      PhyReg(input->getPhyRegister(), size));
-
-  // convert the current CondBranch instruction to a BranchCC instruction
   auto true_block = block->getTrueSuccessor();
   auto false_block = block->getFalseSuccessor();
 
@@ -572,9 +563,33 @@ void doRewriteCondBranch(instr_iter_t instr_iter, BasicBlock* next_block) {
   }
 
   instr->setOpcode(opcode);
-  instr->setNumInputs(0);
 
-  instr->allocateLabelInput(target_block);
+  auto size = input->dataType();
+  bool use_test_branch = false;
+#if defined(CINDER_AARCH64)
+  use_test_branch =
+      size == DataType::k32bit || size == DataType::k64bit ||
+      size == DataType::kObject;
+#endif
+
+  if (use_test_branch) {
+    // AArch64 can test-and-branch on these registers directly with cbz/cbnz, so
+    // keep the condition input and let codegen consume it with the target label.
+    instr->setNumInputs(1);
+    instr->allocateLabelInput(target_block);
+  } else {
+    // Other cases branch on flags, so set flags with test Reg, Reg first and
+    // turn the current instruction into a label-only BranchCC.
+    block->allocateInstrBefore(
+        instr_iter,
+        Instruction::kTest,
+        PhyReg(input->getPhyRegister(), size),
+        PhyReg(input->getPhyRegister(), size));
+
+    instr->setNumInputs(0);
+
+    instr->allocateLabelInput(target_block);
+  }
 
   if (fallthrough_block != next_block ||
       block->section() != next_block->section()) {
