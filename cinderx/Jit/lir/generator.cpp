@@ -1391,8 +1391,19 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         hir::Register* base = instr->GetOperand(0);
         Instruction* name = getNameFromIdx(bbb, instr);
         auto cache = getContext()->allocateLoadAttrCache();
+#if defined(CINDER_AARCH64) && PY_VERSION_HEX >= 0x030E0000 && \
+    !defined(Py_GIL_DISABLED)
+        bbb.appendInstr(
+            dst,
+            Instruction::kLoadAttrCachedFastPath,
+            jit::LoadAttrCache::invoke,
+            cache,
+            base,
+            name);
+#else
         bbb.appendCallInstruction(
             dst, jit::LoadAttrCache::invoke, cache, base, name);
+#endif
         break;
       }
       case Opcode::kLoadAttrSpecial: {

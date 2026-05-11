@@ -2150,6 +2150,13 @@ void translateCall(Environ* env, const Instruction* instr) {
   }
 }
 
+void translateLoadAttrCachedFastPath(Environ* env, const Instruction* instr) {
+  JIT_CHECK(
+      instr->getNumInputs() == 1 && instr->getInput(0)->isImm(),
+      "LoadAttrCachedFastPath must be postalloc-rewritten to an immediate call target");
+  emitLoadAttrCachedFastPathCall(*env, instr);
+}
+
 // Our move instruction encapsulates moving a value between registers, setting
 // the value of a register, loading a value from memory, and storing a value to
 // memory. The operation that will be performed is determined by the
@@ -2893,6 +2900,10 @@ BEGIN_RULES(Instruction::kCall)
   GEN("i", CALL_C(translateCall))
   GEN("r", CALL_C(translateCall))
   GEN("m", CALL_C(translateCall))
+END_RULES
+
+BEGIN_RULES(Instruction::kLoadAttrCachedFastPath)
+  GEN("i", CALL_C(translateLoadAttrCachedFastPath))
 END_RULES
 
 BEGIN_RULES(Instruction::kMove)

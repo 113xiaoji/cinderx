@@ -70,6 +70,9 @@ uint64_t getAarch64HotCallTarget(const Instruction& instr) {
   if (instr.isCall() && instr.getNumInputs() > 0 && instr.getInput(0)->isImm()) {
     return instr.getInput(0)->getConstant();
   }
+  if (instr.isLoadAttrCachedFastPath()) {
+    return reinterpret_cast<uint64_t>(jit::LoadAttrCache::invoke);
+  }
   if (
       instr.isYieldFrom() || instr.isYieldFromSkipInitialSend() ||
       instr.isYieldFromHandleStopAsyncIteration()) {
@@ -3130,8 +3133,12 @@ void NativeGenerator::planAarch64HotCallTargets() {
 
   const uint32_t min_calls = sharedStubMinCalls();
   for (auto& entry : targets) {
-    uint32_t target_min_calls =
-        isStoreAttrInvokeTarget(entry.first) ? storeAttrStubMinCalls() : min_calls;
+    uint32_t target_min_calls = min_calls;
+    if (isLoadAttrInvokeTarget(entry.first)) {
+      target_min_calls = loadAttrStubMinCalls();
+    } else if (isStoreAttrInvokeTarget(entry.first)) {
+      target_min_calls = storeAttrStubMinCalls();
+    }
     entry.second.use_shared_stub = entry.second.hot_call_count >= target_min_calls;
   }
 #endif
@@ -3241,6 +3248,107 @@ void NativeGenerator::emitAarch64CallTargetLiteralPool() {
     emitCall(env_, reinterpret_cast<uint64_t>(_Py_Dealloc), nullptr);
     as_->bind(return_ok);
     as_->mov(a64::w0, a64::wzr);
+    as_->ret(arch::lr);
+
+    as_->bind(slow_path);
+    as_->ldr(arch::reg_scratch_br, asmjit::a64::ptr(target.literal));
+    as_->br(arch::reg_scratch_br);
+  }
+
+  if (env_.load_attr_invoke_stub.isValid()) {
+    auto load_attr_target = env_.call_target_literals.find(
+        reinterpret_cast<uint64_t>(jit::LoadAttrCache::invoke));
+    JIT_CHECK(
+        load_attr_target != env_.call_target_literals.end(),
+        "Missing call target literal for LoadAttrCache::invoke");
+
+    const auto& target = load_attr_target->second;
+    Label slow_path = as_->newLabel();
+    Label return_value = as_->newLabel();
+    Label incref_done = as_->newLabel();
+
+    constexpr int kEntryTypeOffset = static_cast<int>(
+        jit::AttributeCache::entriesOffset() +
+        jit::AttributeMutator::typeOffset());
+    constexpr int kValOffsetOffset = static_cast<int>(
+        jit::AttributeCache::entriesOffset() +
+        jit::AttributeMutator::splitValOffsetOffset());
+    constexpr int kEntrySize = sizeof(jit::AttributeMutator);
+    constexpr uint64_t kKindMask = jit::AttributeMutator::kindMask();
+    constexpr uint64_t kSplitInlineKnownOffsetKind =
+        jit::AttributeMutator::splitInlineKnownOffsetKind();
+    constexpr int kObTypeOffset = offsetof(PyObject, ob_type);
+    constexpr int kTpBasicSizeOffset = offsetof(PyTypeObject, tp_basicsize);
+    constexpr int kInlineValuesValidOffset = offsetof(PyDictValues, valid);
+    constexpr uint64_t kInlineValuesValuesOffset = offsetof(PyDictValues, values);
+    constexpr int kRefcountOffset = offsetof(PyObject, ob_refcnt);
+
+    ASM_CHECK(as_->align(AlignMode::kCode, 8), GetFunction()->fullname);
+    as_->bind(env_.load_attr_invoke_stub);
+
+    // x0=cache, x1=obj, x2=name
+    as_->ldr(a64::x11, arch::ptr_offset(a64::x1, kObTypeOffset));
+
+    auto emit_load_attr_entry = [&](uint32_t entry_index, Label next_entry) {
+      const int entry_offset = static_cast<int>(entry_index) * kEntrySize;
+      as_->ldr(
+          a64::x12,
+          arch::ptr_offset(a64::x0, kEntryTypeOffset + entry_offset));
+      as_->cbz(a64::x12, next_entry);
+
+      as_->mov(a64::x13, ~kKindMask);
+      as_->and_(a64::x13, a64::x12, a64::x13);
+      as_->cmp(a64::x13, a64::x11);
+      as_->b_ne(next_entry);
+
+      as_->and_(a64::x14, a64::x12, kKindMask);
+      arch::cmp_immediate(as_, a64::x14, kSplitInlineKnownOffsetKind);
+      as_->b_ne(slow_path);
+
+      as_->ldr(a64::x14, arch::ptr_offset(a64::x13, kTpBasicSizeOffset));
+      as_->add(a64::x15, a64::x1, a64::x14);
+      as_->ldrb(
+          a64::w14,
+          arch::ptr_offset(
+              a64::x15, kInlineValuesValidOffset, arch::AccessSize::k8));
+      as_->cbz(a64::w14, slow_path);
+
+      as_->ldr(
+          a64::x14,
+          arch::ptr_offset(a64::x0, kValOffsetOffset + entry_offset));
+      arch::add_immediate(as_, a64::x15, a64::x15, kInlineValuesValuesOffset);
+      as_->add(a64::x15, a64::x15, a64::x14, a64::lsl(3));
+      as_->ldr(a64::x9, a64::ptr(a64::x15));
+      as_->cbz(a64::x9, slow_path);
+      as_->b(return_value);
+    };
+
+    constexpr uint32_t kMaxStubEntries = 4;
+    const uint32_t stub_entries =
+        std::min<uint32_t>(jit::getConfig().attr_cache_size, kMaxStubEntries);
+    if (stub_entries == 0) {
+      as_->b(slow_path);
+    }
+    for (uint32_t entry_index = 0; entry_index < stub_entries; ++entry_index) {
+      const bool has_next_entry = entry_index + 1 != stub_entries;
+      Label next_entry = has_next_entry ? as_->newLabel() : slow_path;
+      emit_load_attr_entry(entry_index, next_entry);
+      if (has_next_entry) {
+        as_->bind(next_entry);
+      }
+    }
+
+    as_->bind(return_value);
+    as_->ldr(
+        a64::w12,
+        arch::ptr_offset(a64::x9, kRefcountOffset, arch::AccessSize::k32));
+    as_->adds(a64::w12, a64::w12, 1);
+    as_->b_mi(incref_done);
+    as_->str(
+        a64::w12,
+        arch::ptr_offset(a64::x9, kRefcountOffset, arch::AccessSize::k32));
+    as_->bind(incref_done);
+    as_->mov(a64::x0, a64::x9);
     as_->ret(arch::lr);
 
     as_->bind(slow_path);
