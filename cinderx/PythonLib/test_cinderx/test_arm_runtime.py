@@ -1791,6 +1791,78 @@ class ArmRuntimeTests(unittest.TestCase):
         self.assertLessEqual(size, 44700, size)
         self.assertEqual(f(9.0), float(n_calls) * 27.0)
 
+    def test_load_attr_cached_lowers_to_aarch64_lir_fastpath(self) -> None:
+        if sys.version_info < (3, 14):
+            self.skipTest("LoadAttrCachedFastPath requires Python 3.14+")
+
+        import sysconfig
+
+        if sysconfig.get_config_var("Py_GIL_DISABLED"):
+            self.skipTest("LoadAttrCachedFastPath is disabled without the GIL")
+
+        code = textwrap.dedent(
+            """
+            import cinderjit
+            import cinderx.jit as jit
+
+            jit.enable()
+            jit.enable_specialized_opcodes()
+            jit.compile_after_n_calls(1000000)
+
+            class Box:
+                pass
+
+            box = Box()
+            box.value = 42
+
+            def read(obj):
+                return obj.value
+
+            for _ in range(20000):
+                read(box)
+
+            assert jit.force_compile(read)
+            counts = cinderjit.get_function_hir_opcode_counts(read)
+            print(counts.get("LoadAttrCached", 0))
+            print(read(box))
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f"{tmp}/load_attr_lir_fastpath.py"
+            with open(script, "w", encoding="utf-8") as fp:
+                fp.write(code)
+
+            env = dict(os.environ)
+            env["PYTHONJITDUMPLIR"] = "1"
+            proc = subprocess.run(
+                [sys.executable, script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}",
+            )
+
+            dump = proc.stdout + "\n" + proc.stderr
+            match = re.search(
+                r"LIR for __main__:read after generation:\n(.*?)(?:\nJIT: .*?LIR for |\Z)",
+                dump,
+                re.S,
+            )
+            self.assertIsNotNone(match, dump)
+            section = match.group(1)
+            self.assertIn("LoadAttrCachedFastPath", section, dump)
+
+            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+            self.assertGreaterEqual(len(lines), 2, proc.stdout)
+            self.assertGreaterEqual(int(lines[-2]), 1, proc.stdout)
+            self.assertEqual(int(lines[-1]), 42, proc.stdout)
+
     def test_member_descriptor_store_simplifies_to_store_field(self) -> None:
         code = textwrap.dedent(
             """
