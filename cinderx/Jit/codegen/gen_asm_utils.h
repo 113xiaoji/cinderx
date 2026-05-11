@@ -25,7 +25,9 @@ void emitCall(
     const jit::lir::Instruction* instr);
 void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr);
 uint32_t sharedStubMinCalls();
+uint32_t loadAttrStubMinCalls();
 uint32_t storeAttrStubMinCalls();
+bool isLoadAttrInvokeTarget(uint64_t func);
 bool isStoreAttrInvokeTarget(uint64_t func);
 
 } // namespace jit::codegen

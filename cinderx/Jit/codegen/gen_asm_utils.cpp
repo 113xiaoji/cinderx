@@ -66,6 +66,14 @@ bool useLoadModuleAttrLookupStub(uint64_t func) {
 #endif
 }
 
+bool useLoadAttrInvokeStub(uint64_t func) {
+#if PY_VERSION_HEX >= 0x030E0000 && !defined(Py_GIL_DISABLED)
+  return func == reinterpret_cast<uint64_t>(jit::LoadAttrCache::invoke);
+#else
+  return false;
+#endif
+}
+
 bool useStoreAttrInvokeStub(uint64_t func) {
 #if PY_VERSION_HEX >= 0x030E0000 && !defined(Py_GIL_DISABLED)
   return std::getenv("PYTHONJITAARCH64STOREATTRSTUBMINCALLS") != nullptr &&
@@ -104,6 +112,28 @@ uint32_t sharedStubMinCalls() {
 #endif
 }
 
+uint32_t loadAttrStubMinCalls() {
+#if defined(CINDER_AARCH64)
+  constexpr uint32_t kDefault = 1;
+  const char* env = std::getenv("PYTHONJITAARCH64LOADATTRSTUBMINCALLS");
+  if (env == nullptr) {
+    return kDefault;
+  }
+
+  char* end = nullptr;
+  unsigned long parsed = std::strtoul(env, &end, 10);
+  if (end == env || *end != '\0' || parsed == 0) {
+    return kDefault;
+  }
+  if (parsed > std::numeric_limits<uint32_t>::max()) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+  return static_cast<uint32_t>(parsed);
+#else
+  return 0;
+#endif
+}
+
 uint32_t storeAttrStubMinCalls() {
 #if defined(CINDER_AARCH64)
   constexpr uint32_t kDefault = 6;
@@ -123,6 +153,14 @@ uint32_t storeAttrStubMinCalls() {
   return static_cast<uint32_t>(parsed);
 #else
   return 0;
+#endif
+}
+
+bool isLoadAttrInvokeTarget(uint64_t func) {
+#if defined(CINDER_AARCH64)
+  return useLoadAttrInvokeStub(func);
+#else
+  return false;
 #endif
 }
 
@@ -168,6 +206,18 @@ void emitCall(Environ& env, uint64_t func, const jit::lir::Instruction* instr) {
           env.store_attr_invoke_stub = env.as->newLabel();
         }
         emitCall(env, env.store_attr_invoke_stub, instr);
+      }
+      return;
+    }
+    if (useLoadAttrInvokeStub(func)) {
+      auto& target = getOrCreateCallTarget(env, func);
+      if (!target.use_shared_stub) {
+        emitIndirectCallThroughLiteral(env, target);
+      } else {
+        if (!env.load_attr_invoke_stub.isValid()) {
+          env.load_attr_invoke_stub = env.as->newLabel();
+        }
+        emitCall(env, env.load_attr_invoke_stub, instr);
       }
       return;
     }

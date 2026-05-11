@@ -84,6 +84,7 @@ struct Environ {
   std::vector<PhyLocation> arg_locations;
 
   asmjit::Label store_attr_invoke_stub;
+  asmjit::Label load_attr_invoke_stub;
   asmjit::Label load_module_attr_lookup_stub;
 
   // AArch64 call target pool: one 64-bit literal per absolute target.
