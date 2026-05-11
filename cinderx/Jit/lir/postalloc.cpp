@@ -286,12 +286,15 @@ RewriteResult rewriteCallInstrs(instr_iter_t instr_iter, Environ* env) {
     int rsp_sub = rewriteVarArgCall(instr_iter);
     env->max_arg_buffer_size = std::max<int>(env->max_arg_buffer_size, rsp_sub);
     return kChanged;
-  } else if (!instr->isCall() && !instr->isVectorCall()) {
+  } else if (
+      !instr->isCall() && !instr->isVectorCall() &&
+      !instr->isLoadAttrCachedFastPath()) {
     return kUnchanged;
   }
 
   auto output = instr->output();
-  if (instr->isCall() && instr->getNumInputs() == 1 && output->isNone()) {
+  if ((instr->isCall() || instr->isLoadAttrCachedFastPath()) &&
+      instr->getNumInputs() == 1 && output->isNone()) {
     return kUnchanged;
   }
 
@@ -305,7 +308,9 @@ RewriteResult rewriteCallInstrs(instr_iter_t instr_iter, Environ* env) {
   }
 
   instr->setNumInputs(1); // leave function self operand only
-  instr->setOpcode(Instruction::kCall);
+  if (!instr->isLoadAttrCachedFastPath()) {
+    instr->setOpcode(Instruction::kCall);
+  }
 
   auto next_iter = std::next(instr_iter);
 
@@ -1080,7 +1085,7 @@ RewriteResult optimizeMoveSequence(BasicBlock* basicblock) {
               --scan_iter;
               auto scan = scan_iter->get();
 
-              if (scan->isCall() || scan->isVectorCall() || scan->isVarArgCall()) {
+              if (scan->isCallLike()) {
                 break;
               }
 

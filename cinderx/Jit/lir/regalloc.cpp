@@ -450,7 +450,7 @@ void LinearScanAllocator::calculateLiveIntervals() {
         }
 
         const auto* use_instr = use_opnd->instr();
-        if (use_instr == nullptr || !use_instr->isCall()) {
+        if (use_instr == nullptr || !use_instr->isCallLike()) {
           return false;
         }
 
@@ -461,9 +461,7 @@ void LinearScanAllocator::calculateLiveIntervals() {
 
       if (
           output_opnd->isVreg() && should_prefer_return_register(output_opnd) &&
-          (instr_opcode == Instruction::kCall ||
-           instr_opcode == Instruction::kVarArgCall ||
-           instr_opcode == Instruction::kVectorCall)) {
+          instr->isCallLike()) {
         auto& interval = getInterval(output_opnd);
         auto return_reg = output_opnd->isFp() ? arch::reg_double_return_loc
                                               : arch::reg_general_return_loc;
@@ -533,9 +531,7 @@ void LinearScanAllocator::calculateLiveIntervals() {
         register_input(opnd, instr->getInputPhyRegUse(i));
       }
 
-      if (instr_opcode == Instruction::kCall ||
-          instr_opcode == Instruction::kVarArgCall ||
-          instr_opcode == Instruction::kVectorCall) {
+      if (instr->isCallLike()) {
         reserveCallerSaveRegisters(instr_id);
       }
 
@@ -1205,9 +1201,7 @@ void LinearScanAllocator::rewriteInstrOutput(
   // Avoid removing call instructions that may have side effects.
   // TODO: Fix HIR generator to avoid generating unused output/variables.
   // Need a separate pass in HIR to handle the dead code more gracefully.
-  if (instr->opcode() == Instruction::kCall ||
-      instr->opcode() == Instruction::kVarArgCall ||
-      instr->opcode() == Instruction::kVectorCall) {
+  if (instr->isCallLike()) {
     output->setNone();
   } else {
     instr->setOpcode(Instruction::kNop);
