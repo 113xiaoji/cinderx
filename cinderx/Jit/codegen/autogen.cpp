@@ -3096,10 +3096,12 @@ END_RULES
 
 BEGIN_RULES(Instruction::kBranchZ)
   GEN("b", ASM(b_eq, LBL(0)))
+  GEN("rb", ASM(cbz, OP(0), LBL(1)))
 END_RULES
 
 BEGIN_RULES(Instruction::kBranchNZ)
   GEN("b", ASM(b_ne, LBL(0)))
+  GEN("rb", ASM(cbnz, OP(0), LBL(1)))
 END_RULES
 
 BEGIN_RULES(Instruction::kBranchA)
