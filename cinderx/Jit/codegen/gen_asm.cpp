@@ -2423,6 +2423,34 @@ void NativeGenerator::generateDeoptExits(const asmjit::CodeHolder& code) {
 #endif
 }
 
+void NativeGenerator::flushAarch64NearDeoptBranches(bool has_fallthrough) {
+#if defined(CINDER_AARCH64)
+  if (env_.aarch64_near_deopt_branches.empty()) {
+    return;
+  }
+
+  Label continuation;
+  if (has_fallthrough) {
+    continuation = as_->newLabel();
+    as_->b(continuation);
+  }
+
+  auto cursor = as_->cursor();
+  for (const auto& branch : env_.aarch64_near_deopt_branches) {
+    as_->bind(branch.near_label);
+    as_->b(branch.deopt_label);
+  }
+  env_.aarch64_near_deopt_branches.clear();
+  env_.addAnnotation("AArch64 near deopt branches", cursor);
+
+  if (has_fallthrough) {
+    as_->bind(continuation);
+  }
+#else
+  (void)has_fallthrough;
+#endif
+}
+
 void NativeGenerator::linkDeoptPatchers(const asmjit::CodeHolder& code) {
   JIT_CHECK(code.hasBaseAddress(), "code not generated!");
   uint64_t base = code.baseAddress();
@@ -3049,7 +3077,8 @@ void NativeGenerator::generateAssemblyBody(const asmjit::CodeHolder& code) {
     env_.block_label_map.emplace(basicblock, as->newLabel());
   }
 
-  for (lir::BasicBlock* basicblock : blocks) {
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    lir::BasicBlock* basicblock = blocks[i];
     CodeSection section = basicblock->section();
     CodeSectionOverride section_override{as, &code, &metadata_, section};
     as->bind(map_get(env_.block_label_map, basicblock));
@@ -3060,6 +3089,15 @@ void NativeGenerator::generateAssemblyBody(const asmjit::CodeHolder& code) {
         env_.addAnnotation(instr.get(), cursor);
       }
     }
+
+    bool has_fallthrough = false;
+    if (i + 1 < blocks.size() && blocks[i + 1]->section() == section) {
+      auto& successors = basicblock->successors();
+      has_fallthrough =
+          std::find(successors.begin(), successors.end(), blocks[i + 1]) !=
+          successors.end();
+    }
+    flushAarch64NearDeoptBranches(has_fallthrough);
   }
 }
 
