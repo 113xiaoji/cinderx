@@ -1,0 +1,29 @@
+{
+  "contract_id": "jit28-fixed-s12-v1",
+  "schema_version": 1,
+  "description": "Fixed pyperformance JIT28 comparison contract. Scripts must fail closed when the contract, suite lock, environment, or result schema does not match.",
+  "runner": "pyperformance",
+  "suite_manifest": "benchmark-contract/suites/jit28-candidates.json",
+  "suite_lock": "benchmark-contract/suites/jit28-candidates.lock.json",
+  "samples": 12,
+  "autojit": 50,
+  "expected_case_count": 28,
+  "result_policy": {
+    "delta_sign": "negative_is_faster",
+    "real_gain_requires": "geomean_pct < 0 and bootstrap_95ci_high < 0",
+    "real_regression_requires": "geomean_pct > 0 and bootstrap_95ci_low > 0",
+    "otherwise": "noise"
+  },
+  "invalid_if": [
+    "suite manifest hash does not match suite lock",
+    "resolved case count is not 28",
+    "benchmark_filter does not match suite selectors",
+    "sample count is not 12 for every resolved case",
+    "AUTOJIT is not 50",
+    "base and candidate summaries do not use this contract_id",
+    "base and candidate summaries do not use this suite_manifest_sha256",
+    "any resolved case is missing or any extra case appears",
+    "pyperformance parent process is run with ad hoc JIT environment outside the contract runner",
+    "cinderx import path does not come from the variant workdir"
+  ]
+}

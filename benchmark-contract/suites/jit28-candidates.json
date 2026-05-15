@@ -1,0 +1,31 @@
+{
+  "suite_id": "jit28-candidates-v1",
+  "runner": "pyperformance",
+  "selection": {
+    "mode": "pyperformance_filter",
+    "selectors": [
+      "chaos",
+      "comprehensions",
+      "coroutines",
+      "coverage",
+      "deltablue",
+      "fannkuch",
+      "float",
+      "generators",
+      "go",
+      "json_dumps",
+      "json_loads",
+      "logging",
+      "nbody",
+      "nqueens",
+      "pickle",
+      "pickle_dict",
+      "pickle_list",
+      "raytrace",
+      "richards",
+      "scimark",
+      "spectral_norm",
+      "unpack_sequence"
+    ]
+  }
+}

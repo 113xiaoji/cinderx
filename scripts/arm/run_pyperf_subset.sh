@@ -20,7 +20,10 @@ if [[ ! -x "$DRIVER_PY" ]]; then
   exit 2
 fi
 
-HOOK_DIR="$WORKDIR/scripts/arm/pyperf_env_hook"
+WORKDIR="$(cd "$WORKDIR" && pwd)"
+cd "$WORKDIR"
+
+HOOK_DIR="${HOOK_DIR:-$WORKDIR/scripts/arm/pyperf_env_hook}"
 if [[ ! -f "$HOOK_DIR/sitecustomize.py" ]]; then
   echo "ERROR: missing hook dir: $HOOK_DIR"
   exit 2
@@ -40,6 +43,9 @@ fi
 
 echo "pyperf_subset_benchmarks=$BENCHMARKS"
 echo "pyperf_subset_samples=$SAMPLES"
+echo "pyperf_subset_autojit=$AUTOJIT"
+echo "pyperf_subset_workdir=$WORKDIR"
+echo "pyperf_subset_hook_dir=$HOOK_DIR"
 echo "pyperf_subset_output=$OUTPUT"
 
 for ((i = 1; i <= SAMPLES; i++)); do
