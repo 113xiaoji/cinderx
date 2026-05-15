@@ -81,6 +81,7 @@ fi
 DRIVER_PY="$DRIVER_VENV/bin/python"
 CONTRACT_TOOL="$REPO_ROOT/scripts/arm/jit28_contract.py"
 SUBSET_RUNNER="$REPO_ROOT/scripts/arm/run_pyperf_subset.sh"
+VERIFY_TOOL="$REPO_ROOT/scripts/arm/verify_pyperf_venv.py"
 
 if [[ ! -x "$DRIVER_PY" ]]; then
   echo "ERROR: missing driver python: $DRIVER_PY" >&2
@@ -96,6 +97,10 @@ if [[ ! -f "$CONTRACT_TOOL" ]]; then
 fi
 if [[ ! -f "$SUBSET_RUNNER" ]]; then
   echo "ERROR: missing subset runner: $SUBSET_RUNNER" >&2
+  exit 2
+fi
+if [[ ! -f "$VERIFY_TOOL" ]]; then
+  echo "ERROR: missing pyperformance venv verifier: $VERIFY_TOOL" >&2
   exit 2
 fi
 if [[ ! -f "$RUNNER_HOOK_DIR/sitecustomize.py" ]]; then
@@ -166,6 +171,43 @@ PY
   echo "${variant}_cinderx_file=$cinderx_file"
 }
 
+probe_variant_worker() {
+  local variant="$1"
+  local workdir="$2"
+  local pyvenv
+  pyvenv="$(resolve_pyperf_venv "$workdir")"
+  if [[ -z "$pyvenv" || ! -x "$pyvenv/bin/python" ]]; then
+    echo "ERROR: failed to resolve pyperformance venv for $variant in $workdir" >&2
+    exit 2
+  fi
+
+  local probe_json="$OUTPUT_DIR/${variant}_worker_probe.json"
+  local worker_pythonpath="$RUNNER_HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}"
+  local worker_env_args=(
+    "--worker-env=PYPERFORMANCE_RUNID=jit28-contract-probe"
+    "--worker-env=PYTHONPATH=$worker_pythonpath"
+    "--worker-env=CINDERX_WORKER_PYTHONJITAUTO=$AUTOJIT"
+    "--worker-env=CINDERX_ENABLE_SPECIALIZED_OPCODES=${CINDERX_ENABLE_SPECIALIZED_OPCODES:-1}"
+    "--worker-env=PYTHONJITDISABLE=1"
+  )
+  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    worker_env_args+=("--worker-env=LD_LIBRARY_PATH=$LD_LIBRARY_PATH")
+  fi
+
+  "$DRIVER_PY" "$VERIFY_TOOL" \
+    --venv "$pyvenv" \
+    --probe-worker \
+    --worker-argv-token=--debug-single-value \
+    "${worker_env_args[@]}" \
+    --require-sitecustomize \
+    --require-sitecustomize-prefix "$RUNNER_HOOK_DIR" \
+    --require-cinderx-initialized \
+    --require-jit-enabled \
+    --output "$probe_json" >/dev/null
+
+  echo "${variant}_worker_probe=$probe_json"
+}
+
 run_variant() {
   local variant="$1"
   local workdir="$2"
@@ -173,6 +215,7 @@ run_variant() {
   local stamped="$OUTPUT_DIR/${variant}_${CONTRACT_ID}.json"
 
   check_variant_import_path "$variant" "$workdir"
+  probe_variant_worker "$variant" "$workdir"
 
   env \
     DRIVER_VENV="$DRIVER_VENV" \

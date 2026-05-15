@@ -8,6 +8,7 @@ SAMPLES="${SAMPLES:-3}"
 AUTOJIT="${AUTOJIT:-50}"
 OUTPUT="${OUTPUT:-/root/work/arm-sync/pyperf_subset.json}"
 CINDERX_ENABLE_SPECIALIZED_OPCODES="${CINDERX_ENABLE_SPECIALIZED_OPCODES:-1}"
+INHERIT_ENV="PYTHONPATH,PYTHONJITDISABLE,CINDERX_WORKER_PYTHONJITAUTO,CINDERX_ENABLE_SPECIALIZED_OPCODES,LD_LIBRARY_PATH"
 
 if [[ -z "$BENCHMARKS" ]]; then
   echo "ERROR: BENCHMARKS must be set"
@@ -47,6 +48,7 @@ echo "pyperf_subset_autojit=$AUTOJIT"
 echo "pyperf_subset_workdir=$WORKDIR"
 echo "pyperf_subset_hook_dir=$HOOK_DIR"
 echo "pyperf_subset_output=$OUTPUT"
+echo "pyperf_subset_inherit_environ=$INHERIT_ENV"
 
 for ((i = 1; i <= SAMPLES; i++)); do
   out="$TMPDIR/run_${i}.json"
@@ -57,7 +59,7 @@ for ((i = 1; i <= SAMPLES; i++)); do
     PYTHONPATH="$HOOK_DIR${PYTHONPATH:+:$PYTHONPATH}" \
     CINDERX_ENABLE_SPECIALIZED_OPCODES="$CINDERX_ENABLE_SPECIALIZED_OPCODES" \
     "$DRIVER_PY" -m pyperformance run --debug-single-value -b "$BENCHMARKS" \
-      --inherit-environ PYTHONPATH,PYTHONJITDISABLE,CINDERX_WORKER_PYTHONJITAUTO,CINDERX_ENABLE_SPECIALIZED_OPCODES \
+      --inherit-environ "$INHERIT_ENV" \
       -o "$out"
 done
 

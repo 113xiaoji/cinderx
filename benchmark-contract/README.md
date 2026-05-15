@@ -55,6 +55,11 @@ A comparison result is valid only when every item below is true:
 - The pyperformance parent process is started by the contract runner.
 - The benchmark hook is the runner hook, not a variant-specific ad hoc hook.
 - `cinderx.__file__` for each variant is under that variant's workdir.
+- The runner hook is loaded inside each pyperformance worker process.
+- Each worker can import `_cinderx`, reports CinderX initialized, and reports
+  JIT enabled before benchmark execution.
+- Any runtime library path required by the built wheel, for example a GCC
+  `libstdc++` directory in `LD_LIBRARY_PATH`, is inherited by workers.
 
 Anything else is `INVALID` and must not be used for a performance claim.
 

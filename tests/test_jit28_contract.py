@@ -207,6 +207,8 @@ class Jit28ContractTests(unittest.TestCase):
 
         self.assertIn('cd "$WORKDIR"', text)
         self.assertIn('HOOK_DIR="${HOOK_DIR:-$WORKDIR/scripts/arm/pyperf_env_hook}"', text)
+        self.assertIn("LD_LIBRARY_PATH", text)
+        self.assertIn("pyperf_subset_inherit_environ", text)
 
     def test_contract_runner_uses_external_suite_not_hardcoded_benchmarks(self):
         text = Path("scripts/arm/run_jit28_contract_compare.sh").read_text(
@@ -219,6 +221,18 @@ class Jit28ContractTests(unittest.TestCase):
         self.assertIn(" compare \\", text)
         self.assertIn('bash "$SUBSET_RUNNER"', text)
         self.assertNotIn("chaos,comprehensions", text)
+
+    def test_contract_runner_fails_closed_on_worker_jit_probe(self):
+        text = Path("scripts/arm/run_jit28_contract_compare.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("VERIFY_TOOL", text)
+        self.assertIn("verify_pyperf_venv.py", text)
+        self.assertIn("--require-sitecustomize-prefix", text)
+        self.assertIn("--require-cinderx-initialized", text)
+        self.assertIn("--require-jit-enabled", text)
+        self.assertIn("LD_LIBRARY_PATH", text)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@
     "base and candidate summaries do not use this suite_manifest_sha256",
     "any resolved case is missing or any extra case appears",
     "pyperformance parent process is run with ad hoc JIT environment outside the contract runner",
-    "cinderx import path does not come from the variant workdir"
+    "cinderx import path does not come from the variant workdir",
+    "pyperformance worker does not load the runner sitecustomize hook",
+    "pyperformance worker cannot import _cinderx with the variant runtime library path",
+    "pyperformance worker is not cinderx-initialized or JIT-enabled before benchmark execution",
+    "LD_LIBRARY_PATH required by the built wheel is not inherited by workers"
   ]
 }
