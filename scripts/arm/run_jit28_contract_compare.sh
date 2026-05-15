@@ -186,7 +186,6 @@ probe_variant_worker() {
   local worker_env_args=(
     "--worker-env=PYPERFORMANCE_RUNID=jit28-contract-probe"
     "--worker-env=PYTHONPATH=$worker_pythonpath"
-    "--worker-env=PYTHONJITAUTO=$AUTOJIT"
     "--worker-env=CINDERX_WORKER_PYTHONJITAUTO=$AUTOJIT"
     "--worker-env=CINDERX_ENABLE_SPECIALIZED_OPCODES=${CINDERX_ENABLE_SPECIALIZED_OPCODES:-1}"
   )

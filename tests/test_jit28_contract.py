@@ -209,6 +209,15 @@ class Jit28ContractTests(unittest.TestCase):
         self.assertIn('HOOK_DIR="${HOOK_DIR:-$WORKDIR/scripts/arm/pyperf_env_hook}"', text)
         self.assertIn("LD_LIBRARY_PATH", text)
         self.assertIn("pyperf_subset_inherit_environ", text)
+        self.assertIn("CINDERX_WORKER_PYTHONJITAUTO", text)
+        self.assertFalse(
+            any(line.strip().startswith("PYTHONJITAUTO=") for line in text.splitlines())
+        )
+        self.assertIn(
+            'INHERIT_ENV="PYTHONPATH,CINDERX_WORKER_PYTHONJITAUTO,'
+            "CINDERX_ENABLE_SPECIALIZED_OPCODES,LD_LIBRARY_PATH\"",
+            text,
+        )
 
     def test_contract_runner_uses_external_suite_not_hardcoded_benchmarks(self):
         text = Path("scripts/arm/run_jit28_contract_compare.sh").read_text(
@@ -234,6 +243,7 @@ class Jit28ContractTests(unittest.TestCase):
         self.assertIn("--require-jit-enabled", text)
         self.assertIn("--require-compile-after", text)
         self.assertIn("LD_LIBRARY_PATH", text)
+        self.assertNotIn("--worker-env=PYTHONJITAUTO", text)
 
     def test_runner_hook_sets_worker_compile_after_threshold(self):
         text = Path("scripts/arm/pyperf_env_hook/sitecustomize.py").read_text(

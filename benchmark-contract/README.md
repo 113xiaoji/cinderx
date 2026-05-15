@@ -53,6 +53,9 @@ A comparison result is valid only when every item below is true:
 - Base and candidate summaries contain the same `suite_manifest_sha256`.
 - No resolved case is missing and no extra case appears.
 - The pyperformance parent process is started by the contract runner.
+- The pyperformance parent/setup process is JIT-disabled and does not inherit
+  `PYTHONJITAUTO`; only benchmark workers receive the worker-only autojit
+  setting.
 - The benchmark hook is the runner hook, not a variant-specific ad hoc hook.
 - `cinderx.__file__` for each variant is under that variant's workdir.
 - The runner hook is loaded inside each pyperformance worker process.
