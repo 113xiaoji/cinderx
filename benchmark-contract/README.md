@@ -58,6 +58,7 @@ A comparison result is valid only when every item below is true:
 - The runner hook is loaded inside each pyperformance worker process.
 - Each worker can import `_cinderx`, reports CinderX initialized, and reports
   JIT enabled before benchmark execution.
+- Each worker reports JIT compile-after threshold `50`.
 - Any runtime library path required by the built wheel, for example a GCC
   `libstdc++` directory in `LD_LIBRARY_PATH`, is inherited by workers.
 

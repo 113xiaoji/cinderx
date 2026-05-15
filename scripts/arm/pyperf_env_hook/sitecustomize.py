@@ -74,6 +74,8 @@ if worker and not skip and os.environ.get("CINDERX_DISABLE") in (None, "", "0"):
         import cinderx.jit as jit
 
         if os.environ.get("PYTHONJITDISABLE") in (None, "", "0"):
+            if worker_autojit not in (None, ""):
+                jit.compile_after_n_calls(int(worker_autojit))
             jit.enable()
             if _is_truthy(os.environ.get("CINDERX_ENABLE_SPECIALIZED_OPCODES")):
                 jit.enable_specialized_opcodes()

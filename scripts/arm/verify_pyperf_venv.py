@@ -72,6 +72,7 @@ try:
 
     payload["cinderx_initialized"] = bool(cinderx.is_initialized())
     payload["jit_enabled"] = bool(jit.is_enabled())
+    payload["jit_compile_after_n_calls"] = jit.get_compile_after_n_calls()
 except Exception as exc:
     payload["probe_error"] = f"{type(exc).__name__}:{exc}"
 
@@ -112,6 +113,7 @@ def main() -> int:
     parser.add_argument("--require-sitecustomize-prefix", default="")
     parser.add_argument("--require-cinderx-initialized", action="store_true")
     parser.add_argument("--require-jit-enabled", action="store_true")
+    parser.add_argument("--require-compile-after", type=int)
     args = parser.parse_args()
 
     venv = Path(args.venv).resolve()
@@ -207,6 +209,16 @@ def main() -> int:
                 errors.append("cinderx was not initialized in the worker")
             if args.require_jit_enabled and not summary.get("jit_enabled"):
                 errors.append("jit was not enabled in the worker")
+            if (
+                args.require_compile_after is not None
+                and summary.get("jit_compile_after_n_calls")
+                != args.require_compile_after
+            ):
+                errors.append(
+                    "worker JIT compile-after threshold "
+                    f"{summary.get('jit_compile_after_n_calls')!r} "
+                    f"did not match {args.require_compile_after}"
+                )
 
     result["ok"] = not errors
     result["errors"] = errors

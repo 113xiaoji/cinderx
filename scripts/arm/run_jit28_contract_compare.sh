@@ -186,9 +186,9 @@ probe_variant_worker() {
   local worker_env_args=(
     "--worker-env=PYPERFORMANCE_RUNID=jit28-contract-probe"
     "--worker-env=PYTHONPATH=$worker_pythonpath"
+    "--worker-env=PYTHONJITAUTO=$AUTOJIT"
     "--worker-env=CINDERX_WORKER_PYTHONJITAUTO=$AUTOJIT"
     "--worker-env=CINDERX_ENABLE_SPECIALIZED_OPCODES=${CINDERX_ENABLE_SPECIALIZED_OPCODES:-1}"
-    "--worker-env=PYTHONJITDISABLE=1"
   )
   if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
     worker_env_args+=("--worker-env=LD_LIBRARY_PATH=$LD_LIBRARY_PATH")
@@ -203,6 +203,7 @@ probe_variant_worker() {
     --require-sitecustomize-prefix "$RUNNER_HOOK_DIR" \
     --require-cinderx-initialized \
     --require-jit-enabled \
+    --require-compile-after "$AUTOJIT" \
     --output "$probe_json" >/dev/null
 
   echo "${variant}_worker_probe=$probe_json"

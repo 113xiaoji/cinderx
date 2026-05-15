@@ -232,7 +232,16 @@ class Jit28ContractTests(unittest.TestCase):
         self.assertIn("--require-sitecustomize-prefix", text)
         self.assertIn("--require-cinderx-initialized", text)
         self.assertIn("--require-jit-enabled", text)
+        self.assertIn("--require-compile-after", text)
         self.assertIn("LD_LIBRARY_PATH", text)
+
+    def test_runner_hook_sets_worker_compile_after_threshold(self):
+        text = Path("scripts/arm/pyperf_env_hook/sitecustomize.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("compile_after_n_calls", text)
+        self.assertIn("CINDERX_WORKER_PYTHONJITAUTO", text)
 
 
 if __name__ == "__main__":

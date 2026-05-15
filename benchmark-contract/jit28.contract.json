@@ -28,6 +28,7 @@
     "pyperformance worker does not load the runner sitecustomize hook",
     "pyperformance worker cannot import _cinderx with the variant runtime library path",
     "pyperformance worker is not cinderx-initialized or JIT-enabled before benchmark execution",
+    "pyperformance worker JIT compile-after threshold is not 50",
     "LD_LIBRARY_PATH required by the built wheel is not inherited by workers"
   ]
 }
