@@ -390,3 +390,157 @@ Closeout complete: revalidated on ARM staging and ready for review.
   - current HIR counts therefore mix executed fast-path ops with dormant fallback-path ops
   - more importantly, the `CALL 0` that creates the genexpr object and the following `FOR_ITER` live in different bytecode blocks, so the old `set(genexpr)` same-block rewrite structure does not apply
   - current local worktree has been restored to stable `HEAD`; no unverified nqueens optimization code is kept
+
+## Session: 2026-05-12 AArch64 new optimization search
+
+### Goal
+- Start from the clean merged AArch64 base after:
+  - `27142c72 perf(jit): use nearby aarch64 guard stubs`
+  - `57846e36 perf(jit): emit aarch64 cbz/cbnz`
+  - `95f8ac63 perf(jit): add aarch64 loadattr lir stub`
+- Continue from latest remote after:
+  - `6a330ecc perf(jit): fold aarch64 fp compare branches`
+- Identify new ARM/micro-architecture-friendly optimization points.
+- Do not stack on already-tested local candidates.
+- Stop only if one benchmark row improves by `30%+`, or overall/geomean improves by `10%+`.
+- Do not push or merge candidate code to remote.
+
+### Branch
+- Current search branch: `codex/aarch64-new-optimizations-20260512`
+- Starting commit: `95f8ac63`
+- Current local base: fast-forwarded to `6a330ecc`
+
+### Phases
+
+#### Phase 1: Clean base and evidence setup
+- [x] Switch to a clean branch from `95f8ac63`.
+- [x] Collect current merged-base LIR/benchmark evidence.
+- [x] Refresh local branch after remote added AArch64 FP compare branch folding.
+- Status: completed
+
+#### Phase 2: Candidate discovery
+- [x] Sweep existing hot LIR families after the three merged optimizations.
+- [x] Rank ARM-specific candidates by likely upside and implementation risk.
+- [ ] Continue discovering candidates because no stop condition has been met.
+- Status: in_progress
+
+#### Phase 3: Prototype and test
+- [x] Test StoreAttr cached stub threshold/default-enable candidate.
+- [x] Test Test+BranchZ/NZ to cbz/cbnz postalloc candidate.
+- [x] Test shared call-stub threshold candidate.
+- [x] Test LoadAttr stub threshold candidate.
+- [x] Test vectorcall arg-array StorePair/stp candidate.
+- [x] Run exact LoadMethod cache split diagnostic.
+- [x] Test AArch64 MemImm literal-pool address candidate.
+- [x] Inspect AArch64 FMA peephole candidate; reject before build because
+  `fmadd` single-rounding is not equivalent to Python `a * b + c`.
+- [x] Test AArch64 `BitTest+BranchNC/C` to `tbz/tbnz` candidate.
+- [x] Test AArch64 `GuardNotNegative` direct `tbnz` to near-deopt candidate.
+- [x] Test materialized compare-bool branch to direct `Cmp + BranchCC` candidate.
+- [x] Test AArch64 subword `NotZero/Zero` guard to direct `cbz/cbnz` candidate.
+- [x] Test AArch64 `PrimitiveBox<CInt64>` rematerialization candidate.
+- [x] Test AArch64 subword `CondBranch` to direct `cbz/cbnz` candidate.
+- [x] Test multiple-code-sections layout candidate on current 3-opt base.
+- [x] Prototype/test AArch64 `LoadMethodCache::lookupHelper` fast-path stub.
+- [x] Run perf follow-up on LoadMethod stub and test multi-entry variant.
+- [x] Run enabled perf follow-up for the multi-entry LoadMethod stub.
+- [x] Test compile-time `ENABLE_LIGHTWEIGHT_FRAMES=1` candidate.
+- [x] Test `PYTHONJITATTRCACHESIZE=8/16` candidate.
+- [x] Test `PYTHONJITHUGEPAGES=0` candidate.
+- [x] Prototype/test AArch64 `JITRT_UnlinkFrameFromTstate` epilogue helper.
+- [x] Prototype/test AArch64 known-frame unlink refinement.
+- [x] Prototype/test AArch64 multi-entry StoreAttr cached stub refinement.
+- [x] Prototype/test AArch64 generator inline-decref candidate.
+- [x] Prototype/test AArch64 broad float-guard specialization candidate.
+- [x] Prototype/test AArch64 BatchDecref threshold sweep.
+- [x] Prototype/test AArch64 inline `CheckSequenceBounds` fast path.
+- [x] Prototype/test AArch64 `isValidKeysVersion` force-inline candidate.
+- [x] Prototype/test AArch64 direct `tp_iternext` fast path for `InvokeIterNext`.
+- [x] Prototype/test AArch64 fast non-generator `FrameHeader` lookup in frame clear.
+- [x] Prototype/test AArch64 unchecked tstate in `JITRT_UnlinkFrame`.
+- [x] Prototype/test AArch64 `FOR_ITER_LIST` list-iterator helper specialization.
+- [x] Prototype/test AArch64 compact-long `CompareBool` helper specialization.
+- [x] Prototype/test AArch64 managed-dict fast path in `isValidKeysVersion`.
+- [x] Prototype/test AArch64 LoadMethod entry-local dict-offset validation.
+- [x] Prototype/test AArch64 exact-`TFunc` vectorcall direct helper.
+- [x] Prototype/test AArch64 exact-float nonzero-constant true-divide lowering.
+- [x] Re-test AArch64 `JITRT_UnlinkFrameFromTstate` on current 4-opt base.
+- [x] Prototype/test AArch64 unchecked tstate in generator send and frame clear.
+- [x] Prototype/test AArch64 generic `JITRT_RichCompareBool` compact-long fast path.
+- [x] Prototype/test AArch64 `LOAD_ATTR_METHOD_WITH_VALUES` guard-only variants.
+- [x] Prototype/test AArch64 tiny method-with-values bypass and exact-arg inference variants.
+- [x] Prototype/test AArch64 list suffix-rotate helper.
+- [x] Prototype/test AArch64 callable-instance one-arg vectorcall helper variants.
+- [x] Capture current4 `go` perf and prototype/test AArch64 compact-long `LongInPlaceOp` helper variants.
+- [x] Prototype/test AArch64 immortal-bool type propagation variants.
+- [x] Prototype/test AArch64 unused tiny return-self call elimination.
+- [x] Prototype/test AArch64 compact-long `IndexUnbox` helper fast path.
+- [x] Prototype/test AArch64 exact-float generic `BinaryOp` helper fast path.
+- [x] Prototype/test AArch64 compact-long bitwise helper fast path.
+- [x] Prototype/test AArch64 exact-container `GetLengthInt64` helper fast path.
+- [x] Prototype/test AArch64 exact-list `StoreSubscr` helper fast path.
+- [x] Prototype/test AArch64 exact-list + slice subscript helper fast path.
+- [x] Prototype/test AArch64 tstate-aware frame unlink and clear refinement.
+- [x] Prototype/test AArch64 exact-list `MakeTupleFromList` helper.
+- [x] Prototype/test AArch64 fixed-arity small `MakeTuple<1/2/3>` helpers.
+- [x] Prototype/test AArch64 direct double `StoreArrayItem` lowering on scimark.
+- [x] Prototype/test AArch64 direct primitive `StoreArrayItem` lowering on scimark.
+- [x] Prototype/test AArch64 direct all-type `StoreArrayItem` lowering.
+- [x] Prototype/test AArch64 direct CPython API calls for selected `PrimitiveBox` helpers.
+- [x] Prototype/test AArch64 compact-long `PrimitiveUnbox` helper fast path on scimark.
+- [x] Prototype/test AArch64 compact-long `LongBinaryOp<Add/Subtract>` helper fast path.
+- [x] Prototype/test AArch64 `FOR_ITER_TUPLE` tuple-iterator helper fast path.
+- [x] Test configuration candidate `PYTHONJITENABLEHIRINLINER=1`.
+- [x] Test configuration candidate `PYTHONJITENABLEHIRINLINER=1 PYTHONJITHIRINLINERCOSTLIMIT=10000`.
+- [x] Prototype/test AArch64 `FOR_ITER_RANGE` range-iterator helper fast path.
+- [x] Prototype/test AArch64 duplicate `CheckField` / `CheckVar` elimination.
+- [x] Prototype/test AArch64 `LoadFieldAddress + LoadArrayItem[0]` addressing fold.
+- [x] Prototype/test AArch64 HIR checked exact-float `BinaryOp<Add/Subtract/Multiply>` fast path.
+- [x] Prototype/test narrower AArch64 HIR checked exact-float `BinaryOp<Multiply>` fast path.
+- [x] Prototype/test AArch64 delayed `_PyThreadState_GET()` in vectorcall helpers.
+- [x] Prototype/test AArch64 no-incref return for immortal `JITRT_IterDoneSentinel`.
+- [x] Re-test AArch64 exact `LoadMethod` split with trusted type guard.
+- [x] Prototype/test AArch64 exact list/tuple nonnegative-int subscript helper.
+- [x] Prototype/test AArch64 exact list/tuple nonnegative-int subscript helper that skips slice subscripts.
+- [x] Prototype/test AArch64 combined exact dict/list/tuple subscript helper.
+- [x] Prototype/test AArch64 `STORE_ATTR_INSTANCE_VALUE` direct helper variants.
+- [x] Prototype/test AArch64 owner-based `jitFrameGetHeader` generator check.
+- [x] Prototype/test AArch64 compact-long helper for `LongCompare` object result.
+- [x] Test HIR inliner on scimark.
+- [x] Prototype/test AArch64 branchless `CheckSequenceBounds` with `csel`.
+- [x] Prototype/test AArch64 no-promotion `LoadMethodCache::lookup`.
+- [x] Prototype/test AArch64 direct `LoadMethodCache` cached-result construction.
+- [x] Prototype/test AArch64 generator `XDecref`-only inline refinement.
+- [x] Prototype/test AArch64 `JITRT_InvokeIterNext` skip-null-check fast path.
+- [x] Prototype/test AArch64 direct CPython API calls for selected `PrimitiveBox` helpers on object subset.
+- [x] Prototype/test AArch64 direct `PyFloat_FromDouble` for `PrimitiveBox<TCDouble>` only.
+- [x] Prototype/test AArch64 Decref immortal-bit `tbnz/tbz` branch form.
+- [x] Prototype/test AArch64 zero-immediate memory stores with `wzr/xzr`.
+- [x] Prototype/test AArch64 StoreAttr interpreter-state threading variants.
+- [x] Prototype/test AArch64 inline `AttributeMutator` kind/empty checks.
+- [x] Prototype/test AArch64 inline StoreAttr cache entry scan.
+- [x] Prototype/test AArch64 consecutive duplicate Guard removal.
+- [x] Prototype/test AArch64 keep zero-immediate register moves instead of self-`Xor`.
+- [x] Prototype/test AArch64 `PrimitiveBoxBool` shifted pointer arithmetic.
+- [x] Prototype/test AArch64 `LoadMethodCache::lookup` slot0 likely branch hints.
+- [x] Prototype/test AArch64 offset-zero indexed memory operands.
+- [x] Prototype/test AArch64 GuardType/GuardIs target materialization fold.
+- [x] Prototype/test AArch64 `AttributeMutator::setAttr` hot-case ordering.
+- [x] Prototype/test AArch64 forced inline `AttributeMutator::setAttr`.
+- [x] Prototype/test AArch64 `GuardNotNegative` direct `tbnz` to near-deopt.
+- [x] Prototype/test AArch64 `GuardNotNegative` direct `tbnz` to near-deopt, 64-bit-only.
+- [x] Prototype/test AArch64 `GuardNotNegative` direct `tbnz` to near-deopt, 32-bit-only.
+- [x] Test AArch64 shared call-stub high-threshold / effectively-disabled runtime candidate.
+- [x] Re-test AArch64 `GuardNotNegative` direct `tbnz` to near-deopt on the 223 ARM host.
+- [x] Prototype/test AArch64 `IntToBool + BranchZ/NZ` postalloc fold on the 223 ARM host focused subset.
+- [x] Run full JIT28 S3/S12 for AArch64 `IntToBool + BranchZ/NZ` postalloc fold.
+- [ ] Because the benefit is determined, collect lightweight real-workload hit evidence, counter data, or LIR/ASM census for AArch64 `IntToBool + BranchZ/NZ` postalloc fold before review/reporting.
+- [ ] Inspect/prototype the next independent candidate from clean base only if causality/review rejects the current stop-condition candidate.
+- Status: stop_condition_hit; pause broad discovery and immediately finish causality evidence for `IntToBool + BranchZ/NZ`; review/reporting comes after that gate.
+
+#### Phase 4: Stop-condition gate
+- [x] Check each tested candidate against `30%` single-row or `10%` geomean.
+- [x] If not met, record and continue discovery.
+- [ ] Complete causality evidence for the stop-condition candidate.
+- [ ] Run final review only after causality/workload hit evidence is complete.
+- Status: performance stop condition hit by `IntToBool + BranchZ/NZ`; full JIT28 S12 speedup geomean is `+10.065%`, with `comprehensions +30.070%`, `coroutines +41.736%`, and `nqueens +32.102%`.

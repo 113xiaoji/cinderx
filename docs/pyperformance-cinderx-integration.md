@@ -7,11 +7,21 @@ pyperformance 性能对比时，都应优先按本文档执行；不要临时发
 核心原则：
 
 ```text
-命令形态固定，具体目录按机器实际情况配置。
+命令形态固定，正式性能数据一律通过 scripts/arm/run_pyperf_subset.sh 采集。
+具体目录按机器实际情况配置。
 ```
 
 因此本文档不把某台机器上的 Python、venv、结果目录写死。执行前只需要把实际路径
-收敛到一组变量，后续第 5、6、7、8 章的步骤保持一致。
+收敛到一组变量。除环境准备和排查外，不要临时手写另一套 `pyperformance run`
+命令；正式 focused/S12/JIT28 数据必须用仓库脚本：
+
+- `scripts/arm/run_pyperf_subset.sh`
+- `scripts/arm/pyperf_env_hook/sitecustomize.py`
+- `scripts/arm/compare_pyperf_subset.py`
+
+脚本口径固定为：driver 进程带 `PYTHONJITDISABLE=1`，worker 通过
+`sitecustomize.py` 读取 `CINDERX_WORKER_PYTHONJITAUTO` 后启用 JIT，默认
+`AUTOJIT=50`，默认 `CINDERX_ENABLE_SPECIALIZED_OPCODES=1`。
 
 ## 1. 配置路径变量
 
@@ -26,7 +36,8 @@ export DRIVER_PYTHON="$DRIVER_VENV/bin/python"
 export JIT_LIST=${JIT_LIST:-"$RUN_ROOT/jit_list.txt"}
 export RESULT_DIR=${RESULT_DIR:-"$RUN_ROOT/results"}
 export PYPERF_VERSION=${PYPERF_VERSION:-1.13.0}
-export PYPERF_WARMUP=${PYPERF_WARMUP:-3}
+export SAMPLES=${SAMPLES:-3}
+export AUTOJIT=${AUTOJIT:-50}
 export EXPECTED_CINDERX_SOURCE=${EXPECTED_CINDERX_SOURCE:-"$CINDERX_REPO"}
 ```
 
@@ -113,8 +124,9 @@ fi
 
 ## 3. 构建或复用 CinderX
 
-构建 CinderX 前先确认 C/C++ toolchain 满足当前要求：`GCC 13+` 或 `Clang 18+`。
-不要只看机器上存在 `gcc` 或 `clang`；必须记录实际会被构建使用的编译器版本：
+构建 CinderX 前先确认 C/C++ toolchain 满足当前 ARM/AArch64 性能任务要求：使用
+`GCC 14`。不要只看机器上存在 `gcc` 或 `clang`；必须记录实际会被构建使用的
+编译器版本：
 
 ```bash
 ${CC:-gcc} --version
@@ -123,12 +135,12 @@ clang --version || true
 clang++ --version || true
 ```
 
-如果系统默认编译器版本不满足要求，先显式切到合格 toolchain，再执行后续
+如果系统默认编译器不是 GCC14，先显式切到 GCC14 toolchain，再执行后续
 `pip install`。使用隔离 GCC prefix 时同时带上运行时库路径，避免构建或运行时加载旧
 `libstdc++`：
 
 ```bash
-export GCC_PREFIX="<gcc-13-or-newer-prefix>"
+export GCC_PREFIX="<gcc-14-prefix>"
 export CC="$GCC_PREFIX/bin/gcc"
 export CXX="$GCC_PREFIX/bin/g++"
 export PATH="$GCC_PREFIX/bin:$PATH"
@@ -322,9 +334,12 @@ PY
 rm -rf "$CINDERX_REPO/venv"
 ```
 
-## 6. 准备固定 jit_list
+## 6. 可选 jit_list 诊断
 
-所有 pyperformance 测试统一使用同一份 JIT list。路径由 `JIT_LIST` 决定，内容固定：
+正式性能数据按 `scripts/arm/run_pyperf_subset.sh` 的口径执行，不强制传
+`PYTHONJITLISTFILE`。只有在单独诊断热点函数编译范围时，才准备下面这份固定
+`jit_list`，并且必须把它记录为额外诊断条件，不能混进正式 pyperformance 方法里。
+路径由 `JIT_LIST` 决定，内容固定：
 
 ```bash
 mkdir -p "$(dirname "$JIT_LIST")"
@@ -362,158 +377,91 @@ grep -q '^__main__:\*$' "$JIT_LIST"
 
 ## 7. 执行 pyperformance
 
-所有正式 pyperformance 命令都必须：
+所有正式 pyperformance 数据都通过仓库脚本采集。不要临时手写另一套
+`pyperformance run` 命令。
 
-```text
-1. 使用 DRIVER_PYTHON 启动 pyperformance。
-2. 传入 PYTHONJITLISTFILE="$JIT_LIST"。
-3. 通过 --inherit-environ 传递 LD_LIBRARY_PATH、PYTHONPATH 和所有 PYTHONJIT* 变量。
-4. affinity 只通过 PYPERF_AFFINITY_ARGS 注入，不在命令里写死。
-5. 输出 JSON 到 RESULT_DIR。
+脚本入口：
+
+```bash
+scripts/arm/run_pyperf_subset.sh
 ```
 
-单 benchmark 示例：
+脚本固定口径：
+
+```text
+1. driver 进程带 PYTHONJITDISABLE=1。
+2. worker 通过 scripts/arm/pyperf_env_hook/sitecustomize.py 启用 JIT。
+3. worker 编译阈值由 CINDERX_WORKER_PYTHONJITAUTO 控制，脚本变量是 AUTOJIT，默认 50。
+4. 默认启用 CINDERX_ENABLE_SPECIALIZED_OPCODES=1。
+5. 每次 pyperformance run 使用 --debug-single-value，脚本外层用 SAMPLES 次重复取 median/min/max。
+6. 输出 JSON 是脚本汇总格式，包含 benchmark_filter、samples、autojit、每行 samples/median/min/max。
+```
+
+必要变量：
 
 ```bash
 cd "$CINDERX_REPO"
 
-export BENCH=${BENCH:-2to3}
-export OUT_JSON=${OUT_JSON:-"$RESULT_DIR/${BENCH}-cinderx.json"}
+export DRIVER_VENV=${DRIVER_VENV:-"$RUN_ROOT/driver-venv"}
+export WORKDIR="$CINDERX_REPO"
+export AUTOJIT=${AUTOJIT:-50}
+export CINDERX_ENABLE_SPECIALIZED_OPCODES=${CINDERX_ENABLE_SPECIALIZED_OPCODES:-1}
+export BENCHMARKS="<comma-separated-benchmarks>"
+export SAMPLES=3
+export OUTPUT="$RESULT_DIR/<name>_s3.json"
 
-export PYTHONJITTYPEANNOTATIONGUARDS=1
-export PYTHONJITENABLEJITLISTWILDCARDS=1
-export PYTHONJITENABLEHIRINLINER=1
-export PYTHONJITAUTO=2
-export PYTHONJITSPECIALIZEDOPCODES=1
-export PYTHONJITLISTFILE="$JIT_LIST"
-export PYPERF_INHERIT_ENV
-PYPERF_INHERIT_ENV=$(build_pyperf_inherit_env)
-
-"$DRIVER_PYTHON" -m pyperformance run \
-  "${PYPERF_AFFINITY_ARGS[@]}" \
-  -b "$BENCH" \
-  --warmups "$PYPERF_WARMUP" \
-  --inherit-environ "$PYPERF_INHERIT_ENV" \
-  -o "$OUT_JSON"
+scripts/arm/run_pyperf_subset.sh
 ```
 
-全量或多 benchmark 测试也沿用同一命令形态，只调整 `-b` 或去掉 `-b`。不要为了
-方便另外创建一套 pyperformance venv 或遗漏 `--inherit-environ`。
+S12 只改 `SAMPLES` 和输出文件名：
 
-## 8. 热点函数编译确认
+```bash
+export SAMPLES=12
+export OUTPUT="$RESULT_DIR/<name>_s12.json"
 
-所有用于性能结论的 benchmark 都必须确认热点函数确实进入 CinderX JIT。只看到
-`pyperformance` JSON 变快或变慢还不够；如果热点函数没有编译，结论只能写成环境或
-解释执行诊断，不能写成 JIT 代码质量结论。
+scripts/arm/run_pyperf_subset.sh
+```
 
-每个 benchmark 至少记录：
+JIT28 使用固定 28 行列表传给 `BENCHMARKS`，不要临时增删后仍称为 full JIT28：
+
+```bash
+export JIT28_BENCHMARKS="chaos,comprehensions,coroutines,coverage,deltablue,fannkuch,float,generators,go,json_dumps,json_loads,logging_format,logging_silent,logging_simple,nbody,nqueens,pickle,pickle_dict,pickle_list,raytrace,richards,scimark_fft,scimark_lu,scimark_monte_carlo,scimark_sor,scimark_sparse_mat_mult,spectral_norm,unpack_sequence"
+export BENCHMARKS="$JIT28_BENCHMARKS"
+```
+
+focused benchmark 只传本轮目标子集。例如对象热点子集：
+
+```bash
+export BENCHMARKS="chaos,deltablue,go,nqueens,raytrace,richards"
+```
+
+base/current 对比使用同一个脚本分别生成 JSON，然后用仓库 compare 脚本：
+
+```bash
+scripts/arm/compare_pyperf_subset.py \
+  --base "$BASE_JSON" \
+  --current "$CURRENT_JSON" \
+  --output "$COMPARE_JSON" \
+  --warn-threshold-pct 5
+```
+
+## 8. 脚本口径验证
+
+正式性能记录必须说明本轮确实使用脚本口径，而不是手写命令。至少记录：
 
 ```text
-1. benchmark 名称。
-2. 预期热点函数列表，使用 `module:qualname` 或可唯一匹配的子串。
-3. 热点来源，例如 pyperformance 源码、profile、HIR/LIR dump 或既有 findings。
-4. 与正式性能测试一致的 CinderX build、PYTHONJITAUTO=2、PYTHONJITLISTFILE、PYTHONJIT* 开关和 --warmups。
-5. 证明这些热点函数已编译的 probe/log 文件路径。
+1. run_pyperf_subset.sh 的路径和当前 checkout commit。
+2. DRIVER_VENV、WORKDIR、BENCHMARKS、SAMPLES、AUTOJIT、OUTPUT。
+3. worker hook 路径：scripts/arm/pyperf_env_hook/sitecustomize.py。
+4. 输出 JSON 里的 samples 和 autojit 字段。
+5. baseline/current 是否使用完全相同的脚本变量，除了被测 patch、wheel 或 env toggle。
 ```
 
-推荐用仓库里的 worker hook 做一次同口径探针。这个探针不是最终性能数据，但必须使用
-同一份 worker venv、同一份 JIT list、同一组 JIT 开关和同一个 warmup 设置：
+可以用 `scripts/arm/verify_pyperf_venv.py` 辅助确认 pyperformance venv 能继承
+CinderX 和 hook，但它是环境校验，不替代正式性能脚本。
 
-```bash
-cd "$CINDERX_REPO"
-
-export HOT_BENCH=${HOT_BENCH:-"$BENCH"}
-export HOT_JSON=${HOT_JSON:-"$RESULT_DIR/${HOT_BENCH}-hot-functions.json"}
-export HOT_PROBE_JSONL=${HOT_PROBE_JSONL:-"$RESULT_DIR/${HOT_BENCH}-hot-functions.jsonl"}
-
-# 用换行或逗号分隔。例：
-# export HOT_FUNCTION_PATTERNS='__main__:bench_json_dumps,json.encoder:_make_iterencode'
-test -n "${HOT_FUNCTION_PATTERNS:-}"
-
-export CINDERX_PYPERF_HOOK_PROBE_FILE="$HOT_PROBE_JSONL"
-export CINDERX_PYPERF_HOOK_COMPILED_FUNCTIONS=1
-export PYTHONPATH="$CINDERX_REPO/scripts/arm/pyperf_env_hook${PYTHONPATH:+:$PYTHONPATH}"
-
-export PYTHONJITTYPEANNOTATIONGUARDS=1
-export PYTHONJITENABLEJITLISTWILDCARDS=1
-export PYTHONJITENABLEHIRINLINER=1
-export PYTHONJITAUTO=2
-export PYTHONJITSPECIALIZEDOPCODES=1
-export PYTHONJITLISTFILE="$JIT_LIST"
-
-export PYPERF_INHERIT_ENV
-PYPERF_INHERIT_ENV="$(build_pyperf_inherit_env),CINDERX_PYPERF_HOOK_PROBE_FILE,CINDERX_PYPERF_HOOK_COMPILED_FUNCTIONS"
-
-"$DRIVER_PYTHON" -m pyperformance run \
-  --debug-single-value \
-  "${PYPERF_AFFINITY_ARGS[@]}" \
-  -b "$HOT_BENCH" \
-  --warmups "$PYPERF_WARMUP" \
-  --inherit-environ "$PYPERF_INHERIT_ENV" \
-  -o "$HOT_JSON"
-```
-
-验证 probe 文件时，至少检查 JIT 已开启、`compile_after` 是本轮要求的阈值、最终
-`atexit` 记录里有编译函数，并且所有预期热点函数都能匹配到：
-
-```bash
-"$DRIVER_PYTHON" - <<'PY'
-import json
-import os
-from pathlib import Path
-
-probe = Path(os.environ["HOT_PROBE_JSONL"])
-patterns = [
-    item.strip()
-    for item in os.environ["HOT_FUNCTION_PATTERNS"].replace(",", "\n").splitlines()
-    if item.strip()
-]
-
-records = [
-    json.loads(line)
-    for line in probe.read_text(encoding="utf-8").splitlines()
-    if line.strip()
-]
-if not records:
-    raise SystemExit(f"empty JIT probe: {probe}")
-
-if not any(row.get("jit_enabled") is True for row in records):
-    raise SystemExit("JIT was not enabled in the pyperformance worker")
-
-compile_after = {
-    row.get("compile_after")
-    for row in records
-    if row.get("phase") in {"enabled", "atexit"}
-}
-if 2 not in compile_after:
-    raise SystemExit(f"expected compile_after=2, got {sorted(compile_after)!r}")
-
-compiled = []
-for row in records:
-    if row.get("phase") != "atexit":
-        continue
-    compiled.extend(row.get("compiled_functions") or row.get("compiled_sample") or [])
-
-if not compiled:
-    raise SystemExit("no compiled functions recorded at worker exit")
-
-missing = [
-    pattern
-    for pattern in patterns
-    if not any(pattern in name for name in compiled)
-]
-if missing:
-    print("compiled functions:")
-    for name in sorted(set(compiled)):
-        print(" ", name)
-    raise SystemExit(f"missing expected hot compiled functions: {missing!r}")
-
-print("hot functions compiled", probe)
-PY
-```
-
-如果某个热点函数没有编译，先修正 `jit_list`、`PYTHONJITAUTO`、worker 继承环境或
-热点函数判断，再重跑性能。不能把这组结果作为“JIT 开启后的最终性能”上报。
+如果需要热点函数、LIR、ASM 或 perf 归因，作为额外诊断单独记录。不要把额外诊断命令
+混进正式 pyperformance 方法里。
 
 ## 9. 性能提升归因和噪音判定
 
@@ -571,23 +519,14 @@ pyperformance worker venv 能继承 CinderX，JIT 环境变量能进入 worker�
 ```bash
 cd "$CINDERX_REPO"
 
-export SMOKE_JSON=${SMOKE_JSON:-"$RESULT_DIR/nbody-smoke-cinderx.json"}
+export DRIVER_VENV=${DRIVER_VENV:-"$RUN_ROOT/driver-venv"}
+export WORKDIR="$CINDERX_REPO"
+export BENCHMARKS="nbody"
+export SAMPLES=1
+export AUTOJIT=${AUTOJIT:-50}
+export OUTPUT=${SMOKE_JSON:-"$RESULT_DIR/nbody-smoke-cinderx.json"}
 
-export PYTHONJITTYPEANNOTATIONGUARDS=1
-export PYTHONJITENABLEJITLISTWILDCARDS=1
-export PYTHONJITENABLEHIRINLINER=1
-export PYTHONJITAUTO=2
-export PYTHONJITSPECIALIZEDOPCODES=1
-export PYTHONJITLISTFILE="$JIT_LIST"
-export PYPERF_INHERIT_ENV
-PYPERF_INHERIT_ENV=$(build_pyperf_inherit_env)
-
-"$DRIVER_PYTHON" -m pyperformance run \
-  --debug-single-value \
-  "${PYPERF_AFFINITY_ARGS[@]}" \
-  -b nbody \
-  --inherit-environ "$PYPERF_INHERIT_ENV" \
-  -o "$SMOKE_JSON"
+scripts/arm/run_pyperf_subset.sh
 ```
 
 验证结果 JSON：
@@ -598,13 +537,15 @@ import json
 import os
 from pathlib import Path
 
-path = Path(os.environ["SMOKE_JSON"])
+path = Path(os.environ["OUTPUT"])
 data = json.loads(path.read_text())
 benchmarks = data.get("benchmarks", [])
 if not benchmarks:
     raise SystemExit(f"no benchmarks in {path}")
 print("result file ok", path)
 print("benchmark_count", len(benchmarks))
+print("samples", data.get("samples"))
+print("autojit", data.get("autojit"))
 PY
 ```
 
@@ -690,7 +631,8 @@ worker 不能导入或结果异常时，优先检查：
 ```text
 1. 第 5 章 patch 后的 _venv.py 是否包含 --system-site-packages。
 2. 旧 worker venv 是否已经删除并重建。
-3. --inherit-environ 是否包含 LD_LIBRARY_PATH、PYTHONPATH 和所有 PYTHONJIT* 变量。
-4. PYTHONJITLISTFILE 是否指向第 6 章生成的 JIT_LIST。
-5. 当前 shell 的 BASE_PYTHON、DRIVER_PYTHON、CINDERX_REPO、RUN_ROOT 是否指向本轮实际目录。
+3. run_pyperf_subset.sh 是否确实使用了预期 DRIVER_VENV、WORKDIR、BENCHMARKS、
+   SAMPLES、AUTOJIT 和 OUTPUT。
+4. sitecustomize.py 是否来自 scripts/arm/pyperf_env_hook。
+5. 当前 shell 的 BASE_PYTHON、DRIVER_VENV、CINDERX_REPO、RUN_ROOT 是否指向本轮实际目录。
 ```

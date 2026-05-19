@@ -5614,3 +5614,1216 @@ Conclusion:
   - a dedicated regression that proves the inner recursive attr-derived call is
     recovered without reintroducing polymorphic deopts or snapshot-related
     compile failures
+
+## 2026-05-12 AArch64 new optimization search
+
+### Baseline
+- Branch: `codex/aarch64-new-optimizations-20260512`
+- Base commit: `95f8ac63 perf(jit): add aarch64 loadattr lir stub`
+- Included merged optimizations:
+  - nearby AArch64 guard stubs
+  - AArch64 `cbz/cbnz`
+  - AArch64 LoadAttr LIR stub
+- Stop condition:
+  - `30%+` single benchmark row improvement, or
+  - `10%+` overall/geomean improvement
+- Current status:
+  - no new candidate has met the stop condition
+
+### Current 3-opt LIR census
+- Evidence:
+  - `/root/work/arm-sync/current3opt_lircensus_s1_20260512.json`
+  - `/root/work/arm-sync/current3opt_lircensus_summary_20260512.txt`
+- Object-heavy hot shapes:
+  - `deltablue`: `LoadAttrCached=736`, `LoadMethodCached=573`, `VectorCall=1048`, `Call=6406`, `CondBranch=3403`, `Test=3133`
+  - `raytrace`: `LoadAttrCached=352`, `LoadMethodCached=387`, `VectorCall=819`, `Call=5604`, `CondBranch=2487`, `Test=2665`
+  - `go`: `LoadAttrCached=448`, `LoadMethodCached=370`, `VectorCall=495`, `Call=5033`, `CondBranch=2510`, `Test=2554`
+  - `richards`: `LoadAttrCached=344`, `LoadMethodCached=244`, `VectorCall=453`, `Call=2763`, `CondBranch=1421`, `Test=1249`
+
+### Candidate results
+- StoreAttr cached stub:
+  - `PYTHONJITAARCH64STOREATTRSTUBMINCALLS=6`
+  - files:
+    - `/root/work/arm-sync/storeattrstub_base_obj_s3w3_20260512.json`
+    - `/root/work/arm-sync/storeattrstub_env6_obj_s3w3_20260512.json`
+  - result: geomean `+0.22%` slower
+  - decision: reject
+- Test+BranchZ/NZ to AArch64 cbz/cbnz:
+  - workdir: `/tmp/cinderx-testbranch-cbzpair-nopgo-gcc14-20260512`
+  - shape on `go`: `Test+BranchZ/NZ` pairs median `74 -> 0`
+  - result:
+    - `chaos -0.38%`
+    - `deltablue -1.32%`
+    - `fannkuch -1.00%`
+    - `go -1.45%`
+    - `nbody +1.28%`
+    - `nqueens -1.56%`
+    - `raytrace +2.41%`
+    - `richards -0.94%`
+    - geomean `-0.38%`
+  - decision: reject for now; clean shape proof but too small/mixed
+- Lower shared call-stub threshold:
+  - `PYTHONJITAARCH64SHAREDSTUBMINCALLS=1`
+  - result: geomean `+9.82%` slower
+  - decision: reject
+- Raise LoadAttr stub threshold:
+  - `PYTHONJITAARCH64LOADATTRSTUBMINCALLS=6`
+  - result: geomean `+11.75%` slower
+  - decision: reject; merged LoadAttr stub wants threshold `1`
+- Vectorcall argument-array `StorePair/stp`:
+  - workdir: `/tmp/cinderx-storepair-vcall-nopgo-gcc14-20260512`
+  - shape on `deltablue`:
+    - base scalar vectorcall arg stores median `336`
+    - pairable adjacent stores median `109`
+    - candidate `StorePair` median `97`
+  - result:
+    - `chaos +1.95%`
+    - `deltablue -0.22%`
+    - `go -1.02%`
+    - `raytrace +1.16%`
+    - `richards +1.42%`
+    - geomean `+0.65%` slower
+  - decision: reject
+- Existing exact LoadMethod cache split:
+  - `PYTHONJITEXACTMETHODCACHESPLIT=1`
+  - candidate file: `/root/work/arm-sync/exactmethodsplit_env1_obj_s3w3_20260512.json`
+  - result:
+    - `chaos +0.80%`
+    - `deltablue +0.56%`
+    - `go -0.64%`
+    - `raytrace +0.78%`
+    - `richards +0.43%`
+    - geomean `+0.38%` slower
+  - decision: reject as standalone and not ARM-only
+- AArch64 MemImm literal-pool addresses:
+  - workdir: `/tmp/cinderx-memimm-literals-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_memimm_literals_nopgo_lto_gcc14_20260512.log`
+  - candidate file: `/root/work/arm-sync/memimm_literals_cand_obj_s3w3_20260512.json`
+  - result:
+    - `chaos +3.09%`
+    - `deltablue +1.22%`
+    - `go +2.51%`
+    - `raytrace +2.11%`
+    - `richards +0.93%`
+    - geomean `+1.97%` slower
+  - decision: reject; extra literal data loads cost more than fewer immediate-materialization instructions
+- AArch64 FMA peephole:
+  - evidence: `/root/work/arm-sync/scimark_fma_shape_summary_20260512.txt`
+  - shape:
+    - `scimark` LIR logs: `106`
+    - adjacent `Fmul -> Fadd/Fsub` pair candidates: total `968`, median `2`, max `38`
+    - hot example shape: `%926:Double = Fmul ...` feeding `%928:Double = Fadd ...`
+  - semantic finding:
+    - ARM `fmadd` performs fused multiply-add with one rounding step.
+    - Python `a * b + c` observes the rounded multiplication result and then rounds the add.
+    - Example from local Python `math.fma` check:
+      - `(1e308 * 1e-308) + -1.0` => `-0x1.0000000000000p-53`
+      - `math.fma(1e308, 1e-308, -1.0)` => `-0x1.6f866f9236600p-54`
+  - decision: reject before build; this is a real ARM microarchitecture opportunity only for an explicit relaxed-FP/unsafe mode, not for default Python semantics
+- AArch64 `BitTest+BranchNC/C` to `tbz/tbnz`:
+  - hypothesis:
+    - Current LIR emits `BitTest reg, imm` and a following carry-branch (`BranchNC`/`BranchC`) for inlined frame cleanup.
+    - AArch64 has direct test-bit-and-branch instructions (`tbz`/`tbnz`), so this can remove a separate flag-setting instruction.
+  - workdir: `/tmp/cinderx-bitbranch-tbz-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_bitbranch_tbz_v2_nopgo_lto_gcc14_20260512.log`
+  - shape evidence:
+    - base probe summary: `/root/work/arm-sync/tbzshape_current3opt_summary_20260512.txt`
+    - candidate probe summary: `/root/work/arm-sync/tbzshape_bitbranch_cand_summary_20260512.txt`
+    - by-benchmark shape: `/root/work/arm-sync/tbzshape_bitbranch_cand_bybench_20260512.txt`
+    - candidate final LIR included `BranchBitZ=220`, `BranchBitNZ=0`
+    - by benchmark: `chaos=22`, `deltablue=44`, `go=44`, `raytrace=88`, `richards=22`, `nqueens=0`
+  - implementation note:
+    - Initial smoke crashed because the rewrite removed the current `BitTest` instruction but returned `kChanged`; fixed to `kRemoved`.
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/bitbranch_tbz_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/bitbranch_tbz_compare_20260512.txt`
+  - result:
+    - `chaos -1.92%`
+    - `deltablue -0.89%`
+    - `go -0.75%`
+    - `nqueens -3.95%`
+    - `raytrace +1.29%`
+    - `richards +0.81%`
+    - geomean `-0.92%`
+  - interpretation:
+    - The direct-hit benchmarks are mixed: small wins on `chaos/deltablue/go`, small regressions on `raytrace/richards`.
+    - `nqueens` had no `BranchBitZ`, so its larger apparent win is noise and should not be used as evidence for the optimization.
+  - decision: reject for now; does not meet the `30%` row or `10%` geomean stop condition
+- AArch64 `GuardNotNegative` direct `tbnz` to near-deopt:
+  - hypothesis:
+    - Current AArch64 `kNotNegative` guard emits `tbz sign_bit, skip; b deopt`.
+    - Since near-deopt stubs are flushed immediately after each block, the failure edge can use direct `tbnz sign_bit, near_deopt` and save one hot-path instruction sequence site.
+  - workdir: `/tmp/cinderx-notnegative-tbnz-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_notnegative_tbnz_nopgo_lto_gcc14_20260512.log`
+  - smoke: passed
+  - shape evidence:
+    - `/root/work/arm-sync/notnegative_guard_shape_bybench_20260512.txt`
+    - all-phase `GuardNotNegative` counts were high in the probed object benchmarks, e.g. `go=18656`, `deltablue=14872`, `raytrace=11440`
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/notnegative_tbnz_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/notnegative_tbnz_compare_20260512.txt`
+  - result:
+    - `chaos -2.15%`
+    - `deltablue -0.53%`
+    - `go -2.60%`
+    - `nqueens -4.93%`
+    - `raytrace +0.70%`
+    - `richards -0.41%`
+    - geomean `-1.67%`
+  - interpretation:
+    - This is the cleanest new ARM-only positive candidate in this search round so far.
+    - It is still far below the requested stop condition, and `raytrace` regressed slightly.
+  - decision: keep as recoverable candidate, but revert local source before continuing independent search
+- Materialized compare bool to direct conditional branch:
+  - hypothesis:
+    - Some HIR/LIR paths materialize a boolean compare result and immediately branch on it.
+    - On AArch64 this commonly becomes `cmp; cset; cbz/cbnz`.
+    - If the bool result has no other use, `cmp; b.<cc>` should be cheaper.
+  - shape evidence:
+    - `/root/work/arm-sync/compare_bool_branch_shape_20260512.txt`
+    - total static pattern count: `4950`
+    - median per probed log: `35.5`
+    - example shape: `Equal X:Object, Y:Object` followed by `BranchNZ`/`BranchZ` on the compare output
+  - prototype:
+    - implemented an AArch64 postalloc rewrite from one-use compare output plus following `BranchZ/NZ` into `Cmp` plus label-only condition branch
+    - excluded FP compares in the prototype to avoid unordered-compare semantics risk
+  - workdir: `/tmp/cinderx-compare-branch-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_compare_branch_nopgo_lto_gcc14_20260512.log`
+  - smoke: passed
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/compare_branch_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/compare_branch_compare_20260512.txt`
+  - result:
+    - `chaos -1.75%`
+    - `deltablue -0.32%`
+    - `go +0.49%`
+    - `nqueens -1.90%`
+    - `raytrace +1.36%`
+    - `richards +1.31%`
+    - geomean `-0.14%`
+  - interpretation:
+    - The instruction-count hypothesis is valid, but broad object benchmarks are mixed and close to noise.
+    - Positive rows are below the requested `30%` row threshold; geomean is far below `10%`.
+  - decision: reject for the stop-condition search; keep remote workdir/results as recovery evidence, but do not retain local source changes
+- AArch64 subword `NotZero/Zero` guard to direct `cbz/cbnz`:
+  - hypothesis:
+    - Current AArch64 guard code handles 8/16-bit `NotZero/Zero` with `tst reg, mask` followed by a conditional branch.
+    - The AArch64 translator already relies on sub-32-bit register values being zero-extended, so `cbz/cbnz` should be equivalent for these zero checks and saves one flag-setting instruction.
+  - shape evidence:
+    - `/root/work/arm-sync/subword_guard_shape_20260512.txt`
+    - `/root/work/arm-sync/subword_guard_kind_shape_20260512.txt`
+    - six-object LIR dump produced `132` log files
+    - static subword guard counts:
+      - `NotZero 8bit = 15004`
+      - `NotNegative 8bit = 9416`
+      - `HasType 8bit = 1408`
+      - `Is 8bit = 264`
+  - prototype:
+    - changed AArch64 `TranslateGuard` for masked `kNotZero` from `tst; b.eq` to `cbz`
+    - changed masked `kZero` from `tst; b.ne` to `cbnz`
+  - workdir: `/tmp/cinderx-subword-guard-cbz-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_subword_guard_cbz_nopgo_lto_gcc14_20260512.log`
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/subword_guard_cbz_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/subword_guard_cbz_compare_20260512.txt`
+  - result:
+    - `chaos -0.60%`
+    - `deltablue -0.65%`
+    - `go +0.12%`
+    - `nqueens -0.75%`
+    - `raytrace +0.78%`
+    - `richards +0.54%`
+    - geomean `-0.09%`
+  - interpretation:
+    - The shape and instruction-count rationale are valid, but runtime effect is neutral and mixed in the standard object subset.
+  - decision: reject for now; preserve the remote workdir/results for future recovery and remove local source changes
+- AArch64 `PrimitiveBox<CInt64>` rematerialization:
+  - hypothesis:
+    - Existing ARM-only `PrimitiveBoxRemat` removes temporary `PrimitiveBox<CDouble>` values when the object is only needed in frame states, removable type-use checks, or decrefs.
+    - `deoptValueKind()` and `MemoryView::readOwned()` already support signed primitive values, so the same rematerialization model should be safe for `TCInt64` under the same use restrictions.
+  - prototype:
+    - allowed `PrimitiveBoxRemat` to handle `TCInt64` in addition to `TCDouble`
+    - kept the existing removable-use and frame-state replacement rules unchanged
+  - smoke/correctness:
+    - candidate passed:
+      - `ArmRuntimeTests.test_primitive_box_remat_elides_frame_state_only_boxes`
+      - `ArmRuntimeTests.test_primitive_box_remat_deopt_correctness`
+    - a small int64 probe returned the same result on base and candidate, but did not hit a reducible int box shape
+  - shape evidence:
+    - `/root/work/arm-sync/primitive_box_bytype_shape_20260512.txt`
+    - `/root/work/arm-sync/int64_box_remat_shape_compare_20260512.txt`
+    - six-object LIR shape:
+      - `PrimitiveBox<CInt64> 1936 -> 1202`
+      - `PrimitiveUnbox<CInt64> 1056 -> 88`
+      - total `PrimitiveBox` lines `4136 -> 2175`
+      - total `PrimitiveUnbox` lines `5632 -> 2288`
+  - infrastructure note:
+    - the first LIR probe failed when pyperformance tried to write final output because `/` was full (`Errno 28`)
+    - copied LIR logs were complete enough for shape comparison
+    - old 20260510 LIR dumps and stale smoke venvs were removed; `/` recovered to about `3.0G` free
+  - workdir: `/tmp/cinderx-int64-box-remat-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_int64_box_remat_nopgo_lto_gcc14_20260512.log`
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/int64_box_remat_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/int64_box_remat_compare_20260512.txt`
+  - result:
+    - `chaos -0.07%`
+    - `deltablue +0.53%`
+    - `go -0.01%`
+    - `nqueens -2.60%`
+    - `raytrace +0.59%`
+    - `richards +1.03%`
+    - geomean `-0.10%`
+  - scimark follow-up:
+    - base: `/root/work/arm-sync/int64_box_remat_base_scimark_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/int64_box_remat_cand_scimark_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/int64_box_remat_scimark_compare_20260512.txt`
+    - `scimark_fft -0.87%`
+    - `scimark_lu +0.20%`
+    - `scimark_monte_carlo +1.40%`
+    - `scimark_sor +1.46%`
+    - `scimark_sparse_mat_mult -3.05%`
+    - geomean `-0.19%`
+  - interpretation:
+    - The pass removes many HIR/LIR box/unbox artifacts, but the removed work is not translating into stable runtime improvement in this object subset.
+    - Positive `nqueens` and `scimark_sparse_mat_mult` are both far below the `30%` row threshold and are offset by regressions elsewhere.
+  - decision: reject for this stop-condition search; keep the remote workdir/results for recovery, but remove local source changes
+- AArch64 subword `CondBranch` to direct `cbz/cbnz`:
+  - hypothesis:
+    - Current postalloc only uses AArch64 register-tested `BranchZ/NZ` for 32/64/object condition inputs.
+    - 8/16-bit conditions are zero-extended in registers and condition truthiness only checks zero/nonzero.
+    - Therefore `CondBranch %v:8bit` can become `cbz/cbnz wN, label` instead of `Test %v,%v; BranchZ/NZ label`.
+  - shape evidence:
+    - `/root/work/arm-sync/condbranch_subword_shape_20260512.txt`
+    - six-object LIR dump:
+      - `CondBranch_total = 140316`
+      - `CondBranch_subword = 33506`
+      - `Test_subword = 4554`
+  - prototype:
+    - extended `doRewriteCondBranch()` AArch64 direct register-test path to 8/16-bit conditions
+    - converted the branch input to a 32-bit physical-register operand before codegen so verifier and `cbz/cbnz` operands stay valid
+  - workdir: `/tmp/cinderx-condbranch-subword-cbz-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_condbranch_subword_cbz_nopgo_lto_gcc14_20260512.log`
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/condbranch_subword_cbz_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/condbranch_subword_cbz_compare_20260512.txt`
+  - result:
+    - `chaos +1.08%`
+    - `deltablue -0.11%`
+    - `go -0.34%`
+    - `nqueens -1.96%`
+    - `raytrace +1.05%`
+    - `richards +1.64%`
+    - geomean `+0.22%` slower
+  - interpretation:
+    - This is a clean ARM-only instruction-selection opportunity, but it is not profitable broadly under the standard object subset.
+    - `go/nqueens` improve slightly, but `chaos/raytrace/richards` regress enough to lose geomean.
+  - decision: reject for this stop-condition search and remove local source changes
+- Multiple code sections on current 3-opt base:
+  - hypothesis:
+    - Splitting hot/cold code can improve instruction-cache locality and branch layout on AArch64.
+  - environment:
+    - `PYTHONJITMULTIPLECODESECTIONS=1`
+    - `PYTHONJITHOTCODESECTIONSIZE=2097152`
+    - `PYTHONJITCOLDCODESECTIONSIZE=2097152`
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/mcs1_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/mcs1_compare_20260512.txt`
+  - result:
+    - `chaos -1.13%`
+    - `deltablue +7.07%`
+    - `go +31.32%`
+    - `nqueens +2.94%`
+    - `raytrace +10.16%`
+    - `richards +0.10%`
+    - geomean `+7.90%` slower
+  - interpretation:
+    - This layout mode is not profitable on the current merged base; the biggest rows regress, including `go` and `raytrace`.
+  - decision: reject
+- AArch64 `LoadMethodCache::lookupHelper` shared fast-path stub:
+  - hypothesis:
+    - Current object-heavy benchmarks still contain hundreds of static `LoadMethodCached` sites after the three merged optimizations.
+    - A shared AArch64 stub can avoid entering C++ on slot-0 cache hits and return the two-word `LoadMethodResult` directly in `x0/x1`.
+  - prototype:
+    - added a recoverable local AArch64-only stub behind `PYTHONJITAARCH64LOADMETHODSTUBMINCALLS`
+    - fast path checks slot-0 cached type and managed-dict keys version
+    - returns `{method, self}` in `x0/x1` after INCREFing both values
+    - branches to the original `LoadMethodCache::lookupHelper` on miss or unsupported shape
+  - candidate workdir: `/tmp/cinderx-loadmethod-stub-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_loadmethod_stub_nopgo_lto_gcc14_20260512.log`
+  - smoke:
+    - `/root/work/arm-sync/loadmethod_stub_smoke_richards_s1w1_20260512.json`
+  - benchmark evidence:
+    - base: `/root/work/arm-sync/bitbranch_tbz_base_obj_s3w3_20260512.json`
+    - candidate: `/root/work/arm-sync/loadmethod_stub_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/loadmethod_stub_compare_20260512.txt`
+  - result:
+    - `chaos -7.43%`
+    - `deltablue -0.47%`
+    - `go +8.74%`
+    - `nqueens -0.58%`
+    - `raytrace -10.59%`
+    - `richards +8.30%`
+    - geomean `-0.60%`
+  - threshold sweep (`SAMPLES=1`, `WARMUPS=1`):
+    - `mincalls=4`: geomean `+0.81%` slower
+    - `mincalls=8`: geomean `+0.42%` slower
+    - `mincalls=16`: geomean `+0.75%` slower
+  - interpretation:
+    - The idea is real enough to move `raytrace` and `chaos`, but not stable enough for a broad optimization.
+    - Thresholding does not fix the mixed behavior.
+  - decision: reject for this stop-condition search; preserve the remote workdir/results for future recovery and remove local source changes
+- Perf follow-up for AArch64 `LoadMethodCache::lookupHelper` stub:
+  - hardware PMU caveat:
+    - this ARM host exposes software perf events only; `cycles`, `instructions`, branch, and cache-miss hardware counters are not supported
+    - used `perf stat` with software events plus `perf record -e cpu-clock`
+  - artifacts:
+    - `/root/work/arm-sync/perf_loadmethod_20260513_loops1/summary.txt`
+    - `/root/work/arm-sync/perf_loadmethod_20260513_record/concise_summary.txt`
+    - `/root/work/arm-sync/perf_loadmethod_20260513_record/richards_summary.txt`
+  - forced-loop stat:
+    - `raytrace`: median `-10.44%`, task-clock `-9.43%`
+    - `go`: median `+7.72%`, task-clock `+5.83%`
+    - `richards`: median `+10.63%`, task-clock `+4.97%`
+  - cpu-clock evidence:
+    - `raytrace` winning row:
+      - `LoadMethodCache` drops from `1.32%` to `0.00%`
+      - `isValidKeysVersion` drops from `1.12%` to `0.00%`
+    - `go` losing row:
+      - `LoadMethodCache` drops from `1.47%` to `0.00%`
+      - `_PyType_LookupStackRefAndVersion` appears at `2.73%`
+      - `PyObject_SetAttr` appears at `2.36%`
+      - `PyObject_GenericSetAttr` appears at `1.70%`
+    - `richards` losing row:
+      - `LoadMethodCache` drops by `-1.22pp`
+      - `isValidKeysVersion` drops by `-2.36pp`
+      - `_PyType_LookupStackRefAndVersion`, `PyObject_SetAttr`, `PyObject_GenericSetAttr`, and `unicodekeys_lookup_unicode` rise
+  - interpretation:
+    - The single-slot stub proves the helper-elimination mechanism on `raytrace`.
+    - The losing rows look like polymorphic/cache-miss-heavy sites: slot0-only probing adds an extra miss path before the C++ helper can scan/promote other entries.
+  - follow-up candidate:
+    - prototype a multi-entry LoadMethod stub that probes the same four entries as the C++ cache before falling back
+- AArch64 multi-entry `LoadMethodCache::lookupHelper` stub:
+  - hypothesis:
+    - Checking all four method-cache entries in the AArch64 stub should reduce the miss-path overhead identified by perf on polymorphic rows.
+  - candidate workdir: `/tmp/cinderx-loadmethod-stub4-nopgo-gcc14-20260512`
+  - build log: `/root/work/arm-sync/build_loadmethod_stub4_nopgo_lto_gcc14_20260512.log`
+  - smoke:
+    - `/root/work/arm-sync/loadmethod_stub4_smoke_richards_s1w1_20260512.json`
+  - standard benchmark:
+    - candidate: `/root/work/arm-sync/loadmethod_stub4_cand_obj_s3w3_20260512.json`
+    - compare: `/root/work/arm-sync/loadmethod_stub4_compare_20260512.txt`
+  - result:
+    - `chaos -7.77%`
+    - `deltablue -2.44%`
+    - `go +9.59%`
+    - `nqueens -3.27%`
+    - `raytrace -11.24%`
+    - `richards +12.65%`
+    - geomean `-0.79%`
+  - threshold sweep:
+    - `mincalls=4`: geomean `-1.06%`
+    - `mincalls=8`: geomean `-0.61%`
+    - `mincalls=16`: geomean `+0.42%` slower
+    - `mincalls=32`: geomean `+0.09%` slower
+  - interpretation:
+    - The multi-entry version confirms the positive mechanism, especially on `raytrace/chaos`, but still cannot control `go/richards`.
+  - decision: reject for stop-condition search; preserve remote workdir/results and remove local source changes
+- Enabled perf follow-up for AArch64 multi-entry `LoadMethodCache::lookupHelper` stub:
+  - correction:
+    - The first four-entry perf helper run did not set `PYTHONJITAARCH64LOADMETHODSTUBMINCALLS`, so it measured the candidate build with the stub disabled.
+    - The valid perf run sets `PYTHONJITAARCH64LOADMETHODSTUBMINCALLS=1`.
+  - artifacts:
+    - stat: `/root/work/arm-sync/perf_loadmethod_stub4_20260513_enabled_loops1/summary.txt`
+    - record: `/root/work/arm-sync/perf_loadmethod_stub4_20260513_enabled_record/concise_summary.txt`
+  - forced-loop stat:
+    - `raytrace`: median `-11.67%`, task-clock `-10.76%`
+    - `chaos`: median `-10.48%`, task-clock `-6.53%`
+    - `go`: median `+7.37%`, task-clock `+5.77%`
+    - `richards`: median `+11.60%`, task-clock `+5.02%`
+  - cpu-clock record:
+    - `raytrace`:
+      - `LoadMethodCache` drops `1.46% -> 0.00%`
+      - `isValidKeysVersion` drops `1.35% -> 0.00%`
+    - `go`:
+      - `LoadMethodCache` drops `1.15% -> 0.00%`
+      - `_PyType_LookupStackRefAndVersion` rises `0.54% -> 2.48%`
+      - `PyObject_SetAttr` rises `0.08% -> 2.02%`
+      - `unicodekeys_lookup_unicode` rises `2.15% -> 3.67%`
+    - `richards`:
+      - `LoadMethodCache` drops `2.88% -> 0.00%`
+      - `_PyType_LookupStackRefAndVersion` rises `1.10% -> 3.03%`
+      - `PyObject_SetAttr` rises `0.00% -> 2.10%`
+      - `unicodekeys_lookup_unicode` rises `2.70% -> 3.79%`
+  - interpretation:
+    - The stub mechanism is real and removes the direct method helper on hits.
+    - The losing rows are not dominated by the stub body itself; they shift into generic type lookup and instance attribute store paths after misses/fallbacks.
+    - Continuing to add entries to this same stub is unlikely to reach the stop condition without a more selective dynamic gate.
+- Compile-time lightweight frames candidate:
+  - hypothesis:
+    - Perf repeatedly shows `JITRT_UnlinkFrame`, `jitFrameGetHeader`, and `Ci_EvalFrame` as object-benchmark overhead.
+    - Building with `ENABLE_LIGHTWEIGHT_FRAMES=1` should reduce frame/runtime overhead and also allows the HIR inliner to stay enabled on Python 3.14.
+  - candidate workdir:
+    - `/tmp/cinderx-lightweight-frames-nopgo-gcc14-20260513`
+  - build:
+    - `ENABLE_LIGHTWEIGHT_FRAMES=1`
+    - `CINDERX_ENABLE_LTO=1`
+    - log: `/root/work/arm-sync/build_lightweight_frames_nopgo_lto_gcc14_20260513.log`
+  - sanity:
+    - with GCC14 `LD_LIBRARY_PATH`, candidate venv reports `cinderx.is_lightweight_frames_enabled() == True`
+    - `cinderjit.jit_frame_mode() == 2`
+  - quick benchmark:
+    - compare: `/root/work/arm-sync/lwf_s1w1_compare_20260513.txt`
+    - geomean `-0.95%`
+  - standard benchmark:
+    - candidate: `/root/work/arm-sync/lwf_cand_obj_s3w3_20260513.json`
+    - compare: `/root/work/arm-sync/lwf_s3w3_compare_20260513.txt`
+    - `chaos -1.51%`
+    - `deltablue -0.24%`
+    - `go -0.65%`
+    - `nqueens -1.72%`
+    - `raytrace -0.19%`
+    - `richards -0.95%`
+    - geomean `-0.88%`
+  - perf follow-up:
+    - stat: `/root/work/arm-sync/perf_lwf_20260513_loops1/summary.txt`
+    - record: `/root/work/arm-sync/perf_lwf_20260513_record/concise_summary.txt`
+    - forced-loop stat geomean `-0.36%`
+    - `raytrace` task-clock `-2.44%`
+    - `go` task-clock `-1.02%`
+    - `richards` task-clock `+0.33%`
+    - record shows `JITRT_UnlinkFrame` drops:
+      - `raytrace`: `2.98% -> 2.39%`
+      - `go`: `1.75% -> 1.32%`
+      - `richards`: `2.92% -> 2.64%`
+    - `jitFrameGetHeader` drops on `raytrace/richards`, but rises on `go` in this sample.
+  - decision:
+    - reject for the stop-condition search; it is a clean real feature toggle with small broad positive standard result, but far below `30%` single-row or `10%` geomean
+- JIT attribute-cache size sweep:
+  - hypothesis:
+    - Perf for `go/richards` repeatedly shows attribute store and dictionary lookup paths.
+    - Raising `PYTHONJITATTRCACHESIZE` from the default `4` may reduce slow-path attribute-cache misses on polymorphic rows.
+  - artifacts:
+    - size 8: `/root/work/arm-sync/attr_cache_size8_compare_s1w1_20260513.txt`
+    - size 16: `/root/work/arm-sync/attr_cache_size16_compare_s1w1_20260513.txt`
+  - S1/W1 result:
+    - size 8 geomean `+0.05%` slower
+    - size 16 geomean `+0.31%` slower
+  - decision:
+    - reject; `go/richards` do not improve enough to justify larger caches, and `raytrace/nqueens` regress at size 16
+- Huge-page allocation toggle:
+  - hypothesis:
+    - JIT code allocation defaults to huge-page backed regions, which can affect iTLB locality and page behavior on ARM.
+    - Disabling huge pages could be beneficial if the current code footprint is too fragmented or if huge-page promotion hurts locality.
+  - artifact:
+    - `/root/work/arm-sync/no_hugepages_compare_s1w1_20260513.txt`
+  - S1/W1 result with `PYTHONJITHUGEPAGES=0`:
+    - `chaos +0.06%`
+    - `deltablue +0.41%`
+    - `go +0.03%`
+    - `nqueens +5.08%`
+    - `raytrace +3.29%`
+    - `richards +1.91%`
+    - geomean `+1.78%` slower
+  - decision:
+    - reject; default huge-page behavior is better on this host/subset
+- AArch64 `JITRT_UnlinkFrameFromTstate` epilogue helper:
+  - hypothesis:
+    - `JITRT_UnlinkFrame` is repeatedly visible in perf.
+    - AArch64 epilogues can inline-load `PyThreadState*`, then call a helper that skips the TLS lookup and wrapper path.
+  - prototype:
+    - add `JITRT_UnlinkFrameFromTstate(PyThreadState*)`
+    - on AArch64 Python 3.12+ epilogue, save return register, load tstate with existing `loadTState()`, call the new helper, then restore return register
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/unlink_tstate_20260513.patch`
+  - workdir/build:
+    - `/tmp/cinderx-unlink-tstate-nopgo-gcc14-20260513`
+    - build log: `/root/work/arm-sync/build_unlink_tstate_nopgo_lto_gcc14_20260513_retry.log`
+  - quick benchmark:
+    - compare: `/root/work/arm-sync/unlink_tstate_compare_s1w1_20260513.txt`
+    - geomean `-3.78%`
+  - standard benchmark:
+    - candidate: `/root/work/arm-sync/unlink_tstate_cand_obj_s3w3_20260513.json`
+    - compare: `/root/work/arm-sync/unlink_tstate_compare_s3w3_20260513.txt`
+    - `chaos -2.69%`
+    - `deltablue -4.51%`
+    - `go -3.11%`
+    - `nqueens -5.48%`
+    - `raytrace -0.58%`
+    - `richards -4.83%`
+    - geomean `-3.55%`
+  - perf follow-up:
+    - stat: `/root/work/arm-sync/perf_unlink_tstate_20260513_loops1/summary.txt`
+    - record: `/root/work/arm-sync/perf_unlink_tstate_20260513_record/concise_summary.txt`
+    - forced-loop stat geomean `-3.32%`
+    - task-clock deltas:
+      - `chaos -2.24%`
+      - `deltablue -0.88%`
+      - `go -2.66%`
+      - `nqueens -0.83%`
+      - `raytrace -1.78%`
+      - `richards -1.63%`
+    - cpu-clock record shows the helper-path cost drops:
+      - `go`: old `JITRT_UnlinkFrame 1.41%`, new `JITRT_UnlinkFrameFromTstate 1.12%`
+      - `richards`: old `JITRT_UnlinkFrame 2.08%`, new `JITRT_UnlinkFrameFromTstate 1.88%`
+      - `jitFrameGetHeader` also drops on `go` in this sample
+  - decision:
+    - best current candidate and worth keeping for future discussion, but it does not meet the current stop condition
+  - extended S1/W1 screening:
+    - artifact: `/root/work/arm-sync/unlink_tstate_ext_compare_s1w1_20260513.txt`
+    - benchmark group:
+      - `2to3,argparse,chameleon,django_template,generators,json_dumps,json_loads,logging,pathlib,pickle,regex_v8,unpack_sequence`
+    - result:
+      - geomean `+0.65%` slower
+      - most rows are neutral/slower
+      - `unpack_sequence -12.29%`, but this is a nanosecond-scale unstable micro benchmark and below the `30%` stop threshold
+    - decision:
+      - no expanded-suite stop condition; keep the object-subset `-3.55%` result as the useful signal
+- AArch64 known-frame unlink refinement:
+  - hypothesis:
+    - In addition to passing `tstate`, AArch64 can load `current_frame`, update `current_frame = frame->previous`, and call a helper that only clears/pops the known frame.
+  - prototype:
+    - add `JITRT_UnlinkFrameKnownFrame(PyThreadState*, _PyInterpreterFrame*)`
+    - AArch64 epilogue performs current-frame load/update before the helper call
+    - recovery patch: `/root/work/arm-sync/unlink_knownframe_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-unlink-knownframe-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_unlink_knownframe_nopgo_lto_gcc14_20260513.log`
+  - quick benchmark:
+    - compare `/root/work/arm-sync/unlink_knownframe_compare_s1w1_20260513.txt`
+    - geomean `-2.69%`
+  - decision:
+    - reject in favor of `JITRT_UnlinkFrameFromTstate`; the extra inline frame manipulation is less stable in quick screening
+- AArch64 multi-entry StoreAttr cached stub refinement:
+  - hypothesis:
+    - `go/richards/raytrace` still spend measurable time in `StoreAttrCache`, `AttributeMutator`, split-value insertion, and generic attribute store paths.
+    - The existing env-gated AArch64 StoreAttr stub only probes entry0, while the cache can hold multiple entries.
+    - Probing up to four entries should reduce polymorphic miss overhead on ARM, and saving LR only around `_Py_Dealloc` keeps the hot success path direct.
+  - prototype:
+    - in `cinderx/Jit/codegen/gen_asm.cpp`, extend `env_.store_attr_invoke_stub` to test up to `min(attr_cache_size, 4)` entries
+    - retain the existing narrow supported kind: `kSplitInlineKnownOffset`
+    - preserve LR across the rare `_Py_Dealloc` call from the stub
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/storeattr_stub4_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-storeattr-stub4-nopgo-gcc14-20260513`
+    - build log `/root/work/arm-sync/build_storeattr_stub4_nopgo_lto_gcc14_20260513.log`
+  - quick threshold sweep (`SAMPLES=1`, `WARMUPS=1`, with `PYTHONJITAARCH64STOREATTRSTUBMINCALLS`):
+    - `1`: `chaos +1.38%`, `deltablue +2.09%`, `go -0.40%`, `nqueens +1.81%`, `raytrace +1.64%`, `richards -2.51%`, geomean `+0.65%` slower
+    - `6`: geomean `+0.35%` slower
+    - `12`: geomean `+0.70%` slower
+    - `24`: geomean `+1.39%` slower
+  - decision:
+    - reject; multi-entry probing converts part of `richards` into a win, but the added branch/code footprint and miss path hurt broader rows
+- AArch64 generator inline-decref:
+  - hypothesis:
+    - `nqueens` perf shows `JITRT_Decref` as visible overhead, and the hot generator path in `LIRGenerator::MakeDecref` always emits a helper call.
+    - On AArch64, using the existing inline refcount fast path for generator functions may remove helper-call overhead and favor the common non-dealloc case.
+  - prototype:
+    - in `cinderx/Jit/lir/generator.cpp`, keep helper decref for non-AArch64 generator code
+    - for AArch64 generator code, fall through to the same inline `DecRef` sequence used by non-generator functions
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_inline_generator_decref_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-inline-generator-decref-nopgo-gcc14-20260513`
+    - build log `/root/work/arm-sync/build_a64_inline_generator_decref_nopgo_lto_gcc14_20260513.log`
+  - S3/W3 result:
+    - compare `/root/work/arm-sync/a64_inline_generator_decref_compare_s3w3_20260513.txt`
+    - `chaos -0.79%`
+    - `deltablue -2.09%`
+    - `go -2.29%`
+    - `nqueens -4.45%`
+    - `raytrace +2.49%`
+    - `richards -0.86%`
+    - geomean `-1.35%`
+  - decision:
+    - keep as a small future candidate but do not stop; it does not approach `30%` single-row or `10%` geomean
+- AArch64 broad float-guard specialization:
+  - hypothesis:
+    - `raytrace` and scimark still show Python float helpers and primitive float LIR counts.
+    - On AArch64, moving more specialized float opcodes into exact-float guarded primitive-double paths may exploit FP registers/instructions better than generic Python float calls.
+  - prototype:
+    - in `cinderx/Jit/hir/builder.cpp`, make `shouldSpecializeFloatGuards()` return true under `CINDER_AARCH64`
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_all_float_guards_20260513.patch`
+  - object S1/W1:
+    - `chaos -1.15%`
+    - `deltablue +0.65%`
+    - `go +2.56%`
+    - `nqueens -2.62%`
+    - `raytrace +7.23%`
+    - `richards -0.11%`
+    - geomean `+1.04%` slower
+  - scimark S1/W1:
+    - `scimark_fft -1.35%`
+    - `scimark_lu -4.05%`
+    - `scimark_monte_carlo +5.60%`
+    - `scimark_sor -3.05%`
+    - `scimark_sparse_mat_mult -0.55%`
+    - geomean `-0.74%`
+  - decision:
+    - reject broad specialization; if revisited, it needs a narrower heuristic than "all AArch64 float opcodes"
+- AArch64 BatchDecref threshold sweep:
+  - hypothesis:
+    - The current HIR refcount pass turns runs of 4+ decrefs into `JITRT_BatchDecref`.
+    - On AArch64, the best point may differ: a higher threshold keeps more inline refcount fast paths, while a lower threshold reduces code size and branch footprint.
+  - prototypes:
+    - threshold 8: `/root/work/arm-sync/a64_batchdecref_th8_20260513.patch`
+    - threshold 2: `/root/work/arm-sync/a64_batchdecref_th2_20260513.patch`
+  - S1/W1 results:
+    - threshold 8: `chaos -1.49%`, `nqueens -0.51%`, `raytrace +1.86%`, geomean `+0.08%` slower
+    - threshold 2: `nqueens -2.13%`, but `chaos +3.93%`, `deltablue +4.76%`, `raytrace +5.61%`, geomean `+2.74%` slower
+  - decision:
+    - reject; current threshold is a reasonable compromise for this base, and the sweep does not produce a stop-condition candidate
+- AArch64 inline `CheckSequenceBounds` fast path:
+  - hypothesis:
+    - `nqueens` perf still shows `JITRT_CheckSequenceBounds`; AArch64 can inline the common in-bounds path as `ob_size` load, negative-index adjust, and unsigned range compare, falling back to the helper only for the exception path.
+  - prototype:
+    - in `cinderx/Jit/lir/generator.cpp`, lower `CheckSequenceBounds` to an AArch64-only fast path with a slow helper block
+    - keep x86/non-AArch64 on the original helper-call lowering
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_checkseq_inline_bounds_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-checkseq-inline-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_checkseq_inline_nopgo_lto_gcc14_20260513.log`
+  - same-mouth S3/W3 result against current4 S3/W3:
+    - compare `/root/work/arm-sync/a64_checkseq_inline_vs_current4_s3w3_20260513.txt`
+    - `chaos -1.28%`
+    - `deltablue +0.18%`
+    - `go -1.47%`
+    - `nqueens -0.58%`
+    - `raytrace +0.06%`
+    - `richards +0.81%`
+    - geomean `-0.38%`
+  - decision:
+    - reject; removing the helper call does not pay for the extra branches/code footprint in the object subset, and it misses both stop thresholds
+- AArch64 `isValidKeysVersion` force-inline:
+  - hypothesis:
+    - `richards` current4 perf attributes several percent to `jit::isValidKeysVersion`; AArch64-only force-inline might turn that into straight-line code inside `LoadMethodCache::lookup`.
+  - prototype:
+    - add AArch64-only `__attribute__((always_inline)) inline` on the declaration/definition in `cinderx/Jit/inline_cache.cpp`
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_inline_keys_version_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-inline-keys-version-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_inline_keys_version_nopgo_lto_gcc14_20260513.log`
+  - same-mouth S3/W3 result:
+    - compare `/root/work/arm-sync/a64_inline_keys_version_vs_current4_s3w3_20260513.txt`
+    - `chaos +0.33%`
+    - `deltablue -0.60%`
+    - `go -1.31%`
+    - `nqueens -1.60%`
+    - `raytrace +0.09%`
+    - `richards -0.15%`
+    - geomean `-0.55%`
+  - decision:
+    - reject; visible perf symbol does not translate into enough wall-clock win, and it misses both stop thresholds
+- AArch64 direct `tp_iternext` fast path for `InvokeIterNext`:
+  - hypothesis:
+    - `nqueens` current4 perf samples `JITRT_InvokeIterNext`; the common non-null iterator path can avoid the wrapper helper by directly loading and calling `tp_iternext`, then using a smaller helper only when the direct call returns `NULL`.
+  - prototype:
+    - in `cinderx/Jit/lir/generator.cpp`, add an AArch64-only lowering for `InvokeIterNext`
+    - in `cinderx/Jit/jit_rt.cpp/.h`, add `JITRT_InvokeIterNextHandleNull()` to preserve StopIteration/error behavior after the direct call
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_invoke_iternext_direct_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-invoke-iternext-direct-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_invoke_iternext_direct_nopgo_lto_gcc14_20260513.log`
+  - same-mouth S3/W3 result:
+    - compare `/root/work/arm-sync/a64_invoke_iternext_direct_vs_current4_s3w3_20260513.txt`
+    - `chaos -0.96%`
+    - `deltablue -1.11%`
+    - `go -1.53%`
+    - `nqueens -3.41%`
+    - `raytrace +2.03%`
+    - `richards +0.51%`
+    - geomean `-0.76%`
+  - decision:
+    - reject for the current stop-gate; it confirms a local `nqueens` iterator-wrapper win, but neither the single-row nor overall threshold is close
+- AArch64 fast non-generator `FrameHeader` lookup in frame clear:
+  - hypothesis:
+    - current4 perf samples `jitFrameGetHeader` in frame clear/unlink paths.
+    - For ordinary non-generator lightweight frames, the `FrameHeader` is immediately before `_PyInterpreterFrame`; only generator frames need the existing helper's footer lookup.
+  - prototype:
+    - in `cinderx/Jit/frame.cpp`, under `CINDER_AARCH64 && ENABLE_LIGHTWEIGHT_FRAMES`, use `reinterpret_cast<FrameHeader*>(frame) - 1` in `jitFrameClearExceptCode` when `frame->owner != FRAME_OWNED_BY_GENERATOR`
+    - keep generator frames and non-AArch64 on the existing `jitFrameGetHeader()` path
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_frame_header_fast_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-frame-header-fast-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_frame_header_fast_nopgo_lto_gcc14_20260513.log`
+  - same-mouth S3/W3 result:
+    - compare `/root/work/arm-sync/a64_frame_header_fast_vs_current4_s3w3_20260513.txt`
+    - `chaos -1.18%`
+    - `deltablue -2.04%`
+    - `go -1.92%`
+    - `nqueens -1.57%`
+    - `raytrace -1.05%`
+    - `richards -2.59%`
+    - geomean `-1.73%`
+  - decision:
+    - preserve as a small all-positive candidate; it is useful evidence for frame-path work but below both stop thresholds
+- AArch64 unchecked tstate in `JITRT_UnlinkFrame`:
+  - hypothesis:
+    - `richards` perf shows `PyThreadState_Get`; swapping to `_PyThreadState_UncheckedGet()` under AArch64 might recover a narrow slice of the larger `UnlinkFrameFromTstate` win without changing the call ABI.
+  - prototype:
+    - in `cinderx/Jit/jit_rt.cpp`, use `_PyThreadState_UncheckedGet()` for `JITRT_UnlinkFrame` under `CINDER_AARCH64 && PY_VERSION_HEX >= 0x030C0000`
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_unlink_unchecked_tstate_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-unlink-unchecked-tstate-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_unlink_unchecked_tstate_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_unlink_unchecked_tstate_obj_compare_s1w1_20260513.txt`
+    - geomean `-0.30%`, with `nqueens +2.17%` and `raytrace +1.26%` regressions
+  - decision:
+    - reject after quick screen; signal is too weak and mixed
+- AArch64 `FOR_ITER_LIST` list-iterator helper specialization:
+  - hypothesis:
+    - `go` current4 perf still samples `listiter_next`; CPython's quickened `FOR_ITER_LIST` can identify the hot list-iterator case, but current JIT `InvokeIterNext` always calls the generic helper.
+    - AArch64-only specialized helper could inline the common `PyListIter_Type` path and avoid the indirect `tp_iternext` call plus error probing.
+  - prototype:
+    - carry a small `IterNextSpecialization::kList` bit on `InvokeIterNext`
+    - set it from `FOR_ITER_LIST` only under `CINDER_AARCH64`
+    - lower it to `JITRT_InvokeListIterNext()`; helper preserves fallback semantics for non-list iterators
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_for_iter_list_fast_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-for-iter-list-fast-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_for_iter_list_fast_nopgo_lto_gcc14_20260513.log`
+  - same-mouth S3/W3 result:
+    - compare `/root/work/arm-sync/a64_for_iter_list_fast_vs_current4_s3w3_20260513.txt`
+    - `chaos -0.33%`
+    - `deltablue -1.36%`
+    - `go -0.59%`
+    - `nqueens -3.09%`
+    - `raytrace +3.61%`
+    - `richards +0.65%`
+    - geomean `-0.21%`
+  - decision:
+    - reject for the current stop-gate; useful as iterator evidence, but below threshold and it regresses `raytrace`
+- AArch64 compact-long `CompareBool` helper specialization:
+  - hypothesis:
+    - `go` current4 perf still samples `PyObject_RichCompareBool/long_richcompare`; exact compact longs can be compared by `_PyLong_CompactValue()` without going through Python's generic richcompare path.
+  - prototype:
+    - under `CINDER_AARCH64`, lower `TLongExact/TLongExact` `CompareBool` to `JITRT_LongCompareBool()`
+    - helper compares compact exact longs directly and falls back to `PyObject_RichCompareBool`
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_long_compare_bool_compact_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-long-compare-bool-compact-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_long_compare_bool_compact_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_long_compare_bool_compact_obj_compare_s1w1_20260513.txt`
+    - `chaos -1.14%`
+    - `deltablue -0.93%`
+    - `go +1.24%`
+    - `nqueens -3.29%`
+    - `raytrace +3.04%`
+    - `richards +0.41%`
+    - geomean `-0.13%`
+  - decision:
+    - reject after quick screen; target `go` regressed and there is no threshold-scale signal
+- AArch64 managed-dict fast path in `isValidKeysVersion`:
+  - hypothesis:
+    - `richards` current4 perf samples `isValidKeysVersion`; managed-dict receivers might avoid `_PyObject_GetDictPtr()` by checking `_PyObject_GetManagedDict()` directly.
+  - prototype:
+    - under `CINDER_AARCH64`, use `Py_TPFLAGS_MANAGED_DICT` to take a direct managed-dict path before the existing generic dictptr path
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_keys_version_managed_dict_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-keys-version-managed-dict-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_keys_version_managed_dict_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_keys_version_managed_dict_obj_compare_s1w1_20260513.txt`
+    - `chaos -2.43%`
+    - `deltablue -0.67%`
+    - `go -0.99%`
+    - `nqueens +2.75%`
+    - `raytrace +1.52%`
+    - `richards +0.51%`
+    - geomean `+0.10%`
+  - decision:
+    - reject after quick screen; it does not improve the target `richards`
+- AArch64 LoadMethod entry-local dict-offset validation:
+  - hypothesis:
+    - `richards` current4 deep perf samples `LoadMethodCache::lookup`, `isValidKeysVersion`, and `_PyObject_GetDictPtr`; AArch64 method-cache hits might benefit from caching the receiver dict pointer offset in the cache entry.
+  - prototype:
+    - under `CINDER_AARCH64` and Python 3.14+, store `dict_offset` in `LoadMethodCache::Entry`
+    - for known non-inline layouts, validate cached `keys_version` by directly loading the dict pointer from `obj + dict_offset`
+    - fall back to the original `_PyObject_GetDictPtr()` helper for inline-values or unknown layouts
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_loadmethod_dict_offset_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-loadmethod-dict-offset-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_loadmethod_dict_offset_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_loadmethod_dict_offset_obj_compare_s1w1_20260513.txt`
+    - `chaos -1.45%`
+    - `deltablue +0.11%`
+    - `go -1.18%`
+    - `nqueens -2.22%`
+    - `raytrace +3.78%`
+    - `richards +2.90%`
+    - geomean `+0.30%`
+  - decision:
+    - reject after quick screen; the intended `richards` target regressed and overall is slower
+- AArch64 exact-`TFunc` vectorcall direct helper:
+  - hypothesis:
+    - `chaos` perf shows `JITRT_Vectorcall`, and HIR sometimes knows the callable is an exact Python function; on AArch64, calling the existing exact helper directly may avoid generic vectorcall dispatch.
+  - prototype:
+    - under `CINDER_AARCH64`, retarget `VectorCall` lowering to `JITRT_VectorcallExactPyFunc` when `hir_instr.func()->type() <= TFunc`
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_vectorcall_exact_tfunc_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-vectorcall-exact-tfunc-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_vectorcall_exact_tfunc_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_vectorcall_exact_tfunc_obj_compare_s1w1_20260513.txt`
+    - `chaos -0.82%`
+    - `deltablue +1.10%`
+    - `go -0.49%`
+    - `nqueens -2.10%`
+    - `raytrace +0.60%`
+    - `richards +0.50%`
+    - geomean `-0.21%`
+  - decision:
+    - reject after quick screen; it helps a few rows but regresses call-heavy targets and is far below threshold
+- AArch64 exact-float nonzero-constant true-divide lowering:
+  - hypothesis:
+    - `chaos` and `raytrace` have float helper/allocation pressure; if the RHS is a compile-time nonzero exact float, Python's zero-division edge is excluded and native AArch64 `fdiv` can replace the `float_true_divide` helper.
+  - prototype:
+    - under `CINDER_AARCH64`, lower exact-float `TrueDivide` by nonzero exact-float object spec to `PrimitiveUnbox -> DoubleBinaryOp(kTrueDivide) -> PrimitiveBox`
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_float_const_div_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-float-const-div-nopgo-gcc14-20260513`
+    - first build failed on a local variable redeclaration; fixed in the saved patch
+    - log `/root/work/arm-sync/build_a64_float_const_div_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_float_const_div_obj_compare_s1w1_20260513.txt`
+    - `chaos -1.59%`
+    - `deltablue -0.52%`
+    - `go -0.72%`
+    - `nqueens +1.90%`
+    - `raytrace +1.08%`
+    - `richards +0.44%`
+    - geomean `+0.09%`
+  - decision:
+    - reject after quick screen; no threshold-scale signal and overall is slightly slower
+- AArch64 `JITRT_UnlinkFrameFromTstate` on current 4-opt base:
+  - hypothesis:
+    - frame unlink remains a current-base hotspot; using the AArch64 inline `loadTState(x0)` sequence in epilogues and passing the tstate into the unlink helper can avoid helper-side thread-state lookup cost.
+  - prototype:
+    - add `JITRT_UnlinkFrameFromTstate(PyThreadState*)` for Python 3.12+
+    - retarget AArch64 `FrameAsm::generateUnlinkFrame()` to load tstate into `x0` and call the new helper
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_unlink_tstate_current4_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-unlink-tstate-current4-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_unlink_tstate_current4_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_unlink_tstate_current4_obj_compare_s1w1_20260513.txt`
+    - `chaos -2.41%`
+    - `deltablue -3.89%`
+    - `go -2.31%`
+    - `nqueens -3.74%`
+    - `raytrace -0.99%`
+    - `richards -3.59%`
+    - geomean `-2.83%`
+  - same-mouth S3/W3 result:
+    - compare `/root/work/arm-sync/a64_unlink_tstate_current4_obj_compare_s3w3_20260513.txt`
+    - `chaos -1.16%`
+    - `deltablue -3.59%`
+    - `go -1.17%`
+    - `nqueens -1.76%`
+    - `raytrace -0.66%`
+    - `richards -2.96%`
+    - geomean `-1.89%`
+  - decision:
+    - preserve as best current-base standalone candidate; still below stop thresholds
+- AArch64 unchecked tstate in generator send and frame clear:
+  - hypothesis:
+    - `PyThreadState_Get` still appears in generator/frame cleanup perf; AArch64 can use `_PyThreadState_GET()` in paths that already require an active thread state.
+  - prototype:
+    - under `CINDER_AARCH64`, replace `PyThreadState_Get()` with `_PyThreadState_GET()` in `jitgen_am_send()`
+    - under `CINDER_AARCH64`, use `_PyThreadState_GET()` in `jitFrameClearExceptCode()`'s current-frame debug check
+    - no source is kept locally after testing; recovery patch is `/root/work/arm-sync/a64_unchecked_tstate_frame_gen_20260513.patch`
+  - build:
+    - workdir `/tmp/cinderx-a64-unchecked-tstate-frame-gen-nopgo-gcc14-20260513`
+    - log `/root/work/arm-sync/build_a64_unchecked_tstate_frame_gen_nopgo_lto_gcc14_20260513.log`
+  - quick S1/W1 result:
+    - compare `/root/work/arm-sync/a64_unchecked_tstate_frame_gen_obj_compare_s1w1_20260513.txt`
+    - `chaos -2.69%`
+    - `deltablue -0.18%`
+    - `go -0.60%`
+    - `nqueens +2.65%`
+    - `raytrace +0.83%`
+    - `richards -0.51%`
+    - geomean `-0.10%`
+  - decision:
+    - reject after quick screen; local `chaos` win does not generalize
+
+### Current ranking after tested negatives
+- Deprioritized:
+  - broad call-stub threshold tuning
+  - LoadAttr threshold tuning
+  - HIR exact method-cache split
+  - MemImm literal-pool address loading
+  - FMA contraction for default Python float arithmetic
+  - broad `BitTest+BranchNC/C` to `tbz/tbnz`
+  - materialized compare bool to direct conditional branch
+  - subword zero guard `tst+branch` to `cbz/cbnz`
+  - `PrimitiveBox<CInt64>` rematerialization
+  - subword `CondBranch` to direct `cbz/cbnz`
+  - multiple-code-sections layout mode on current 3-opt base
+  - broad AArch64 `LoadMethodCache::lookupHelper` shared fast-path stub
+  - multi-entry AArch64 `LoadMethodCache::lookupHelper` shared fast-path stub
+  - compile-time lightweight frames on the current object subset
+  - raising `PYTHONJITATTRCACHESIZE`
+  - disabling JIT huge pages
+  - AArch64 known-frame unlink refinement
+  - multi-entry AArch64 StoreAttr cached stub refinement
+  - AArch64 StoreAttr split-known-offset invoke stub
+  - broad AArch64 float-guard specialization
+  - AArch64 BatchDecref threshold 2/8 sweep
+  - AArch64 inline `CheckSequenceBounds` fast path
+  - AArch64 `isValidKeysVersion` force-inline
+  - AArch64 direct `tp_iternext` fast path as a standalone candidate
+  - AArch64 unchecked tstate in `JITRT_UnlinkFrame`
+  - AArch64 `FOR_ITER_LIST` list-iterator helper specialization as a standalone candidate
+  - AArch64 `FOR_ITER_RANGE` range-iterator helper specialization as a standalone candidate
+  - AArch64 duplicate `CheckField` / `CheckVar` elimination as a standalone candidate
+  - AArch64 `LoadFieldAddress + LoadArrayItem[0]` addressing fold as a standalone candidate
+  - AArch64 compact-long `CompareBool` helper specialization
+  - AArch64 managed-dict fast path in `isValidKeysVersion`
+  - AArch64 LoadMethod entry-local dict-offset validation
+  - AArch64 exact-`TFunc` vectorcall direct helper
+  - AArch64 exact-float nonzero-constant true-divide lowering
+  - AArch64 unchecked tstate in generator send and frame clear
+  - AArch64 generic `JITRT_RichCompareBool` compact-long fast path
+  - AArch64 `LOAD_ATTR_METHOD_WITH_VALUES` guard-only broad/self-only variants
+  - AArch64 callable-instance one-arg vectorcall helper, broad and `LoadArrayItem`-narrowed variants
+  - AArch64 compact-long `LongInPlaceOp<Add/Subtract>` helper, broad and const-1 variants
+  - AArch64 immortal-bool type propagation, narrow and broad variants
+  - AArch64 unused tiny return-self call elimination
+  - AArch64 exact-list `StoreSubscr` helper fast path
+  - AArch64 exact-list `MakeTupleFromList` helper
+  - AArch64 fixed-arity small `MakeTuple<1/2/3>` helpers
+  - AArch64 direct all-type `StoreArrayItem` lowering
+  - AArch64 direct CPython API calls for selected `PrimitiveBox` helpers
+  - AArch64 `STORE_ATTR_INSTANCE_VALUE` direct helper variants
+- Still below threshold but worth preserving:
+  - AArch64 tstate-aware frame unlink and clear refinement, all-positive S3/W3 object geomean `-2.15%`, best row `go -3.86%`, `richards -3.35%`
+  - AArch64 `JITRT_UnlinkFrameFromTstate` on current 4-opt base, all-positive S3/W3 object geomean `-1.89%`, best row `deltablue -3.59%`
+  - AArch64 generic `JITRT_RichCompareBool` compact-long fast path, S3/W3 `deltablue -5.02%`, `go -1.60%`, object geomean `-0.92%`, but with `raytrace +0.78%` and `richards +1.54%`
+  - AArch64 object-returning `Compare` compact-long helper, S1/W1 object geomean `-1.51%`, best row `nqueens -4.26%`, but with `raytrace +2.59%` and `richards +0.34%`
+  - AArch64 StoreAttr split-known-offset invoke stub, S1/W1 object geomean `-1.77%`, best row `go -5.73%`, but with `raytrace +3.58%`
+  - AArch64 compact-long `IndexUnbox` helper fast path, S3/W3 object geomean `-1.57%`, best row `nqueens -5.29%`, `go -2.47%`, but with `raytrace +3.00%`
+  - AArch64 tiny-return-self method-with-values bypass, S3/W3 object geomean `-1.47%`, best row `nqueens -4.58%`, with small `deltablue/richards` regressions
+  - AArch64 compact-long `LongInPlaceOp` const-1 helper, S1/W1 `go -3.79%`, `nqueens -2.67%`, object geomean `-1.20%`, but `raytrace +2.93%` and `richards +0.46%`
+  - AArch64 exact-float generic `BinaryOp` helper fast path, S3/W3 object geomean `-0.56%`, best row `nqueens -1.88%`, but with small `chaos/raytrace/richards` regressions
+  - AArch64 compact-long bitwise helper fast path, S1/W1 object geomean `-1.26%`, best row `nqueens -3.29%`, `go -3.19%`, but with `raytrace +3.52%`
+  - AArch64 compact-long `LongBinaryOp<Add/Subtract>` helper fast path, S1/W1 object geomean `-0.10%`, best row `go -1.75%`, but with `raytrace +2.00%`
+  - AArch64 compact-long helper for `LongCompare` object result, S1/W1 object geomean `-0.10%`, best row `nqueens -1.43%`, `go -0.56%`, but with `raytrace +2.02%`
+  - AArch64 exact-container `GetLengthInt64` helper fast path, S1/W1 object geomean `-1.31%`, best row `nqueens -4.01%`, `chaos -3.36%`, but with `raytrace +2.99%`
+  - AArch64 exact-list + slice subscript helper fast path, S1/W1 object geomean `-0.48%`, best row `go -2.24%`, but with `raytrace +1.55%`
+  - AArch64 `FOR_ITER_TUPLE` tuple-iterator helper fast path, S1/W1 object geomean `+0.90%`, with `nqueens +4.09%` and `raytrace +2.60%`
+  - AArch64 `FOR_ITER_RANGE` range-iterator helper fast path, S1/W1 object geomean `-0.29%`, with `chaos -2.65%` and `deltablue -1.45%`, but `raytrace +2.86%`
+  - AArch64 duplicate `CheckField` / `CheckVar` elimination, S1/W1 object geomean `+1.02%`, with `raytrace -0.73%` but `nqueens +6.26%`
+  - AArch64 `LoadFieldAddress + LoadArrayItem[0]` addressing fold, S1/W1 object geomean `+0.18%`, with `raytrace -0.78%` and `richards -0.32%` but `chaos +0.30%`
+  - AArch64 branchless `CheckSequenceBounds` with `csel`, S1/W1 object geomean `-0.22%`, with `go -1.50%`, `raytrace -0.73%`, and `nqueens -0.68%`, but `deltablue +1.52%`
+  - AArch64 owner-based `jitFrameGetHeader` generator check, S1/W1 object geomean `-0.13%`, with `raytrace -0.76%` and `richards -0.48%` but tiny `go/nqueens/deltablue` regressions
+  - AArch64 no-promotion `LoadMethodCache::lookup`, S1/W1 object geomean `+0.28%`, with `chaos/deltablue/go/raytrace/richards` slightly faster but `nqueens +4.87%`
+  - AArch64 direct `LoadMethodCache` cached-result construction, S1/W1 object geomean `+0.34%`, with `go -0.86%` but `nqueens +2.38%`
+  - AArch64 generator `XDecref`-only inline refinement, S1/W1 object geomean `+0.32%`, with `raytrace -0.59%` but `chaos +2.26%` and `nqueens +1.63%`
+  - AArch64 `JITRT_InvokeIterNext` skip-null-check fast path, S1/W1 object geomean `+0.55%`, with `deltablue -0.34%` but `nqueens +1.87%`
+  - AArch64 direct CPython API calls for selected `PrimitiveBox` helpers on object subset, S1/W1 object geomean `-0.17%`, with `go -0.99%` and `chaos -0.84%`, but `raytrace +0.51%` and prior scimark screen `+0.18%`
+  - AArch64 direct `PyFloat_FromDouble` for `PrimitiveBox<TCDouble>` only, S1/W1 object geomean `+0.08%`, with `chaos -1.95%` and `deltablue -1.13%`, but `nqueens +2.42%`
+  - AArch64 Decref immortal-bit `tbnz/tbz` branch form, S1/W1 object geomean `+0.22%`, with `go -1.54%`, `chaos -0.53%`, and `deltablue -0.36%`, but `raytrace +2.04%`, `nqueens +1.48%`, and `richards +0.26%`; initial versions exposed missing/overbroad postalloc labelization for register-input BranchCC, v3 ran successfully but is not worth merging standalone
+  - AArch64 zero-immediate memory stores with `wzr/xzr`, S1/W1 object geomean `-0.09%`, with `go -1.57%`, `raytrace -0.46%`, and `richards -0.44%`, but `nqueens +2.01%`; rejected because the static hit rate is tiny and the signal is mixed
+  - AArch64 StoreAttr cache interpreter-state threading:
+    - passing `PyThreadState*` from the JIT call site: S1/W1 object geomean `-0.57%`, with `deltablue -2.97%`, `go -2.80%`, and `richards -1.76%`, but `chaos +1.24%`, `nqueens +2.26%`, and `raytrace +0.76%`; rejected because the extra call argument adds broad ABI/register-pressure cost
+    - caching `PyInterpreterState*` in each `SplitMutator` entry: S1/W1 object geomean `+3.36%`, with `richards +17.49%`; rejected because the enlarged cache-entry layout likely destroys locality
+    - caching `PyInterpreterState*` once in `StoreAttrCache`: v1 was invalid due a missing constructor symbol and a stale high-CPU smoke process; fixed v2 S1/W1 object geomean `+1.06%`, with `raytrace +2.03%` and `richards +3.58%`; rejected
+  - AArch64 inline `AttributeMutator` kind/empty checks:
+    - direct tagged `type_` read in `setAttr/getAttr`: S1/W1 clean-base object geomean `-0.32%`, with `chaos -1.17%`, `raytrace -0.62%`, and `richards -0.21%`, but `go +0.26%`
+    - direct tagged read plus `JIT_DCHECK`: S1/W1 clean-base object geomean `+0.27%`, with `go -0.98%` but `nqueens +2.68%` and `richards +1.10%`; rejected
+  - AArch64 inline StoreAttr cache entry scan: S1/W1 clean-base object geomean `+1.19%`, with all six object rows slower and `nqueens +4.83%`; rejected
+  - AArch64 consecutive duplicate Guard removal: S1/W1 clean-base object geomean `+0.09%`, with small wins on `chaos -0.18%`, `deltablue -0.74%`, `go -0.10%`, `raytrace -0.63%`, and `richards -0.06%`, but `nqueens +2.30%`; rejected because the exact duplicate-guard hit rate is too small and code-layout perturbation can dominate
+  - AArch64 keep zero-immediate register moves instead of rewriting to self-`Xor`: S1/W1 clean-base object geomean `-0.02%`, with `go -3.24%` and `nqueens -1.54%`, but `raytrace +3.00%`, `chaos +1.18%`, and `richards +0.99%`; rejected as mixed/noisy despite a high static hit rate
+  - AArch64 `PrimitiveBoxBool` immediate-select / shifted pointer arithmetic: S1/W1 clean-base object geomean `+0.39%`, with `deltablue -0.39%` and `raytrace -0.23%`, but `chaos +1.69%`, `nqueens +0.99%`, and `richards +0.21%`; rejected because the real hit rate is too narrow
+  - AArch64 `LoadMethodCache::lookup` slot0 likely branch hints: S1/W1 clean-base object geomean `+0.15%`, with `chaos -0.57%` but `deltablue +0.85%`, `nqueens +0.41%`, and `richards +0.17%`; rejected because the intended method-cache-heavy row did not improve
+  - AArch64 offset-zero indexed memory operands: scimark S1/W1 geomean `-0.38%`, with `scimark_fft -1.36%` and `scimark_monte_carlo -0.93%`, but `scimark_sor +0.42%`; rejected because the direct `[base, index, lsl #scale]` AArch64 addressing form has too narrow a hit rate
+  - AArch64 GuardType/GuardIs target materialization fold: S1/W1 clean-base object geomean `+0.24%`, with `chaos -0.28%`, `go -0.16%`, and `raytrace -0.28%`, but `nqueens +2.12%`; rejected because folding the LIR target register still leaves a large-address materialization in machine code
+  - AArch64 `AttributeMutator::setAttr` hot-case ordering: S1/W1 clean-base object geomean `-0.31%`, with `deltablue -1.26%`, `go -0.81%`, and `chaos -0.74%`, but `nqueens +0.63%`, `raytrace +0.24%`, and `richards +0.07%`; rejected because it is below threshold and misses the intended `richards` path
+  - AArch64 forced inline `AttributeMutator::setAttr`: S1/W1 clean-base object geomean `+0.02%`, with `chaos -0.58%` but `go +0.41%` and `nqueens +0.44%`; rejected because the call/PLT removal hypothesis did not translate into stable benchmark improvement
+  - AArch64 `GuardNotNegative` direct `tbnz` to near-deopt: S1/W1 clean-base object geomean `-0.97%`, with `nqueens -3.57%`, `go -2.07%`, and `chaos -1.81%`, but `raytrace +1.58%`; preserve as below-threshold because it removes one branch from the intended guard shape but is not broad enough
+  - AArch64 `GuardNotNegative` direct `tbnz` 64-bit-only: S1/W1 clean-base object geomean `-0.08%`, with `nqueens -3.35%`, but `chaos +0.45%`, `go +0.54%`, `raytrace +0.91%`, and `richards +0.89%`; rejected because the narrower form keeps only one row and loses the broad variant's useful signal
+  - AArch64 `GuardNotNegative` direct `tbnz` 32-bit-only: S1/W1 clean-base object geomean `+0.25%`, with `nqueens -2.98%` and `go -0.15%`, but `chaos +0.54%`, `deltablue +1.20%`, `raytrace +1.64%`, and `richards +1.35%`; rejected because it does not isolate the broad variant's useful rows
+  - AArch64 shared call-stub threshold raised to effectively disabled (`PYTHONJITAARCH64SHAREDSTUBMINCALLS=9999`): S1/W1 clean-base object geomean `+0.39%`, with `chaos -1.77%` and `go -1.09%`, but `nqueens +3.54%` and `richards +1.56%`; rejected because default shared stubs are not the broad regression source
+  - AArch64 `GuardNotNegative` direct `tbnz` to near-deopt on the 223 ARM host:
+    - host: `root@113.44.53.223`, `aarch64`, Linux `5.10.0-60.139.0.166.oe2203.aarch64`
+    - base workdir: `/root/work/cinderx-jit28-current-gcc14`, base wheel `cinderx-2026.5.14.0`
+    - candidate workdir: `/tmp/guard_tbnz_223_20260515`, candidate wheel `cinderx-2026.5.15.0`
+    - patch: `/root/work/arm-sync/a64_guard_notnegative_tbnz_near_223_20260515.patch`
+    - build log: `/root/work/arm-sync/build_guard_tbnz_223_20260515.log`
+    - important harness fix: the old 223 runner initially created benchmark worker venvs without `cinderx`, so early non-`jit` artifacts are invalid for this question; valid runs explicitly installed/unpacked the relevant wheel and passed the wheel's `site-packages` through `PYTHONPATH`, with smoke imports confirming `_cinderx.so` came from the intended base/candidate venv.
+    - valid S1 compare `/root/work/arm-sync/guard_tbnz_223_obj_compare_s1w1_jit_20260515.txt`:
+      - `chaos -1.97%`
+      - `deltablue +1.22%`
+      - `go -1.06%`
+      - `nqueens -0.38%`
+      - `raytrace -0.72%`
+      - `richards -0.14%`
+      - geomean `-0.52%`
+    - valid S3 compare `/root/work/arm-sync/guard_tbnz_223_obj_compare_s3_jit_20260515.txt`:
+      - `chaos -2.17%`
+      - `deltablue -0.48%`
+      - `go -0.72%`
+      - `nqueens +2.24%`
+      - `raytrace -3.96%`
+      - `richards -2.00%`
+      - geomean `-1.20%`
+    - valid 28-row S1 compare `/root/work/arm-sync/guard_tbnz_223_28_compare_jit28_s1_20260515.txt`:
+      - geomean `-1.16%`
+      - `17/28` rows faster, `11/28` slower
+      - largest faster rows: `pickle_list -22.62%` (very tiny absolute-time row), `scimark_sor -13.18%`, `scimark_monte_carlo -5.68%`, `nbody -2.14%`, `raytrace -2.00%`
+      - largest slower rows: `json_dumps +8.19%`, `comprehensions +5.72%`, `pickle_dict +5.56%`, `fannkuch +1.59%`, `coroutines +1.45%`
+      - full row data:
+        - `chaos -1.53%`
+        - `comprehensions +5.72%`
+        - `coroutines +1.45%`
+        - `coverage -0.26%`
+        - `deltablue +0.67%`
+        - `fannkuch +1.59%`
+        - `float +0.98%`
+        - `generators -0.75%`
+        - `go -0.27%`
+        - `json_dumps +8.19%`
+        - `json_loads -0.05%`
+        - `logging_format -0.11%`
+        - `logging_silent +0.25%`
+        - `logging_simple -1.27%`
+        - `nbody -2.14%`
+        - `nqueens -0.50%`
+        - `pickle -1.75%`
+        - `pickle_dict +5.56%`
+        - `pickle_list -22.62%`
+        - `raytrace -2.00%`
+        - `richards -0.40%`
+        - `scimark_fft +0.48%`
+        - `scimark_lu -0.55%`
+        - `scimark_monte_carlo -5.68%`
+        - `scimark_sor -13.18%`
+        - `scimark_sparse_mat_mult +1.14%`
+        - `spectral_norm -1.46%`
+        - `unpack_sequence +0.83%`
+    - decision:
+      - the 223 ARM environment shows a similar low-single-digit positive signal, stronger in S3 than S1 and confirmed by the 28-row S1 geomean, but it is still far below the stop condition and has mixed row-level regressions; preserve the patch/evidence, do not merge standalone.
+  - AArch64 `GuardNotNegative` direct `tbnz` regression analysis and narrowing attempts:
+    - root cause:
+      - `tbnz(reg, sign_bit, near_deopt_label())` removes the local `tbz skip; b deopt; skip` branch shape, but `near_deopt_label()` can add a block-level hot-path `b continuation` when the block falls through to the next block.
+      - 223 postalloc LIR census showed most integer `GuardNotNegative` sites are in fallthrough blocks: `chaos 526/609`, `json_dumps 448/523`, and the common object rows are similarly dominated by fallthrough sites.
+      - many sites are common startup/import/regex guards rather than benchmark-specific hot loops, so single-sample 28-row regressions can be driven by layout/branch-shape churn outside the intended hot path.
+    - fallthrough-or-multiple-guard narrowing:
+      - rule: only use `tbnz` when there is no fallthrough or multiple integer `NotNegative` guards in the block.
+      - 223 S3 object result: geomean `-0.64%`, with `nqueens -2.41%`, `raytrace -2.77%`, and `richards -1.89%`, but `chaos +2.35%`, `go +0.72%`, and `deltablue +0.27%`.
+      - rejected because it moves the regression instead of preserving the broad useful rows.
+    - near-aware narrowing:
+      - rule: also allow `tbnz` when the block already has another near-deopt guard, because the continuation branch is already paid.
+      - 223 S3 object result: geomean `-0.74%`, with `raytrace -1.64%`, `richards -2.23%`, `nqueens -0.87%`, `go -0.35%`, `chaos -0.04%`, but `deltablue +0.72%`.
+      - 223 28-row S1 result: geomean `-1.52%`, `15/28` rows faster and `13/28` rows slower; it fixes `json_dumps` and `pickle_dict` versus broad but introduces/shifted regressions in `raytrace`, `richards`, `logging_silent`, and `coroutines`.
+      - rejected as a merge candidate because it improves aggregate geomean but still does not satisfy “no regression while keeping the gain.”
+    - complete 28-row S3 tradeoff after accepting “reduced regression”:
+      - broad direct `tbnz`: geomean `-0.47%`, `18/28` rows faster, worst regression `scimark_sor +7.37%`, regressions `>1% = 5`, `>2% = 2`, `>3% = 1`.
+      - near-aware: geomean `-0.33%`, `14/28` rows faster, worst regression `unpack_sequence +3.27%`, regressions `>1% = 4`, `>2% = 1`, `>3% = 1`.
+      - reuse-near-only: geomean `-0.12%`, `16/28` rows faster, worst regression `raytrace +3.29%`, regressions `>1% = 5`, `>2% = 3`, `>3% = 3`; rejected.
+      - best current tradeoff: near-aware lowers the worst observed S3 regression while retaining a measurable but small geomean gain. It should be preserved, but not merged without a more stable confirmation run because the remaining gain is small and `unpack_sequence` is tiny/noisy.
+  - AArch64 HIR checked exact-float `BinaryOp<Add/Subtract/Multiply>` fast path, S1/W1 object geomean `-0.82%`, best row `go -3.45%`, and scimark S1/W1 geomean `-0.81%`, best row `scimark_sparse_mat_mult -4.54%`, but with `nqueens +2.38%` and `scimark_monte_carlo +2.39%`
+  - AArch64 HIR checked exact-float `BinaryOp<Multiply>` fast path, S1/W1 object geomean `-0.47%`, best row `deltablue -1.58%`, and scimark S1/W1 geomean `-0.18%`, best row `scimark_sparse_mat_mult -6.20%`, but with `nqueens +1.94%` and `scimark_lu +9.21%`
+  - AArch64 delayed `_PyThreadState_GET()` in vectorcall helpers, S1/W1 object geomean `-0.29%`, best row `richards -3.01%`, but with `chaos +1.18%` and `nqueens +1.23%`
+  - AArch64 no-incref return for immortal `JITRT_IterDoneSentinel`, S1/W1 object geomean `+0.47%`, with `deltablue -0.73%` but `nqueens +1.51%`
+  - AArch64 exact `LoadMethod` split with trusted type guard, S1/W1 object geomean `+0.70%`, with `chaos -0.59%` but `deltablue +1.20%`, `nqueens +1.88%`, and `raytrace +1.25%`
+  - AArch64 exact list/tuple nonnegative-int subscript helper, S3/W3 object geomean `-1.34%`, best row `nqueens -3.63%`, `go -2.98%`, `chaos -2.04%`, but with `raytrace +2.31%`
+  - AArch64 exact list/tuple nonnegative-int subscript helper with slice-skip guard, S1/W1 object geomean `+0.23%`, with `go -3.44%` but `nqueens +3.36%` and `raytrace +1.50%`
+  - AArch64 combined exact dict/list/tuple subscript helper, S1/W1 object geomean `-0.33%`, with `go -3.01%`, `chaos -1.84%`, but `nqueens +2.61%` and `raytrace +1.79%`
+  - AArch64 `STORE_ATTR_INSTANCE_VALUE` direct helper v2, S1/W1 object geomean `+1.27%`, with `chaos -5.59%` but `deltablue +5.04%`, `raytrace +5.25%`, and `richards +4.59%`; v1 with explicit HIR guards was much worse at geomean `+19.65%`
+  - `PYTHONJITENABLEHIRINLINER=1` config candidate, S1/W1 object geomean `+0.50%`, with `raytrace -0.74%` but `nqueens +3.29%`
+  - `PYTHONJITENABLEHIRINLINER=1` on scimark, S1/W1 scimark geomean `+0.08%`, with `scimark_fft -1.09%` but `scimark_sparse_mat_mult +0.99%`
+  - `PYTHONJITENABLEHIRINLINER=1 PYTHONJITHIRINLINERCOSTLIMIT=10000` config candidate, S1/W1 object geomean `+0.67%`, with `raytrace -0.92%` but `nqueens +4.86%`
+  - AArch64 direct double `StoreArrayItem` lowering, scimark S1/W1 geomean `-0.62%`, best row `scimark_fft -3.31%`, mixed
+  - AArch64 direct primitive `StoreArrayItem` lowering, scimark S3/W3 geomean `-1.59%`, all positive, best row `scimark_monte_carlo -3.81%`
+  - AArch64 compact-long `PrimitiveUnbox` helper fast path, scimark S1/W1 geomean `+1.50%`, best row `scimark_fft -1.98%`, but `scimark_sor +5.66%`
+  - AArch64 generator inline-decref, `nqueens -4.45%`, object geomean `-1.35%`
+  - AArch64 direct `tp_iternext` fast path, `nqueens -3.41%`, object geomean `-0.76%`
+  - AArch64 fast non-generator `FrameHeader` lookup, all-positive object geomean `-1.73%`
+  - AArch64 `FOR_ITER_LIST` helper specialization, `nqueens -3.09%`, object geomean `-0.21%`, but with `raytrace +3.61%`
+  - AArch64 immortal-bool type propagation, S3/W3 object geomean `-0.67%`, best row `nqueens -1.82%`, but with `raytrace +0.16%`
+- Still plausible:
+  - AArch64 `JITRT_UnlinkFrameFromTstate`, broad `-3.55%` geomean but below stop threshold
+  - `GuardNotNegative` direct `tbnz` to near-deopt, small positive but below threshold
+- Still plausible if deeper work is allowed:
+  - AArch64 method-with-values hybrid reshaping that sinks `LoadMethodCached` into the fallback path; guard-only variants showed `chaos -10.47%` and `raytrace -6.98%` but regressed polymorphic `richards` by `+120.90%`
+  - profile/type-versioned callable-instance direct call for `self.splines[index](x)` style calls; the pure helper version showed `chaos -2.76%`, so further upside likely requires avoiding repeated runtime type lookup, not only bypassing `_PyObject_Call_Prepend`
+  - AArch64-specific LoadMethod cache-hit stub that preserves `x0/x1` dual return
+  - numeric/scimark primitive box/unbox instruction-selection candidates, pending a fresh scimark census
+  - a narrower branch/test peephole only if it can avoid the `raytrace`/`nbody` regressions seen in the broad prototype
+
+## 2026-05-19 Loop 4 - AArch64 IntToBool Branch Fold
+
+- Candidate:
+  - name: AArch64 `IntToBool + BranchZ/NZ` postalloc fold
+  - status: `benefit-determined/needs-causality-before-review`
+  - file: `cinderx/Jit/lir/postalloc.cpp`
+  - case record: `plans/cases/aarch64-jit-agent-round-20260519/loop-4-inttobool-branch.md`
+- Core code idea:
+  - If a conditional branch consumes the last use of a register produced by immediately preceding `IntToBool`, and the `IntToBool` source is a 32-bit, 64-bit, or object register, AArch64 can branch directly on the source with `BranchZ/NZ`.
+  - Expected machine-level effect: avoid `cmp input, #0; cset bool, ne` followed by a branch on the materialized bool, and use the AArch64-friendly `cbz/cbnz` shape.
+  - x86 boundary: no change because the peephole is guarded by `#if defined(CINDER_AARCH64)`.
+- Remote evidence:
+  - baseline snapshot: `/root/work/arm-sync/loop_run_20260519_221049`
+  - valid S3 focused artifact: `/root/work/arm-sync/loop_run_inttobool_branch_20260519_230030`
+  - valid S12 focused artifact: `/root/work/arm-sync/loop_run_inttobool_branch_s12_20260519_230310`
+- S12 focused result:
+  - object rows: `chaos -6.219%`, `deltablue -15.691%`, `go -7.031%`, `nqueens -24.502%`, `raytrace -9.115%`, `richards -5.866%`.
+  - scimark rows: `scimark_fft -2.069%`, `scimark_lu -5.569%`, `scimark_monte_carlo -0.883%`, `scimark_sor -6.525%`, `scimark_sparse_mat_mult -7.854%`.
+  - focused 11-row time geomean about `-8.534%`, speedup about `+9.330%`.
+  - object-only speedup about `+13.218%`; scimark-only speedup about `+4.840%`.
+- Diagnostic caveats:
+  - Full pyperformance LIR/ASM dump timed out, so direct real-workload LIR/ASM hit evidence is still missing.
+  - Static list-truthiness probe did not hit this shape; it already lowered to direct `BranchNZ`.
+  - Full JIT28 S3 and S12 have now been measured, but direct real-workload hit evidence is still missing.
+- Decision:
+  - The focused S12 signal escalated to full JIT28.
+  - Full JIT28 S12 now triggers both default performance stop gates.
+  - Because the benefit is determined, immediately collect workload hit evidence, a lightweight counter, or a LIR/ASM census for this peephole.
+  - Do not mark merge-accepted or move to final review/reporting until causality evidence proves the measured win comes from this peephole in real workloads.
+
+### Full JIT28 S3 Evidence
+
+- Artifact: `/root/work/arm-sync/inttobool_branch_jit28_s3_20260519_235714`
+- Summary:
+  - valid rows: `28/28`
+  - time geomean delta: `-8.844%`
+  - speedup: `+9.702%`
+  - rows faster by at least 5% speedup: `18/28`
+  - slower rows: `2/28`, both tiny rows (`pickle`, `pickle_dict`)
+- S3 rows crossing the single-row 30% speedup threshold:
+  - `comprehensions`: baseline `0.0000537230225746`, candidate `0.0000404720194638`, time `-24.665%`, speedup `+32.741%`
+  - `coroutines`: baseline `0.0455663199828`, candidate `0.0320661639853`, time `-29.627%`, speedup `+42.101%`
+  - `nqueens`: baseline `0.164363087009`, candidate `0.125104890991`, time `-23.885%`, speedup `+31.380%`
+- Decision:
+  - This S3 run is strong enough to trigger repeat validation.
+  - Do not stop yet because the user required credible repeat evidence, not a single S3 snapshot.
+  - Full JIT28 S12 was started automatically in the same artifact directory.
+
+### Full JIT28 S12 Evidence
+
+- Artifact: `/root/work/arm-sync/inttobool_branch_jit28_s3_20260519_235714`
+- Summary:
+  - valid rows: `28/28`
+  - time geomean delta: `-9.145%`
+  - speedup: `+10.065%`
+  - rows faster by at least 5% speedup: `20/28`
+  - rows with >=5% regression: none
+  - only slower row: `unpack_sequence -1.173% speedup`, a tiny absolute-time row
+- S12 rows crossing the single-row 30% speedup threshold:
+  - `comprehensions`: baseline `0.0000521670008311`, candidate `0.0000401069992222`, time `-23.118%`, speedup `+30.070%`
+  - `coroutines`: baseline `0.0454894890136`, candidate `0.0320944590057`, time `-29.446%`, speedup `+41.736%`
+  - `nqueens`: baseline `0.165356582991`, candidate `0.125173445005`, time `-24.301%`, speedup `+32.102%`
+- Decision:
+  - Performance stop condition is now triggered by repeated full JIT28 evidence: single-row `>=30%` and geomean speedup `>=10%`.
+  - Move immediately to causality evidence collection rather than continuing broad candidate discovery.
+  - Review/reporting is blocked until workload hit evidence, a lightweight counter, or LIR/ASM census proves this peephole is responsible for the win.
