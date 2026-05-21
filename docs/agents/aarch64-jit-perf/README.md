@@ -2,10 +2,19 @@
 
 ## 当前覆盖规则
 
-用户已要求：候选不需要“足够小”才执行，整个流程默认全自动推进。
-Orchestrator 选择当前证据最强、可执行的候选后，Implementation Agent 直接实现实验 patch；
+当前流程默认全自动推进。Orchestrator 选择当前证据最强、可执行的候选后，
+Implementation Agent 直接实现实验 patch；
 只有越出 LIR/CODEGEN/postalloc/regalloc 范围、改变 benchmark 脚本语义、破坏 x86 默认安全边界、
 或远端环境不可用时才暂停并记录 blocker。未触发停止条件时必须继续下一轮。
+
+另外有两类独立的横向规则：
+
+- x86 对照是确定 ARM 收益后的后置 gate。只有 AArch64 已有比较明确的 pyperformance 收益时，
+  才需要看 x86 是否可能受益；ARM 收益不明确时，不要求做 x86 实验。
+- 有比较明确的 ARM 收益后，可优先到另一台 ARM 机器做补充验证；确认也有类似趋势收益后，
+  再进入 x86 对照、代码复查和合入前准备。
+- 所有 case 结果、状态解释、收益判断、否决原因和合入判断必须用中文记录；代码符号、
+  命令、路径、benchmark 名称和状态 tag 可以保留原文。
 
 这套工作流用于推进 CinderX ARM/AArch64 JIT 后端性能优化。范围刻意收紧在
 LIR、CODEGEN、postalloc、regalloc、LIR/ASM 证据，以及后端附近的 runtime
@@ -37,10 +46,14 @@ helper 调用成本。除非 HIR 改动能明确服务于 ARM 后端性能证明
 任何性能结论都必须同时具备：
 
 - 代码因果链
+- 本地候选归档，放在 case 目录的
+  `candidates/<loop>-<candidate>/` 下；每个候选目录必须同时包含
+  `case.md` 和 `candidate.patch`
 - LIR 证据，以及可行时的 ASM 证据
 - benchmark 证据，并给出 baseline/candidate 路径
 - 噪声或 tiny benchmark 分类
 - ARM/x86 边界解释
+- 中文 case 结果记录
 
 单独 benchmark 数字不够。单独 LIR/ASM 形态也不够。
 
@@ -50,6 +63,10 @@ helper 调用成本。除非 HIR 改动能明确服务于 ARM 后端性能证明
 进入 causality gate，补 workload 命中证据、轻量 counter、LIR/ASM census 或等价统计
 数据，证明收益来自该代码改动。这一步发生在收益确认之后、Review Agent 和最终汇报之前；
 不能把它当成最终 review/reporting 阶段才补的材料。
+
+如果有可用的第二台 ARM 机器，应把它作为合入前补充验证：在同口径 baseline/candidate
+A/B 下确认趋势收益是否相近。第二台 ARM 趋势确认后，再看 x86 是否可能受益；如果第二台
+ARM 不可用，必须在 case 中用中文记录 blocker 和剩余风险。
 
 ## 默认 Agent 集合
 
@@ -64,7 +81,7 @@ helper 调用成本。除非 HIR 改动能明确服务于 ARM 后端性能证明
 | Perf Evidence Agent | 定位或运行 focused/S12/JIT28 证据，并判断噪声。 |
 | Implementation Agent | 在证据允许后做最小代码或 harness 改动。 |
 | Debug Agent | 处理失败、崩溃、无效 benchmark 和可疑收益。 |
-| Review Agent | 检查正确性、x86 安全、最小改动集和合入条件。 |
+| Review Agent | 检查正确性、方案泛化性、后置 x86 对照、中文 case 完整性和合入前准备状态。 |
 
 Analysis Agent 必须先读取 `patterns.md`，但已有 pattern 只是第一轮 checklist，
 不是搜索边界。Analysis Agent 还必须主动寻找新的 ARM/x86 差异、微架构机会和
@@ -92,6 +109,8 @@ Implementation、Perf、Review。工程执行时建议保留上面八个角色�
 4. 然后才进入 Implementation 或 Debug。
 5. 每个候选都记录到 case 的 `findings.md`。
 6. 合入或汇报前，运行 Review Agent 并更新最终分类。
+   Review Agent 的“方案泛化性/后置 x86 对照 gate”和“中文 case 结果 gate”是两件事，
+   任一项缺失都不能进入 accepted/合入结论。
 
 ## 连续循环协议
 
@@ -106,21 +125,30 @@ Implementation、Perf、Review。工程执行时建议保留上面八个角色�
    这一步不是可选项。没有候选时也要跑当前基线、收集耗时分布，作为分析输入。
 2. **Census / hotspot analysis**：Analysis Agent 和 Code Causal Chain Agent 基于
    benchmark 结果、LIR dump、ASM dump、已有 pattern 和新 pattern 搜索优化点。
-3. **Candidate selection**：Orchestrator Agent 选择一个当前证据最强、可执行的候选进入实现；不以“足够小”作为阻塞条件。
+3. **Candidate selection**：Orchestrator Agent 选择一个当前证据最强、可执行的候选进入实现。
    候选必须写清代码因果假设、预期命中 workload、需要的验证矩阵。
 4. **Implementation**：Implementation Agent 在 Orchestrator 选定后自动实现实验 patch。
    不需要每轮等待用户再次批准；只有越出 LIR/CODEGEN/postalloc/regalloc 范围、
    需要破坏 x86 默认行为、或需要改测试 harness 语义时才停下来请示。
+   实现完成后必须立即把候选归档到本地 case 目录：
+   `plans/cases/<case-name>/candidates/<loop>-<candidate>/`。进入
+   benchmark gate 前，该候选目录必须同时包含 `case.md` 和
+   `candidate.patch`。
 5. **Correctness gate**：跑最小正确性测试、构建检查、verifier/autogen 相关测试。
    失败则进入 Debug Agent；Debug 后要么修复继续测，要么记录 rejected。
 6. **Perf gate**：Perf Evidence Agent 用固定脚本做 baseline/candidate A/B：
    focused S3 -> 有信号升 S12 -> 必要时 full JIT28。
 7. **Causality gate**：一旦有确定收益，必须立即回到代码、workload 命中证据、
    轻量 counter、LIR/ASM census 或等价统计数据，解释为什么是代码改动造成的，
-   而不是噪声、host drift、tiny benchmark 或叠加误归因；完成这个 gate 后才进入
-   Review Agent 或最终汇报。
-8. **Record and loop**：无论 accepted、needs-repeat、mechanism-only、rejected，
-   都必须写入 case `findings.md` 和 `progress.md`，然后选择下一个候选继续。
+   而不是噪声、host drift、tiny benchmark 或叠加误归因。
+8. **Second ARM / x86 gate**：确定 ARM 收益后，可在另一台 ARM 机器上用同口径
+   A/B 做补充验证；趋势相近后再看 x86。x86 实验只在 ARM 收益明确后触发，不作为
+   普通候选实验的前置要求。
+9. **Pre-merge review gate**：第二台 ARM、x86 对照、正确性、因果证据和中文 case
+   都准备好后，Review Agent 做最终复查；若只剩人工检视确认，记录为
+   `ready-for-human-review`，然后继续新一轮优化点发现。
+10. **Record and loop**：无论 accepted、needs-repeat、mechanism-only、rejected，
+   都必须用中文写入 case `findings.md` 和 `progress.md`，然后选择下一个候选继续。
 
 ### 循环停止规则
 
@@ -138,14 +166,24 @@ Implementation、Perf、Review。工程执行时建议保留上面八个角色�
 - `progress.md`：本轮做了什么、跑了哪些命令、artifact 路径、下一轮动作。
 - `findings.md`：候选状态、代码因果、benchmark 分类。
 - `benchmark-matrix.md`：baseline/candidate/compare JSON 路径。
+- `candidates/<loop>-<candidate>/case.md`：候选方案、测试记录、结论和后续动作。
+- `candidates/<loop>-<candidate>/candidate.patch`：候选代码 patch 的本地归档。
+
+除代码符号、命令、路径、benchmark 名称和状态 tag 外，上述文件里的结果、结论、
+原因和下一步动作必须使用中文。
 
 每个候选至少记录：
 
 - 候选名称和状态。
 - 改动文件。
+- 本地 patch 路径。
+- 实验 workdir、build log、benchmark artifact 路径（如有）。
 - 核心思路。
 - ARM 理论依据。
-- x86 影响判断。
+- x86 gate 状态：未进入、无需测试、待测、已测无收益、已测有收益、仅 x86 有收益。
+- 方案是否足够通用，以及泛化边界。
+- 第二台 ARM 补充验证状态和 artifact 路径，如有。
+- 只有 ARM 收益明确后，才记录 x86 最小实验、标准测试和 artifact 路径。
 - benchmark 文件路径。
 - LIR/ASM 或 census 证据路径。
 - focused 结果。
@@ -163,6 +201,8 @@ Implementation、Perf、Review。工程执行时建议保留上面八个角色�
   有验证计划”，就进入实现，不把“等待批准”作为默认阻塞。
 - **Debug Agent 只处理失败和异常**，不能让一次失败自动终止循环。
 - **Review Agent 只在 accepted/汇报/合入前 gate**，不能阻止普通候选实验继续推进。
+  它必须分别检查方案泛化性、后置 x86 对照、中文 case 结果完整性，以及是否已进入
+  只差人工检视确认的状态。
 
 ## 固定输出顺序
 
@@ -179,6 +219,7 @@ Implementation、Perf、Review。工程执行时建议保留上面八个角色�
 候选只能使用下面这些状态之一：
 
 - `accepted`：代码因果链和重复 benchmark 证据都支持该结论
+- `ready-for-human-review`：合入前准备已完成，等待人工检视确认
 - `stacked`：只有和其他 accepted 候选叠加时才有价值
 - `rejected`：证据为负、噪声、过小、不安全，或缺少因果链
 - `needs-repeat`：有希望，但缺 S12/full JIT28 或 LIR/ASM 证明

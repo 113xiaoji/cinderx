@@ -10,8 +10,16 @@ plans/cases/<case-name>/
   progress.md
   code-causal-chain.md
   benchmark-matrix.md
+  candidates/
+    index.md
+    <loop>-<candidate>/
+      case.md
+      candidate.patch
   final-report.md
 ```
+
+中文记录规则：除代码符号、命令、路径、benchmark 名称和状态 tag 外，所有 case
+结果、状态解释、收益判断、否决原因、合入判断和下一步动作都必须用中文记录。
 
 ## agents.md
 
@@ -51,6 +59,7 @@ plans/cases/<case-name>/
 - branch：
 - base commit：
 - candidate commit/patch：
+- local patch archive：
 - remote host：
 - compiler/toolchain：
 
@@ -89,6 +98,8 @@ plans/cases/<case-name>/
 
 - [ ] Orchestrator 选择一个候选
 - [ ] Implementation Agent 自动实现实验 patch
+- [ ] 保存本地候选归档到 `candidates/<loop>-<candidate>/`
+- [ ] 确认候选目录内同时包含 `case.md` 和 `candidate.patch`
 - [ ] 记录修改文件和因果假设
 - [ ] 跑 correctness gate
 
@@ -106,6 +117,8 @@ plans/cases/<case-name>/
 - [ ] 收集 LIR/ASM 证据
 - [ ] 一旦有确定收益或停止条件触发，立即补 workload 命中证据、轻量 counter、
       LIR/ASM census 或等价统计；完成前不进入最终 review/reporting
+- [ ] 有比较明确的 ARM 收益后，如另一台 ARM 可用，做同口径补充验证
+- [ ] 第二台 ARM 确认类似趋势收益后，再进入 x86 对照；ARM 收益不明确时不做 x86
 
 ### Loop N：记录和继续
 
@@ -116,6 +129,11 @@ plans/cases/<case-name>/
 ### Final：复查和汇报
 
 - [ ] 确认确定收益后的 causality/workload 命中证据已经补齐
+- [ ] 如另一台 ARM 可用，已完成补充趋势验证；不可用时已中文记录 blocker
+- [ ] Review Agent 已检查方案泛化性、后置 x86 对照和 ARM/x86 收益边界；只有 ARM
+      收益明确后才要求 x86 最小实现、标准测试和中文 case 记录
+- [ ] 所有 case 结果、状态解释、收益判断、否决原因和合入判断均已用中文记录
+- [ ] 如果所有合入前准备已完成，状态记录为 `ready-for-human-review`
 - [ ] 分类最终状态
 - [ ] 编写 final report
 - [ ] 判断 commit/PR 是否就绪
@@ -130,8 +148,8 @@ plans/cases/<case-name>/
 
 ## 候选表
 
-| 候选 | Loop | 命中 pattern | 文件 | 核心思路 | ARM 依据 | x86 影响 | Benchmark | LIR/ASM | 状态 |
-|---|---:|---|---|---|---|---|---|---|---|
+| 候选 | Loop | 命中 pattern | 文件 | 本地 Patch | 核心思路 | ARM 依据 | x86 gate 状态 | Benchmark | LIR/ASM | 状态 |
+|---|---:|---|---|---|---|---|---|---|---|---|
 
 ## 代码因果链
 
@@ -144,6 +162,11 @@ plans/cases/<case-name>/
 
 | Run | Baseline | Candidate | Samples | 结果 | 分类 |
 |---|---|---|---|---|---|
+
+## Patch 归档
+
+| Loop | 候选 | 本地 Patch | 状态 |
+|---:|---|---|---|
 
 ## 循环队列
 
@@ -168,6 +191,7 @@ plans/cases/<case-name>/
 
 - Loop：
 - 发生了什么：
+- 本地 patch：
 - 运行的 benchmark：
 - 收集到的证据：
 - 错误：
@@ -187,6 +211,80 @@ plans/cases/<case-name>/
 | 1 | <candidate> | focused S3 | 是 | pending | | | | |
 | 1 | <candidate> | focused S12 | S3 有信号时必需 | pending | | | | |
 | 1 | <candidate> | full JIT28 S12 | accepted/汇报前必需 | pending | | | | |
+| 1 | <candidate> | second ARM trend | ARM 收益明确且环境可用时必需 | pending | | | | |
+| 1 | <candidate> | x86 after ARM confirmed | ARM 收益明确后才评估 | pending | | | | |
+```
+
+## candidates/index.md
+
+```markdown
+# <Case Name> 候选归档
+
+本目录按候选拆分。每个候选目录包含：
+
+- `case.md`：候选方案、测试记录、结论和后续动作。
+- `candidate.patch`：可恢复该候选代码的本地 patch。
+
+| Loop | 候选 | 目录 | Case | Patch |
+|---:|---|---|---|---|
+```
+
+## candidates/<loop>-<candidate>/case.md
+
+```markdown
+# <Loop> - <Candidate>
+
+- Patch: `candidate.patch`
+- 归档目录: `candidates/<loop>-<candidate>/`
+- 状态标签：
+- 记录语言：中文；代码符号、命令、路径、benchmark 名称和状态 tag 可保留原文
+
+## 方案简介
+
+## 方案泛化性
+
+- 这个方案优化的是哪一类语义、LIR、codegen 或 helper-call 形态：
+- 为什么不是单个 benchmark 特例：
+- 触发条件：
+- fallback 边界：
+
+## ARM 亲和依据
+
+- ARM 为什么更可能收益：
+- 命中的 ARM/x86 差异 pattern：
+- workload 命中证据或需要补的证据：
+
+## 第二台 ARM 补充验证
+
+- 是否进入补充验证：
+- 进入原因：
+- 环境：
+- baseline/candidate artifact：
+- 趋势是否相近：
+- 如果未验证，原因或 blocker：
+
+## x86 收益判断
+
+- 是否进入 x86 gate（只有 ARM 收益明确后才进入）：
+- x86 是否可能也有收益：
+- 如果不可能或不应影响 x86，原因：
+- 如果可能收益，x86 实验 patch/enable：
+- x86 correctness gate：
+- x86 benchmark artifact：
+- x86 结论和标签：
+- 如果只有 x86 收益、ARM 趋势不成立，是否已标记为 `x86-only-benefit`：
+
+## 正确性测试
+
+## Benchmark 证据
+
+## 合入判断
+
+- 是否合入：
+- 是否 ARM-only：
+- 是否需要禁止或关闭 x86：
+- 仍缺什么证据：
+- 是否已到 `ready-for-human-review`：
 ```
 
 ## final-report.md
