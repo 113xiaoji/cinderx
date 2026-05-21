@@ -115,6 +115,15 @@ bool isTypeWithReasonablePointerEq(Type t) {
       t <= TGen || t <= TNoneType || t <= TSlice;
 }
 
+using RichCompareBoolFunc = int (*)(PyObject*, PyObject*, int);
+#if CINDERX_JIT_COMPACT_LONG_COMPARE_BOOL_FASTPATH
+constexpr RichCompareBoolFunc kFastLongRichCompareBool =
+    JITRT_FastPyObjectRichCompareBool;
+#else
+constexpr RichCompareBoolFunc kFastLongRichCompareBool =
+    PyObject_RichCompareBool;
+#endif
+
 int bytes_from_cint_type(Type type) {
   if (type <= TCInt8 || type <= TCUInt8) {
     return 1;
@@ -1920,7 +1929,7 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
             instr->right()->type() <= TLongExact) {
           call_instr = bbb.appendCallInstruction(
               instr->output(),
-              PyObject_RichCompareBool,
+              kFastLongRichCompareBool,
               instr->left(),
               instr->right(),
               static_cast<int>(instr->op()));
@@ -1942,7 +1951,7 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
              isTypeWithReasonablePointerEq(instr->right()->type()))) {
           call_instr = bbb.appendCallInstruction(
               instr->output(),
-              PyObject_RichCompareBool,
+              kFastLongRichCompareBool,
               instr->left(),
               instr->right(),
               static_cast<int>(instr->op()));
