@@ -2463,6 +2463,30 @@ int JITRT_FastPyObjectRichCompareBool(PyObject* v, PyObject* w, int op) {
   }
   return PyObject_RichCompareBool(v, w, op);
 }
+
+#define DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL(NAME, OP, PYOP)                  \
+  int JITRT_FastPyObjectRichCompareBool##NAME(PyObject* v, PyObject* w) {      \
+    if (PyLong_CheckExact(v) && PyLong_CheckExact(w)) {                        \
+      auto left_long = reinterpret_cast<PyLongObject*>(v);                     \
+      auto right_long = reinterpret_cast<PyLongObject*>(w);                    \
+      if (PyUnstable_Long_IsCompact(left_long) &&                              \
+          PyUnstable_Long_IsCompact(right_long)) {                             \
+        Py_ssize_t left = PyUnstable_Long_CompactValue(left_long);             \
+        Py_ssize_t right = PyUnstable_Long_CompactValue(right_long);           \
+        return left OP right;                                                  \
+      }                                                                        \
+    }                                                                          \
+    return PyObject_RichCompareBool(v, w, PYOP);                               \
+  }
+
+DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL(LessThan, <, Py_LT)
+DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL(LessThanEqual, <=, Py_LE)
+DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL(Equal, ==, Py_EQ)
+DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL(NotEqual, !=, Py_NE)
+DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL(GreaterThan, >, Py_GT)
+DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL(GreaterThanEqual, >=, Py_GE)
+
+#undef DEFINE_FAST_COMPACT_LONG_COMPARE_BOOL
 #endif
 
 /* Perform a rich comparison with integer result.  This wraps

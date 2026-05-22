@@ -616,6 +616,14 @@ int JITRT_NotContainsBool(PyObject* w, PyObject* v);
    check, which is incompatible w/ float comparisons. */
 
 #if CINDERX_JIT_COMPACT_LONG_COMPARE_BOOL_FASTPATH
+int JITRT_FastPyObjectRichCompareBoolLessThan(PyObject* v, PyObject* w);
+int JITRT_FastPyObjectRichCompareBoolLessThanEqual(PyObject* v, PyObject* w);
+int JITRT_FastPyObjectRichCompareBoolEqual(PyObject* v, PyObject* w);
+int JITRT_FastPyObjectRichCompareBoolNotEqual(PyObject* v, PyObject* w);
+int JITRT_FastPyObjectRichCompareBoolGreaterThan(PyObject* v, PyObject* w);
+int JITRT_FastPyObjectRichCompareBoolGreaterThanEqual(
+    PyObject* v,
+    PyObject* w);
 int JITRT_FastPyObjectRichCompareBool(PyObject* v, PyObject* w, int op);
 #endif
 int JITRT_RichCompareBool(PyObject* v, PyObject* w, int op);

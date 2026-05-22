@@ -1927,12 +1927,67 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
         } else if (
             instr->left()->type() <= TLongExact &&
             instr->right()->type() <= TLongExact) {
+#if CINDERX_JIT_COMPACT_LONG_COMPARE_BOOL_FASTPATH
+          switch (instr->op()) {
+            case CompareOp::kLessThan:
+              call_instr = bbb.appendCallInstruction(
+                  instr->output(),
+                  JITRT_FastPyObjectRichCompareBoolLessThan,
+                  instr->left(),
+                  instr->right());
+              break;
+            case CompareOp::kLessThanEqual:
+              call_instr = bbb.appendCallInstruction(
+                  instr->output(),
+                  JITRT_FastPyObjectRichCompareBoolLessThanEqual,
+                  instr->left(),
+                  instr->right());
+              break;
+            case CompareOp::kEqual:
+              call_instr = bbb.appendCallInstruction(
+                  instr->output(),
+                  JITRT_FastPyObjectRichCompareBoolEqual,
+                  instr->left(),
+                  instr->right());
+              break;
+            case CompareOp::kNotEqual:
+              call_instr = bbb.appendCallInstruction(
+                  instr->output(),
+                  JITRT_FastPyObjectRichCompareBoolNotEqual,
+                  instr->left(),
+                  instr->right());
+              break;
+            case CompareOp::kGreaterThan:
+              call_instr = bbb.appendCallInstruction(
+                  instr->output(),
+                  JITRT_FastPyObjectRichCompareBoolGreaterThan,
+                  instr->left(),
+                  instr->right());
+              break;
+            case CompareOp::kGreaterThanEqual:
+              call_instr = bbb.appendCallInstruction(
+                  instr->output(),
+                  JITRT_FastPyObjectRichCompareBoolGreaterThanEqual,
+                  instr->left(),
+                  instr->right());
+              break;
+            default:
+              call_instr = bbb.appendCallInstruction(
+                  instr->output(),
+                  kFastLongRichCompareBool,
+                  instr->left(),
+                  instr->right(),
+                  static_cast<int>(instr->op()));
+              break;
+          }
+#else
           call_instr = bbb.appendCallInstruction(
               instr->output(),
               kFastLongRichCompareBool,
               instr->left(),
               instr->right(),
               static_cast<int>(instr->op()));
+#endif
         } else if (
             (instr->op() == CompareOp::kEqual ||
              instr->op() == CompareOp::kNotEqual) &&
@@ -1949,12 +2004,28 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
              instr->op() == CompareOp::kNotEqual) &&
             (isTypeWithReasonablePointerEq(instr->left()->type()) ||
              isTypeWithReasonablePointerEq(instr->right()->type()))) {
+#if CINDERX_JIT_COMPACT_LONG_COMPARE_BOOL_FASTPATH
+          if (instr->op() == CompareOp::kEqual) {
+            call_instr = bbb.appendCallInstruction(
+                instr->output(),
+                JITRT_FastPyObjectRichCompareBoolEqual,
+                instr->left(),
+                instr->right());
+          } else {
+            call_instr = bbb.appendCallInstruction(
+                instr->output(),
+                JITRT_FastPyObjectRichCompareBoolNotEqual,
+                instr->left(),
+                instr->right());
+          }
+#else
           call_instr = bbb.appendCallInstruction(
               instr->output(),
               kFastLongRichCompareBool,
               instr->left(),
               instr->right(),
               static_cast<int>(instr->op()));
+#endif
         } else {
           call_instr = bbb.appendCallInstruction(
               instr->output(),
