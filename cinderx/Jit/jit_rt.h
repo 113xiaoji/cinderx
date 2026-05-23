@@ -625,6 +625,7 @@ int JITRT_FastPyObjectRichCompareBoolGreaterThanEqual(
     PyObject* v,
     PyObject* w);
 int JITRT_FastPyObjectRichCompareBool(PyObject* v, PyObject* w, int op);
+int JITRT_RichCompareBoolLessThanEqual(PyObject* v, PyObject* w);
 #endif
 int JITRT_RichCompareBool(PyObject* v, PyObject* w, int op);
 

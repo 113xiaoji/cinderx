@@ -2026,6 +2026,14 @@ LIRGenerator::TranslatedBlock LIRGenerator::TranslateOneBasicBlock(
               instr->right(),
               static_cast<int>(instr->op()));
 #endif
+#if CINDERX_JIT_COMPACT_LONG_COMPARE_BOOL_FASTPATH
+        } else if (instr->op() == CompareOp::kLessThanEqual) {
+          call_instr = bbb.appendCallInstruction(
+              instr->output(),
+              JITRT_RichCompareBoolLessThanEqual,
+              instr->left(),
+              instr->right());
+#endif
         } else {
           call_instr = bbb.appendCallInstruction(
               instr->output(),
