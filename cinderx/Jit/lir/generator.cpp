@@ -564,12 +564,6 @@ void LIRGenerator::MakeDecref(
     [[maybe_unused]] std::optional<destructor> destructor,
     bool xdecref,
     [[maybe_unused]] bool possible_immortal) {
-  if (func_->code->co_flags & kCoFlagsAnyGenerator) {
-    auto helper = xdecref ? JITRT_XDecref : JITRT_Decref;
-    bbb.appendInvokeInstruction(helper, instr);
-    return;
-  }
-
   auto end_decref = bbb.allocateBlock();
   if (xdecref) {
     auto cont = bbb.allocateBlock();
